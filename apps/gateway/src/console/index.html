@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gateway Console</title>
+<style>
+  :root { --bg:#f7f8fa; --panel:#fff; --text:#16181d; --muted:#5b6170; --border:#e2e5ea; --accent:#0b62d6; --ok:#137a3a; --warn:#a15c00; --bad:#b42318; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#0f1115; --panel:#171a21; --text:#e8eaf0; --muted:#9aa1b2; --border:#2a2f3a; --accent:#5aa2ff; --ok:#4cc27a; --warn:#f0a43a; --bad:#ff6b5e; } }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:14px/1.45 system-ui, -apple-system, Segoe UI, sans-serif; }
+  header { padding:16px; border-bottom:1px solid var(--border); display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+  h1 { font-size:16px; margin:0 auto 0 0; }
+  main { padding:16px; display:grid; gap:16px; grid-template-columns:repeat(auto-fit, minmax(320px, 1fr)); }
+  section { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:14px; overflow:auto; }
+  section.wide { grid-column:1 / -1; }
+  h2 { font-size:13px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); margin:0 0 10px; }
+  table { width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums; }
+  th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--border); white-space:nowrap; }
+  th { color:var(--muted); font-weight:500; }
+  input, button { font:inherit; padding:6px 10px; border-radius:6px; border:1px solid var(--border); background:var(--panel); color:var(--text); }
+  button { cursor:pointer; } button.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
+  .ok { color:var(--ok); } .warn { color:var(--warn); } .bad { color:var(--bad); } .muted { color:var(--muted); }
+  a { color:var(--accent); }
+  .kv { display:grid; grid-template-columns:auto 1fr; gap:4px 16px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Maritime gateway · operator console</h1>
+  <input id="token" type="password" placeholder="Admin token" aria-label="Admin token" size="28">
+  <button class="primary" id="load">Load</button>
+  <button id="verify">Verify ledger</button>
+  <button id="csv">Download ledger CSV</button>
+</header>
+<main>
+  <section><h2>Regions</h2><div id="regions" class="muted">Loading…</div></section>
+  <section><h2>Money</h2><div id="money" class="muted">Enter admin token</div></section>
+  <section><h2>VAT (all time, draft)</h2><div id="vat" class="muted">-</div></section>
+  <section class="wide"><h2>x402 payments</h2><div id="payments" class="muted">-</div></section>
+  <section class="wide"><h2>Policy engine events (Product B)</h2><div id="events" class="muted">-</div></section>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (v) => String(v ?? "").replace(/[&<>"]/g, (c) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;" }[c]));
+let token = "";
+try { token = sessionStorage.getItem("mx_admin") || ""; $("token").value = token; } catch {}
+const explorer = (net) => net === "eip155:8453" ? "https://basescan.org/tx/" : "https://sepolia.basescan.org/tx/";
+let network = "eip155:84532";
+
+async function api(path) {
+  const r = await fetch(path, { headers: { authorization: "Bearer " + token } });
+  if (!r.ok) throw new Error(path + " → " + r.status);
+  return r;
+}
+function table(cols, rows) {
+  if (!rows.length) return '<span class="muted">None yet</span>';
+  return "<table><thead><tr>" + cols.map(c => "<th>" + esc(c[0]) + "</th>").join("") + "</tr></thead><tbody>" +
+    rows.map(r => "<tr>" + cols.map(c => "<td>" + c[1](r) + "</td>").join("") + "</tr>").join("") + "</tbody></table>";
+}
+
+async function loadPublic() {
+  const s = await (await fetch("/status")).json();
+  network = s.payments.network;
+  $("regions").innerHTML = table([
+    ["Region", r => esc(r.name)],
+    ["Mode", r => r.mode === "live" ? '<span class="ok">live</span>' : '<span class="warn">' + esc(r.mode) + "</span>"],
+    ["Vessels", r => r.vessels],
+    ["Data age", r => r.stale ? '<span class="bad">stale</span>' : esc(r.data_age_s) + " s"],
+  ], s.regions) + '<p class="muted">Snapshot build ' + s.snapshot_build_ms + " ms every " + s.snapshot_interval_ms + " ms · facilitator breaker: " + esc(s.payments.facilitator_breaker) + "</p>";
+}
+
+async function loadAdmin() {
+  const [sum, pays, ev, vat] = await Promise.all([
+    api("/admin/summary").then(r => r.json()),
+    api("/admin/payments?limit=50").then(r => r.json()),
+    api("/admin/policy-events?limit=50").then(r => r.json()),
+    api("/admin/vat-summary").then(r => r.json()),
+  ]);
+  $("money").innerHTML = '<div class="kv">' +
+    Object.entries(sum.ledger_balances_gbp).map(([k, v]) => "<span>" + esc(k) + "</span><span>£" + Number(v).toFixed(4) + "</span>").join("") +
+    "<span>Unsettled exposure</span><span>" + sum.exposure_usdc.toFixed(3) + " USDC</span>" +
+    "<span>Journal entries</span><span>" + sum.journal_entries + "</span></div>";
+  $("vat").innerHTML = '<div class="kv"><span>Box 1 VAT due</span><span>£' + vat.box1_vat_due_on_sales_gbp.toFixed(2) +
+    "</span><span>Box 6 sales ex VAT</span><span>£" + vat.box6_total_sales_ex_vat_gbp.toFixed(2) + "</span></div>";
+  $("payments").innerHTML = table([
+    ["Created", p => esc(p.created_at.slice(11, 19))],
+    ["Endpoint", p => esc(p.endpoint)],
+    ["USDC", p => p.amount_usdc.toFixed(3)],
+    ["Status", p => '<span class="' + (p.status === "settled" ? "ok" : p.status === "verified" ? "warn" : "bad") + '">' + esc(p.status) + "</span>"],
+    ["Payer", p => esc(p.payer.slice(0, 10)) + "…"],
+    ["Tx", p => p.tx ? '<a target="_blank" rel="noopener" href="' + explorer(network) + esc(p.tx) + '">' + esc(p.tx.slice(0, 12)) + "…</a>" : '<span class="muted">' + esc(p.error || "pending") + "</span>"],
+  ], pays.data);
+  $("events").innerHTML = table([
+    ["Time", e => esc(new Date(e.ts || e.received_at).toISOString().slice(11, 19))],
+    ["Agent", e => esc(e.agentId)],
+    ["Type", e => e.type === "denied" ? '<span class="bad">denied</span>' : '<span class="ok">' + esc(e.type) + "</span>"],
+    ["Rule", e => esc(e.code || "")],
+    ["Amount", e => e.amount != null ? esc(e.amount) + " " + esc(e.currency) : ""],
+    ["URL", e => esc((e.url || "").replace(/^https?:\/\/[^/]+/, ""))],
+    ["Reason", e => esc(e.reason || "")],
+  ], ev.data);
+}
+
+async function refresh() {
+  try { await loadPublic(); } catch (e) { $("regions").textContent = e.message; }
+  if (token) { try { await loadAdmin(); } catch (e) { $("money").textContent = e.message; } }
+}
+$("load").onclick = () => { token = $("token").value.trim(); try { sessionStorage.setItem("mx_admin", token); } catch {} refresh(); };
+$("verify").onclick = async () => { try { const v = await (await api("/admin/ledger/verify")).json(); alert(v.ok ? "Ledger hash chain intact" : "Chain broken at seq " + v.brokenAtSeq); } catch (e) { alert(e.message); } };
+$("csv").onclick = async () => {
+  try {
+    const blob = await (await api("/admin/ledger.csv")).blob();
+    const a = Object.assign(document.createElement("a"), { href: URL.createObjectURL(blob), download: "ledger.csv" });
+    a.click(); URL.revokeObjectURL(a.href);
+  } catch (e) { alert(e.message); }
+};
+refresh();
+setInterval(refresh, 3000);
+</script>
+</body>
+</html>

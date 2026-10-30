@@ -1,0 +1,33 @@
+{
+  "name": "@mx/gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch --env-file-if-exists=../../.env src/server.ts",
+    "start": "tsx src/server.ts",
+    "migrate": "tsx --env-file-if-exists=../../.env src/store/migrate.ts",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@coinbase/x402": "2.1.0",
+    "@hono/node-server": "2.1.5",
+    "@mx/ais": "workspace:*",
+    "@mx/shared": "workspace:*",
+    "@x402/core": "2.28.0",
+    "@x402/evm": "2.28.0",
+    "h3-js": "4.5.0",
+    "hono": "4.13.13",
+    "nats": "2.29.3",
+    "pg": "8.23.1",
+    "pino": "10.4.0",
+    "stripe": "23.0.0",
+    "viem": "2.57.10",
+    "zod": "3.25.76"
+  },
+  "devDependencies": {
+    "@mx/policy-sdk": "workspace:*",
+    "@types/pg": "8.23.1"
+  }
+}

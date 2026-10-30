@@ -1,0 +1,35 @@
+{
+  "name": "maritime-x402",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.18.3",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json && pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "dev:infra": "docker compose up -d postgres nats",
+    "dev:ingest": "pnpm --filter @mx/ingest dev",
+    "dev:gateway": "pnpm --filter @mx/gateway dev",
+    "db:migrate": "pnpm --filter @mx/gateway migrate",
+    "demo:agent": "tsx scripts/demo-agent.ts",
+    "smoke": "tsx scripts/smoke.ts"
+  },
+  "dependencies": {
+    "@mx/policy-sdk": "workspace:*",
+    "@x402/core": "2.28.0",
+    "viem": "2.57.10"
+  },
+  "devDependencies": {
+    "@types/node": "^22.18.0",
+    "tsx": "4.23.15",
+    "typescript": "5.9.3",
+    "vitest": "3.2.7"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  }
+}

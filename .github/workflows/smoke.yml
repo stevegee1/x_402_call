@@ -1,0 +1,20 @@
+name: production-smoke
+on:
+  schedule:
+    - cron: "7 * * * *" # hourly
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm smoke
+        env:
+          GATEWAY_URL: ${{ secrets.PRODUCTION_GATEWAY_URL }}

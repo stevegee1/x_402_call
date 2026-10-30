@@ -1,0 +1,49 @@
+# Local / single-host stack. Production runs the same images on AWS ECS (eu-west-2) with RDS.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: mx
+      POSTGRES_PASSWORD: mx
+      POSTGRES_DB: mx
+    ports: ["5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mx"]
+      interval: 5s
+      retries: 10
+
+  nats:
+    image: nats:2.10-alpine
+    command: ["-js", "-m", "8222"]
+    ports: ["4222:4222", "8222:8222"]
+
+  ingest:
+    build: .
+    command: ["pnpm", "--filter", "@mx/ingest", "start"]
+    environment:
+      NATS_URL: nats://nats:4222
+      DATABASE_URL: postgres://mx:mx@postgres:5432/mx
+      INGEST_SOURCES: ${INGEST_SOURCES:-simulator}
+      AISSTREAM_API_KEY: ${AISSTREAM_API_KEY:-}
+      RECEIVER_ID: ${RECEIVER_ID:-rx-kent-01}
+    ports: ["10110:10110/udp", "8090:8090"]
+    depends_on:
+      nats: { condition: service_started }
+      gateway: { condition: service_started } # gateway runs migrations first
+
+  gateway:
+    build: .
+    command: ["pnpm", "--filter", "@mx/gateway", "start"]
+    env_file: [.env]
+    environment:
+      DATA_SOURCE: nats
+      NATS_URL: nats://nats:4222
+      DATABASE_URL: postgres://mx:mx@postgres:5432/mx
+    ports: ["8080:8080"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      nats: { condition: service_started }
+
+volumes:
+  pgdata:

@@ -1,0 +1,25 @@
+{
+  "name": "@mx/ingest",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch --env-file-if-exists=../../.env src/index.ts",
+    "start": "tsx src/index.ts",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@mx/ais": "workspace:*",
+    "@mx/shared": "workspace:*",
+    "nats": "2.29.3",
+    "pg": "8.23.1",
+    "pino": "10.4.0",
+    "ws": "8.22.0",
+    "zod": "3.25.76"
+  },
+  "devDependencies": {
+    "@types/pg": "8.23.1",
+    "@types/ws": "8.18.2"
+  }
+}

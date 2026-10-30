@@ -1,0 +1,19 @@
+{
+  "name": "@mx/policy-sdk",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Spend policy, circuit breakers and audit trail for agents paying x402 sellers (Product B, thin MVP).",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@x402/core": "2.28.0",
+    "@x402/evm": "2.28.0",
+    "viem": "2.57.10"
+  }
+}
