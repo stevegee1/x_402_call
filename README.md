@@ -19,7 +19,30 @@ cp .env.example .env     # set PAY_TO
 pnpm dev:gateway         # http://localhost:8080  (simulated data, in-memory store)
 pnpm test                # unit + in-process e2e (no dependencies)
 pnpm test:integration    # Postgres 16 via Testcontainers (needs Docker; or set TEST_PG_URL)
+pnpm test:contracts      # Forge tests for the test contracts (needs Foundry v1.8.5)
+pnpm e2e                 # real chain end to end (needs Foundry v1.8.5, and Docker or TEST_PG_URL)
+pnpm e2e:stack           # the same stack, interactive, with a funded demo wallet
 ```
+
+### End-to-end harness (`pnpm e2e`)
+
+Nothing is faked except the chain and the token. A local `anvil` reports Base Sepolia's chain id;
+`MockUSDC` (EIP-3009, FiatToken's domain and revert strings) and `Multicall3Lite` are installed at the
+canonical Base Sepolia USDC and Multicall3 addresses, so every service runs its unmodified testnet
+config. The harness boots the self-hosted facilitator and four gateway replicas on one Postgres
+(async, sync, a "flaky" one whose facilitator sits behind a fault proxy, and a "failover" one with a
+fallback), then pays them with real EIP-3009 signatures.
+
+Scenarios: async and sync settlement on chain, gasless buyers, replay before and after settlement
+across replicas, concurrent payments claimed by competing settlement loops, unfunded, tampered and
+wrong-chain signatures, refusal before charge, facilitator outage with and without failover, and the
+credits rail. It finishes by **reconciling the ledger against the chain in both directions**
+(`e2e/src/reconcile.ts`): every USDC transfer into `payTo` is a settled payment with one journal, and
+every settled payment is a transfer for the same payer, nonce and amount. It then checks that a
+transfer made outside the gateway is detected. Service logs go to `e2e/.logs/`.
+
+Install Foundry with `foundryup --install v1.8.5` (CI pins the same version). Contracts live in
+`contracts/`; run `git submodule update --init` for `forge-std`.
 
 ## Layout
 
@@ -27,10 +50,13 @@ pnpm test:integration    # Postgres 16 via Testcontainers (needs Docker; or set 
 |---|---|
 | `apps/gateway` | Hono API: platform kernel (catalog, billing on x402 + credits, settlement, ledger, admin console) and products (`src/products/maritime`) |
 | `apps/ingest` | AIS ingest: own receivers (UDP/TCP NMEA), aisstream.io, simulator → NATS + Postgres |
+| `apps/facilitator` | Self-hosted x402 facilitator (`/supported`, `/verify`, `/settle`): the gateway's fallback when CDP is down, and the settlement path in e2e |
 | `apps/mcp` | MCP server (stdio) for agents, paying through the policy SDK |
 | `packages/ais` | NMEA/AIS decoder, dedupe, traffic simulator |
 | `packages/policy-sdk` | Buyer-side policy engine (Product B, thin) |
 | `packages/shared` | Regions, pricing, geo, types |
+| `contracts` | Foundry: test-only MockUSDC (EIP-3009) and Multicall3Lite, with Forge tests |
+| `e2e` | End-to-end harness and ledger/chain reconciler |
 | `db/migrations` | SQL schema |
 | `scripts` | Demo agent, production smoke check |
 

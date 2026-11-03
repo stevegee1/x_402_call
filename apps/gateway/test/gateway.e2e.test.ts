@@ -88,6 +88,12 @@ describe("x402 rail", () => {
 
     const status = await (await env.fetch(`${BASE_URL}/v1/payments/${id}`)).json();
     expect(status).toMatchObject({ status: "settled", amount_usdc: 0.033 });
+
+    // Operator view carries what on-chain reconciliation keys on: (payer, nonce) and the exact atomic amount.
+    const admin = await (await env.fetch(`${BASE_URL}/admin/payments?status=settled`, { headers: { authorization: `Bearer ${ADMIN_TOKEN}` } })).json();
+    expect(admin.data).toEqual([
+      expect.objectContaining({ id, payer: account.address.toLowerCase(), network: "eip155:84532", nonce: p!.nonce, amount_atomic: "33000", tx: p!.txHash }),
+    ]);
   });
 
   it("rejects a replayed payment signature", async () => {
