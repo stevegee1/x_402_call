@@ -85,7 +85,7 @@ An AI agent or business can buy **live maritime data with no account** (x402, US
 
 | # | Invariant | Enforced by | Tested in |
 |---|---|---|---|
-| I1 | We never charge for stale data | Staleness gate before billing | `never charges for stale data` |
+| I1 | We never charge for stale data | Staleness gate before billing; each product defines freshness (grid: fetch age, current half-hour, 12 h horizon, horizon still advancing) | `never charges for stale data`; `grid freshness (I1)`; grid `a frozen source turns into 503` |
 | I2 | Simulated or replay data is never sold on mainnet | Mode gate before billing | `never sells simulated data on mainnet` |
 | I3 | An authorisation is used at most once | DB unique key + facilitator + on-chain nonce | `rejects a replayed payment signature` |
 | I4 | Verified-but-unsettled value is bounded, globally | `Store.admitPayment`: admission under a Postgres advisory lock, exposure derived from unsettled async rows → otherwise sync | contract `admission and exposure (R4)`; Postgres `R4: exposure caps hold globally`; e2e `exposure caps are global across replicas` |
@@ -150,6 +150,8 @@ An AI agent or business can buy **live maritime data with no account** (x402, US
 | R11 | The gateway exits at boot if the primary facilitator's `/supported` is unreachable and no fallback is set (`resourceServer.initialize()`). Verified by booting against a closed port | A CDP outage during a deploy crash-loops new pods | Always configure `FALLBACK_FACILITATOR_URL` in production; later, retry `initialize()` with backoff and report not-ready instead of exiting |
 | R12 | The self-hosted facilitator assigns transaction nonces in-process | Two replicas sharing one key would race for nonces | One replica per key; to scale out, run more facilitators, each with its own key |
 | R13 | A verified tier is cached for 5 minutes, so a transferred agent keeps its tier on that gateway for up to 5 minutes | Bounded: at most the trusted per-payer cap of extra exposure | Accept; shorten the TTL or watch Transfer events if tiers grow large |
+| R14 | We treat NESO's `datetime` as the start of each half-hour (it lines up with the Carbon Intensity API's `from`), not confirmed in NESO documentation | Window times could be 30 min off | Confirm with NESO; one-line change in `parseRecords` |
+| R15 | NESO gives no availability guarantee and "does not guarantee the continued supply" of the data | Grid revenue stops if the dataset is withdrawn or freezes (freezes are detected and never charged) | Alerts on `grid_fresh == 0`; regional data needs NESO permission or a fix to their regional dataset |
 
 ---
 

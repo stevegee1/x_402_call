@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { Address } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { ANVIL_KEYS, clients, installTestContracts, startAnvil } from "./chain";
+import { startFakeNeso } from "./fake-neso";
 import { startFaultProxy } from "./fault-proxy";
 import { createDatabase } from "./postgres";
 import { freePort, httpOk, ROOT, startService, waitFor, type Service } from "./proc";
@@ -83,6 +84,8 @@ export async function startStack(opts: StackOptions = {}): Promise<{ info: Stack
 
     const proxy = await startFaultProxy({ host: "127.0.0.1", port: facPort });
     stops.push(() => proxy.stop());
+    const neso = await startFakeNeso();
+    stops.push(() => neso.stop());
 
     const gatewayEnv = (port: number, over: Record<string, string>) => ({
       NODE_ENV: "test",
@@ -105,6 +108,9 @@ export async function startStack(opts: StackOptions = {}): Promise<{ info: Stack
       ...(opts.identifiedCapUsd ? { EXPOSURE_CAP_PER_PAYER_IDENTIFIED_USD: String(opts.identifiedCapUsd) } : {}),
       ...(opts.trustedCapUsd ? { EXPOSURE_CAP_PER_PAYER_TRUSTED_USD: String(opts.trustedCapUsd) } : {}),
       // ERC-8004 against the mock registries at the canonical addresses (gateway defaults, no override).
+      GRID_ENABLED: "true",
+      GRID_SOURCE_URL: neso.url,
+      GRID_POLL_MS: "60000",
       ERC8004_ENABLED: "true",
       ERC8004_TRUSTED_REVIEWERS: privateKeyToAccount(ANVIL_KEYS.reviewer).address,
       ERC8004_TRUSTED_MIN_FEEDBACK: "3",
