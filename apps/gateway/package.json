@@ -8,7 +8,8 @@
     "start": "tsx src/server.ts",
     "migrate": "tsx --env-file-if-exists=../../.env src/store/migrate.ts",
     "typecheck": "tsc -p tsconfig.json",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.ts"
   },
   "dependencies": {
     "@coinbase/x402": "2.1.0",
@@ -28,6 +29,8 @@
   },
   "devDependencies": {
     "@mx/policy-sdk": "workspace:*",
-    "@types/pg": "8.23.1"
+    "@testcontainers/postgresql": "12.2.1",
+    "@types/pg": "8.23.1",
+    "testcontainers": "12.2.1"
   }
 }

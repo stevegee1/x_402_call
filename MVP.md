@@ -91,7 +91,7 @@ An AI agent or business can buy **live maritime data with no account** (x402, US
 | I4 | Verified-but-unsettled value is bounded | `ExposureTracker` → sync settlement | `settles synchronously when the exposure cap…` |
 | I5 | A failed handler never results in a charge | Precheck for 404s; refund (credits) / cancel (async x402) on ≥400 | `does not charge for a vessel…`, credits test |
 | I6 | Facilitator outage returns 503 (never charged), not 402 | `FailoverFacilitator` + breaker | `does not charge when the facilitator is down` |
-| I7 | Two replicas never settle the same payment concurrently | `claimDuePayments` lease (`FOR UPDATE SKIP LOCKED`) | Postgres path exercised manually (§9); add a concurrency test (§8, R5) |
+| I7 | Two replicas never settle the same payment concurrently | `claimDuePayments` lease (`FOR UPDATE SKIP LOCKED`) | `I7: two replicas claiming concurrently…` (integration) |
 | I8 | Ledger is balanced, append-only and tamper-evident | `assertBalanced`, DB trigger, hash chain | `detects tampering…`; trigger verified on Postgres |
 | I9 | Credits balance never goes negative | Conditional `UPDATE … WHERE balance >= $price` + CHECK constraint | credits test |
 | I10 | The buyer signs exactly the requirement its policy approved | SDK passes only the approved `accepts` entry to the signer | policy tests |
@@ -139,7 +139,7 @@ An AI agent or business can buy **live maritime data with no account** (x402, US
 | R2 | If sync settlement is indeterminate, the client gets 503 but the payment may settle later | Customer charged without data (rare) | Add a "redeem settled payment" path or an automatic refund policy |
 | R3 | The SDK counts spend when it signs, even if the seller rejects the payment | Budgets are conservative (over-count) | Intended. Reconcile with the seller's payment-status endpoint later. |
 | R4 | Exposure counters are per-instance (rehydrated from the DB at start) | Effective cap = N × cap | Move to a Postgres/Redis counter at more than 2 replicas |
-| R5 | No automated test against Postgres (PgStore exercised manually only) | Regressions in SQL paths | Add Testcontainers in CI (Docker) |
+| R5 | ~~No automated test against Postgres~~ **Addressed:** `pnpm test:integration` runs the Store contract plus concurrency tests (I3, I7, I8, I9) on Postgres 16 in CI | n/a | Done |
 | R6 | Admin auth is a single shared token | Weak for a team | SSO (M4) |
 | R7 | Anchorage polygons and region boxes are coarse rectangles | Queue and anomaly accuracy | Charted polygons (UKHO / PoR / ACP) |
 | R8 | Ledger journal writes are serialised by an advisory lock | Throughput ceiling of roughly 1–2k writes/s | Batch usage journals hourly; hash per batch |

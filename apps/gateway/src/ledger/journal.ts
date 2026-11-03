@@ -52,6 +52,17 @@ export function assertBalanced(lines: JournalLine[]): void {
   if (d === 0) throw new Error("empty journal");
 }
 
+/**
+ * Returns the journal with occurredAt in canonical form (UTC, millisecond ISO-8601). Stores call this
+ * before hashing: Postgres returns timestamptz in this form, so hashing any other spelling of the
+ * same instant ("…T10:00:00Z", "+01:00" offsets) would break chain verification after a round trip.
+ */
+export function normalizeJournal(j: JournalInput): JournalInput {
+  const t = new Date(j.occurredAt);
+  if (Number.isNaN(t.getTime())) throw new Error(`invalid journal occurredAt: ${JSON.stringify(j.occurredAt)}`);
+  return { ...j, occurredAt: t.toISOString() };
+}
+
 export function canonicalJson(v: unknown): string {
   if (v === null || typeof v !== "object") return JSON.stringify(v);
   if (Array.isArray(v)) return `[${v.map(canonicalJson).join(",")}]`;

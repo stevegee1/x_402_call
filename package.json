@@ -9,6 +9,7 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json && pnpm -r typecheck",
     "test": "pnpm -r test",
+    "test:integration": "pnpm --filter @mx/gateway test:integration",
     "dev:infra": "docker compose up -d postgres nats",
     "dev:ingest": "pnpm --filter @mx/ingest dev",
     "dev:gateway": "pnpm --filter @mx/gateway dev",

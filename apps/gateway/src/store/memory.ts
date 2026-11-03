@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { assertBalanced, computeHash, GENESIS_HASH, type JournalEntry, type JournalInput } from "../ledger/journal";
+import { assertBalanced, computeHash, GENESIS_HASH, normalizeJournal, type JournalEntry, type JournalInput } from "../ledger/journal";
 import type { CreditAccount, NewAccount, NewPayment, PaymentRow, PaymentStatus, PolicyEventRow, Store, UsageRow } from "./types";
 
 /**
@@ -22,7 +22,8 @@ export class MemoryStore implements Store {
   }
   async close() {}
 
-  private append(j: JournalInput) {
+  private append(input: JournalInput) {
+    const j = normalizeJournal(input);
     assertBalanced(j.lines);
     const prevHash = this.entries.at(-1)?.hash ?? GENESIS_HASH;
     this.entries.push({ ...j, seq: this.entries.length + 1, prevHash, hash: computeHash(prevHash, j) });
@@ -42,7 +43,10 @@ export class MemoryStore implements Store {
   }
 
   async claimDuePayments(now: Date, limit: number, leaseMs: number) {
-    const due = [...this.payments.values()].filter((p) => p.status === "verified" && p.nextAttemptAt <= now).slice(0, limit);
+    const due = [...this.payments.values()]
+      .filter((p) => p.status === "verified" && p.nextAttemptAt <= now)
+      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
+      .slice(0, limit);
     for (const p of due) p.nextAttemptAt = new Date(now.getTime() + leaseMs);
     return due.map((p) => ({ ...p }));
   }
@@ -57,10 +61,11 @@ export class MemoryStore implements Store {
   async failPayment(id: string, error: string, final: boolean, nextAttemptAt?: Date) {
     const p = this.payments.get(id);
     if (!p || p.status !== "verified") return;
+    // Mirrors PgStore: error truncated to 1000 chars; next attempt unchanged unless given.
     p.attempts++;
-    p.error = error;
+    p.error = error.slice(0, 1_000);
     if (final) p.status = "failed";
-    else p.nextAttemptAt = nextAttemptAt ?? new Date();
+    if (nextAttemptAt) p.nextAttemptAt = nextAttemptAt;
   }
 
   async cancelPayment(id: string, reason: string) {
@@ -82,7 +87,7 @@ export class MemoryStore implements Store {
   }
 
   async createAccount(a: NewAccount, keyHash: string, _keyPrefix: string) {
-    const acct: CreditAccount = { id: randomUUID(), ...a, balanceMicros: 0, status: "active", createdAt: new Date() };
+    const acct: CreditAccount = { id: randomUUID(), ...a, country: a.country.toUpperCase(), balanceMicros: 0, status: "active", createdAt: new Date() };
     this.accounts.set(acct.id, acct);
     this.keys.set(keyHash, acct.id);
     return { ...acct };
@@ -111,9 +116,12 @@ export class MemoryStore implements Store {
 
   async refund(accountId: string, micros: number, journal: JournalInput) {
     const a = this.accounts.get(accountId);
-    if (!a) return;
+    if (!a) throw new Error(`unknown account ${accountId}`);
     this.append(journal);
     a.balanceMicros += micros;
+    const rows = this.usageRows.get(accountId) ?? [];
+    rows.push({ endpoint: "refund", micros: -micros, at: new Date() });
+    this.usageRows.set(accountId, rows);
   }
 
   async applyTopUp(t: { ref: string; accountId: string; netMicros: number; vatMicros: number }, journal: JournalInput) {
