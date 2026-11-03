@@ -7,6 +7,7 @@ import type { AppDeps, AppEnv } from "../context";
 import { looksLikeApiKey } from "../credits/keys";
 import { creditsUsageJournal } from "../ledger/journal";
 import type { PricedResource, Precheck, Product } from "../platform/product";
+import { AGENT_ID_HEADER, type TierDecision } from "../identity/tiers";
 import { FacilitatorUnavailableError } from "./facilitator";
 
 /** Async mode: give the request path this long to serve or cancel before the worker may settle. */
@@ -83,6 +84,7 @@ async function paymentRequired(c: Context<AppEnv>, resource: PricedResource, d: 
         usage: "Authorization: Bearer <api key>",
         signup: `${d.cfg.PUBLIC_BASE_URL}/v1/credits/accounts`,
       },
+      ...(d.sellerIdentity ? { seller_identity: { agent_registry: d.sellerIdentity.agentRegistry, agent_id: d.sellerIdentity.agentId } } : {}),
       ...extra,
     },
     402,
@@ -144,6 +146,10 @@ async function chargeX402(c: Context<AppEnv>, next: () => Promise<void>, resourc
     return c.json({ error: "payment_refused" }, 403);
   }
 
+  // ERC-8004 tier lookup runs alongside facilitator verification. It never throws: failures are "unknown".
+  const unknown: TierDecision = { tier: "unknown", reason: "no_agent_id" };
+  const tierLookup = d.identity ? d.identity.resolve(payer, c.req.header(AGENT_ID_HEADER)).catch(() => unknown) : Promise.resolve(unknown);
+
   let verify;
   try {
     verify = await d.resourceServer.verifyPayment(payload, match);
@@ -166,7 +172,7 @@ async function chargeX402(c: Context<AppEnv>, next: () => Promise<void>, resourc
   // then admits it as async only if global and per-payer exposure (all replicas) stay within the caps.
   const wantAsync = d.cfg.SETTLEMENT_MODE === "async" && validBefore.getTime() - Date.now() >= MIN_ASYNC_VALIDITY_MS;
 
-  const fx = await d.fx.usdcGbp();
+  const [fx, tier] = await Promise.all([d.fx.usdcGbp(), tierLookup]);
   const id = randomUUID();
   const now = Date.now();
   const admission = await d.store.admitPayment(
@@ -186,7 +192,7 @@ async function chargeX402(c: Context<AppEnv>, next: () => Promise<void>, resourc
     },
     {
       wantAsync,
-      caps: d.exposureCaps,
+      caps: d.identity ? d.identity.capsFor(tier.tier) : d.exposureCaps,
       // Async: let the handler finish first. Sync: keep the worker away while we settle inline.
       asyncAttemptAt: new Date(now + ASYNC_SETTLE_DELAY_MS),
       syncAttemptAt: new Date(now + 120_000),
@@ -197,7 +203,7 @@ async function chargeX402(c: Context<AppEnv>, next: () => Promise<void>, resourc
     return paymentRequired(c, resource, d, "payment_already_used");
   }
   const sync = admission.mode === "sync";
-  if (wantAsync && sync) d.metrics.inc("x402_exposure_cap_hits_total");
+  if (wantAsync && sync) d.metrics.inc("x402_exposure_cap_hits_total", { tier: tier.tier });
 
   if (sync) {
     const row = (await d.store.getPayment(id))!;
@@ -220,5 +226,6 @@ async function chargeX402(c: Context<AppEnv>, next: () => Promise<void>, resourc
     c.res.headers.set("X-Payment-Id", id);
     c.res.headers.set("X-Settlement", "pending");
   }
-  d.metrics.inc("paid_requests_total", { rail: "x402", resource: resource.id, mode: sync ? "sync" : "async" });
+  c.res.headers.set("X-Agent-Tier", tier.tier);
+  d.metrics.inc("paid_requests_total", { rail: "x402", resource: resource.id, mode: sync ? "sync" : "async", tier: tier.tier });
 }

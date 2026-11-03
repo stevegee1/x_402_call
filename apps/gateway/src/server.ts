@@ -7,7 +7,12 @@ import { CreditsService } from "./credits/service";
 import { CoinbaseFx, FixedFx } from "./ledger/fx";
 import { createLogger } from "./logger";
 import { Metrics } from "./metrics";
-import { exposureCaps } from "./payments/exposure";
+import { createPublicClient, getAddress, http } from "viem";
+import { base, baseSepolia } from "viem/chains";
+import { createAgentRegistry } from "./identity/erc8004";
+import { agentRegistryId, ERC8004_REGISTRIES } from "./identity/registries";
+import { TierResolver } from "./identity/tiers";
+import { exposureCaps, usdToAtomic } from "./payments/exposure";
 import { FailoverFacilitator } from "./payments/facilitator";
 import { createFacilitatorClients } from "./payments/facilitator-clients";
 import { createAuthorizationChecker } from "./payments/onchain";
@@ -65,6 +70,38 @@ if (!checker) log.warn("BASE_RPC_URL not set: indeterminate settlements cannot b
 const settler = new Settler(store, resourceServer, log, metrics, checker);
 settler.start();
 
+// ERC-8004 buyer identity (loosen-only tiers) and our own seller identity.
+const registries = {
+  identity: getAddress(cfg.ERC8004_IDENTITY_REGISTRY ?? ERC8004_REGISTRIES[cfg.X402_NETWORK]!.identity),
+  reputation: getAddress(cfg.ERC8004_REPUTATION_REGISTRY ?? ERC8004_REGISTRIES[cfg.X402_NETWORK]!.reputation),
+};
+let identity: TierResolver | undefined;
+if (cfg.ERC8004_ENABLED) {
+  const client = createPublicClient({ chain: isMainnet(cfg) ? base : baseSepolia, transport: http(cfg.BASE_RPC_URL, { timeout: cfg.ERC8004_LOOKUP_TIMEOUT_MS }) });
+  const caps = exposureCaps(cfg);
+  identity = new TierResolver(
+    createAgentRegistry(client, registries),
+    {
+      network: cfg.X402_NETWORK,
+      identityRegistry: registries.identity,
+      reviewers: cfg.ERC8004_TRUSTED_REVIEWERS.map((a) => getAddress(a)),
+      tag: cfg.ERC8004_REPUTATION_TAG,
+      minFeedback: cfg.ERC8004_TRUSTED_MIN_FEEDBACK,
+      minScore: cfg.ERC8004_TRUSTED_MIN_SCORE,
+      timeoutMs: cfg.ERC8004_LOOKUP_TIMEOUT_MS,
+      totalCapAtomic: caps.totalAtomic,
+      perPayerCapAtomic: {
+        unknown: caps.perPayerAtomic,
+        identified: usdToAtomic(cfg.EXPOSURE_CAP_PER_PAYER_IDENTIFIED_USD),
+        trusted: usdToAtomic(cfg.EXPOSURE_CAP_PER_PAYER_TRUSTED_USD),
+      },
+    },
+    (reason) => metrics.inc("erc8004_lookups_total", { reason }),
+  );
+  log.info({ registries, reviewers: cfg.ERC8004_TRUSTED_REVIEWERS.length }, "ERC-8004 buyer tiers enabled");
+}
+const sellerIdentity = cfg.SELLER_AGENT_ID ? { agentRegistry: agentRegistryId(cfg.X402_NETWORK, registries.identity), agentId: cfg.SELLER_AGENT_ID } : undefined;
+
 const sanctions = new SanctionsService({
   denylistPath: cfg.SANCTIONS_DENYLIST_PATH,
   chainalysisApiKey: cfg.CHAINALYSIS_API_KEY,
@@ -92,6 +129,8 @@ const deps: AppDeps = {
   facilitator,
   settler,
   exposureCaps: exposureCaps(cfg),
+  identity,
+  sellerIdentity,
   sanctions,
   fx: cfg.FX_PROVIDER === "fixed" ? new FixedFx(cfg.FX_FALLBACK_USDC_GBP) : new CoinbaseFx(cfg.FX_FALLBACK_USDC_GBP),
   startedAt: Date.now(),

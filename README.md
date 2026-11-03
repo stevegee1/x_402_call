@@ -55,7 +55,7 @@ Install Foundry with `foundryup --install v1.8.5` (CI pins the same version). Co
 | `packages/ais` | NMEA/AIS decoder, dedupe, traffic simulator |
 | `packages/policy-sdk` | Buyer-side policy engine (Product B, thin) |
 | `packages/shared` | Regions, pricing, geo, types |
-| `contracts` | Foundry: test-only MockUSDC (EIP-3009) and Multicall3Lite, with Forge tests |
+| `contracts` | Foundry: test-only MockUSDC (EIP-3009), Multicall3Lite and ERC-8004 registry mocks, with Forge tests |
 | `e2e` | End-to-end harness and ledger/chain reconciler |
 | `db/migrations` | SQL schema |
 | `scripts` | Demo agent, production smoke check |
@@ -79,6 +79,25 @@ billed by the platform kernel on both rails. `GET /v1/products` lists them with 
 `/v1/{region}/…`) are still served as deprecated aliases with `Deprecation: true` and a
 `Link: <…>; rel="successor-version"` header. Credits endpoints are under `/v1/credits/*`.
 Operators use `/console`; product operator routes are under `/admin/{product}/…`.
+
+### ERC-8004 identity (buyer tiers)
+
+With `ERC8004_ENABLED=true`, a buyer can declare its ERC-8004 agent with `X-Agent-Id: 42` (or the
+global form `eip155:84532:<identityRegistry>:42`; the policy SDK sends it via `agentId`). The gateway
+checks that the agent's verified wallet (`getAgentWallet`) is the address that signed the payment,
+then reads its reputation from the reviewers in `ERC8004_TRUSTED_REVIEWERS`:
+
+| Tier | When | Per-payer exposure cap |
+|---|---|---|
+| unknown | no id, someone else's id, transferred agent, registry error or timeout | `EXPOSURE_CAP_PER_PAYER_USD` (as without ERC-8004) |
+| identified | verified wallet matches the payer | `EXPOSURE_CAP_PER_PAYER_IDENTIFIED_USD` |
+| trusted | identified, and at least `ERC8004_TRUSTED_MIN_FEEDBACK` reviews averaging `ERC8004_TRUSTED_MIN_SCORE` | `EXPOSURE_CAP_PER_PAYER_TRUSTED_USD` |
+
+Tiers only loosen (config enforces unknown <= identified <= trusted <= `EXPOSURE_CAP_USD`), and the
+global cap is never raised. Blocking stays wallet-level (sanctions screening): an identity-based block
+would be advisory, since a buyer can omit the header. Responses carry `X-Agent-Tier`. Set
+`SELLER_AGENT_ID` to advertise our own agent in 402 responses and on `/`. The canonical registries are
+built in (`src/identity/registries.ts`); `pnpm erc8004:probe` checks them read-only against the live chain.
 
 ### Adding a product
 

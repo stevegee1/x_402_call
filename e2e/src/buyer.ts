@@ -1,22 +1,25 @@
 import { x402Client, x402HTTPClient } from "@x402/core/client";
 import type { PaymentPayload } from "@x402/core/types";
 import { ExactEvmScheme } from "@x402/evm/exact/client";
-import type { Address } from "viem";
+import type { Address, Hex } from "viem";
 import { generatePrivateKey, privateKeyToAccount, type PrivateKeyAccount } from "viem/accounts";
 import { mintUsdc } from "./chain";
 
 export interface Buyer {
   account: PrivateKeyAccount;
+  /** Lets a test act on chain as the buyer (e.g. register its ERC-8004 agent). */
+  key: Hex;
   address: Address;
   http: x402HTTPClient;
 }
 
 /** A fresh wallet with USDC and no ETH: x402 (EIP-3009) payments are gasless for the buyer. */
 export async function newBuyer(rpcUrl: string, usdcAtomic: bigint): Promise<Buyer> {
-  const account = privateKeyToAccount(generatePrivateKey());
+  const key = generatePrivateKey();
+  const account = privateKeyToAccount(key);
   if (usdcAtomic > 0n) await mintUsdc(rpcUrl, account.address, usdcAtomic);
   const http = new x402HTTPClient(x402Client.fromConfig({ schemes: [{ network: "eip155:84532", client: new ExactEvmScheme(account) }] }));
-  return { account, address: account.address, http };
+  return { account, key, address: account.address, http };
 }
 
 /** Requests a paid URL, signs the 402 challenge, and returns the payment header (not yet sent). */
@@ -30,9 +33,9 @@ export async function sign(buyer: Buyer, url: string): Promise<{ header: string;
 }
 
 /** One full x402 purchase: challenge, sign, pay. */
-export async function pay(buyer: Buyer, url: string) {
+export async function pay(buyer: Buyer, url: string, headers: Record<string, string> = {}) {
   const { header, payload } = await sign(buyer, url);
-  const res = await fetch(url, { headers: { "PAYMENT-SIGNATURE": header } });
+  const res = await fetch(url, { headers: { ...headers, "PAYMENT-SIGNATURE": header } });
   return { res, header, payload, nonce: (payload.payload as { authorization: { nonce: string } }).authorization.nonce };
 }
 

@@ -36,6 +36,12 @@ export interface PolicyClientOptions {
   policy: Policy;
   /** Wallet that signs x402 payments. Customer-owned: the SDK never transmits the key. */
   signer?: LocalAccount;
+  /**
+   * The signer's ERC-8004 agent id ("42" or "eip155:<chainId>:<registry>:42"), sent as X-Agent-Id
+   * with x402 payments. Sellers that verify it against the registry may serve the agent faster.
+   * It must be the agent whose verified wallet is `signer`, or sellers will ignore it.
+   */
+  agentId?: string;
   /** Fiat-credit API key, sent ONLY to the listed origins. */
   credits?: { apiKey: string; origins: string[] };
   spendLogPath?: string;
@@ -151,6 +157,7 @@ export function createPolicyClient(opts: PolicyClientOptions): PolicyClient {
     const payload = await http.createPaymentPayload({ ...paymentRequired, accepts: [requirement] });
     const headers = new Headers(req.headers);
     for (const [k, v] of Object.entries(http.encodePaymentSignatureHeader(payload))) headers.set(k, v);
+    if (opts.agentId) headers.set("X-Agent-Id", opts.agentId);
 
     // Count the spend as soon as we sign: conservative for budgets even if the seller later fails.
     breakers.recordPayment(url.href, priceUsd);

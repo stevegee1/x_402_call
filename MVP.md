@@ -95,6 +95,7 @@ An AI agent or business can buy **live maritime data with no account** (x402, US
 | I8 | Ledger is balanced, append-only and tamper-evident | `assertBalanced`, DB trigger, hash chain | `detects tampering…`; trigger verified on Postgres |
 | I9 | Credits balance never goes negative | Conditional `UPDATE … WHERE balance >= $price` + CHECK constraint | credits test |
 | I10 | The buyer signs exactly the requirement its policy approved | SDK passes only the approved `accepts` entry to the signer | policy tests |
+| I12 | ERC-8004 identity only ever loosens limits: every failure (no or malformed id, wallet mismatch, transferred agent, registry error or timeout, weak reputation) is the no-identity behaviour, and no tier raises the global cap | `TierResolver` (strict `getAgentWallet` == payer binding), config check `unknown <= identified <= trusted <= global` | `test/identity/*`; e2e `ERC-8004 buyer tiers (loosen-only)` |
 
 ---
 
@@ -148,6 +149,7 @@ An AI agent or business can buy **live maritime data with no account** (x402, US
 | R10 | Runs via `tsx` in production | Slower cold start | Bundle with esbuild/tsup before M2 |
 | R11 | The gateway exits at boot if the primary facilitator's `/supported` is unreachable and no fallback is set (`resourceServer.initialize()`). Verified by booting against a closed port | A CDP outage during a deploy crash-loops new pods | Always configure `FALLBACK_FACILITATOR_URL` in production; later, retry `initialize()` with backoff and report not-ready instead of exiting |
 | R12 | The self-hosted facilitator assigns transaction nonces in-process | Two replicas sharing one key would race for nonces | One replica per key; to scale out, run more facilitators, each with its own key |
+| R13 | A verified tier is cached for 5 minutes, so a transferred agent keeps its tier on that gateway for up to 5 minutes | Bounded: at most the trusted per-payer cap of extra exposure | Accept; shorten the TTL or watch Transfer events if tiers grow large |
 
 ---
 

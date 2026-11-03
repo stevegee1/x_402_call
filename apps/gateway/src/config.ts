@@ -2,6 +2,10 @@ import { z } from "zod";
 
 const bool = z.enum(["true", "false"]).transform((v) => v === "true");
 const address = z.string().regex(/^0x[a-fA-F0-9]{40}$/, "must be a 0x EVM address");
+const addressList = z
+  .string()
+  .transform((s) => s.split(",").map((x) => x.trim()).filter(Boolean))
+  .pipe(z.array(address));
 
 const schema = z
   .object({
@@ -48,8 +52,35 @@ const schema = z
     SANCTIONS_DENYLIST_PATH: z.string().optional(),
     CHAINALYSIS_API_KEY: z.string().optional(),
     SANCTIONS_FAIL_CLOSED: bool.default("false"),
+
+    // ERC-8004 buyer identity (loosen-only: a tier can raise a payer's exposure cap, never lower it).
+    ERC8004_ENABLED: bool.default("false"),
+    /** Override the canonical registries for X402_NETWORK (see identity/registries.ts). */
+    ERC8004_IDENTITY_REGISTRY: address.optional(),
+    ERC8004_REPUTATION_REGISTRY: address.optional(),
+    /** Comma-separated reviewer addresses whose feedback counts. Empty: nobody reaches "trusted". */
+    ERC8004_TRUSTED_REVIEWERS: addressList.default(""),
+    /** Optional tag1 filter for reputation (e.g. "quality"); empty counts every tag. */
+    ERC8004_REPUTATION_TAG: z.string().default(""),
+    ERC8004_TRUSTED_MIN_FEEDBACK: z.coerce.number().int().positive().default(3),
+    /** Minimum mean feedback value, on the reviewers' own scale (e.g. 0-100). */
+    ERC8004_TRUSTED_MIN_SCORE: z.coerce.number().default(80),
+    ERC8004_LOOKUP_TIMEOUT_MS: z.coerce.number().int().positive().default(1_500),
+    EXPOSURE_CAP_PER_PAYER_IDENTIFIED_USD: z.coerce.number().default(2),
+    EXPOSURE_CAP_PER_PAYER_TRUSTED_USD: z.coerce.number().default(5),
+    /** Our own ERC-8004 agent id as a seller, advertised in 402 responses and on /. */
+    SELLER_AGENT_ID: z.string().regex(/^\d+$/, "must be a decimal agent id").optional(),
   })
   .superRefine((c, ctx) => {
+    // Loosen-only: unknown <= identified <= trusted <= the global cap, which no tier can raise.
+    const tiers = [c.EXPOSURE_CAP_PER_PAYER_USD, c.EXPOSURE_CAP_PER_PAYER_IDENTIFIED_USD, c.EXPOSURE_CAP_PER_PAYER_TRUSTED_USD, c.EXPOSURE_CAP_USD];
+    if (tiers.some((v, i) => i > 0 && v < tiers[i - 1]!))
+      ctx.addIssue({
+        code: "custom",
+        path: ["EXPOSURE_CAP_PER_PAYER_IDENTIFIED_USD"],
+        message: "per-payer caps must satisfy unknown <= identified <= trusted <= EXPOSURE_CAP_USD (tiers only loosen)",
+      });
+    if (c.ERC8004_ENABLED && !c.BASE_RPC_URL) ctx.addIssue({ code: "custom", path: ["BASE_RPC_URL"], message: "required when ERC8004_ENABLED=true" });
     if (c.FACILITATOR === "url" && !c.FACILITATOR_URL) ctx.addIssue({ code: "custom", path: ["FACILITATOR_URL"], message: "required when FACILITATOR=url" });
     if (c.FACILITATOR === "cdp" && !(c.CDP_API_KEY_ID && c.CDP_API_KEY_SECRET))
       ctx.addIssue({ code: "custom", path: ["CDP_API_KEY_ID"], message: "CDP credentials required when FACILITATOR=cdp" });

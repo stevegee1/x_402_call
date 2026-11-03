@@ -38,6 +38,9 @@ const token = () => randomBytes(24).toString("hex");
 export interface StackOptions {
   /** EXPOSURE_CAP_PER_PAYER_USD for every replica (gateway default: 1). */
   perPayerCapUsd?: number;
+  /** Per-payer caps for ERC-8004 tiers (gateway defaults: 2 and 5). */
+  identifiedCapUsd?: number;
+  trustedCapUsd?: number;
 }
 
 export async function startStack(opts: StackOptions = {}): Promise<{ info: StackInfo; stop: () => Promise<void> }> {
@@ -99,6 +102,14 @@ export async function startStack(opts: StackOptions = {}): Promise<{ info: Stack
       FX_PROVIDER: "fixed",
       FX_FALLBACK_USDC_GBP: String(E2E_FX_USDC_GBP),
       ...(opts.perPayerCapUsd ? { EXPOSURE_CAP_PER_PAYER_USD: String(opts.perPayerCapUsd) } : {}),
+      ...(opts.identifiedCapUsd ? { EXPOSURE_CAP_PER_PAYER_IDENTIFIED_USD: String(opts.identifiedCapUsd) } : {}),
+      ...(opts.trustedCapUsd ? { EXPOSURE_CAP_PER_PAYER_TRUSTED_USD: String(opts.trustedCapUsd) } : {}),
+      // ERC-8004 against the mock registries at the canonical addresses (gateway defaults, no override).
+      ERC8004_ENABLED: "true",
+      ERC8004_TRUSTED_REVIEWERS: privateKeyToAccount(ANVIL_KEYS.reviewer).address,
+      ERC8004_TRUSTED_MIN_FEEDBACK: "3",
+      ERC8004_TRUSTED_MIN_SCORE: "80",
+      ERC8004_REPUTATION_TAG: "quality",
       ...over,
     });
     const specs: Record<GatewayName, Record<string, string>> = {

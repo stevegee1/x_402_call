@@ -4,6 +4,7 @@ import type { CreditsService } from "./credits/service";
 import type { FxService } from "./ledger/fx";
 import type { Logger } from "./logger";
 import type { Metrics } from "./metrics";
+import type { TierResolver } from "./identity/tiers";
 import type { ExposureCaps } from "./store/types";
 import type { FailoverFacilitator } from "./payments/facilitator";
 import type { SanctionsScreen } from "./payments/sanctions";
@@ -27,6 +28,10 @@ export interface AppDeps {
   settler: Settler;
   /** Global caps on served-but-unsettled value; enforced by Store.admitPayment. */
   exposureCaps: ExposureCaps;
+  /** ERC-8004 buyer tiers; undefined when ERC8004_ENABLED=false (every payer is "unknown"). */
+  identity?: TierResolver;
+  /** Our ERC-8004 seller identity, advertised to buyers. */
+  sellerIdentity?: { agentRegistry: string; agentId: string };
   sanctions: SanctionsScreen;
   fx: FxService;
   startedAt: number;
