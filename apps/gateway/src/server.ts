@@ -1,16 +1,15 @@
-import { createFacilitatorConfig } from "@coinbase/x402";
 import { serve } from "@hono/node-server";
-import { HTTPFacilitatorClient } from "@x402/core/server";
 import { createApp } from "./app";
 import { loadConfig, isMainnet } from "./config";
 import type { AppDeps } from "./context";
 import { StripeCheckout } from "./credits/checkout";
 import { CreditsService } from "./credits/service";
-import { CoinbaseFx } from "./ledger/fx";
+import { CoinbaseFx, FixedFx } from "./ledger/fx";
 import { createLogger } from "./logger";
 import { Metrics } from "./metrics";
 import { ExposureTracker, usdToAtomic } from "./payments/exposure";
 import { FailoverFacilitator } from "./payments/facilitator";
+import { createFacilitatorClients } from "./payments/facilitator-clients";
 import { createAuthorizationChecker } from "./payments/onchain";
 import { SanctionsService } from "./payments/sanctions";
 import { Settler } from "./payments/settlement";
@@ -51,13 +50,7 @@ engine.start();
 const catalog = new Catalog([maritime]);
 
 // Payments
-const primary = new HTTPFacilitatorClient({
-  ...(cfg.FACILITATOR === "cdp"
-    ? createFacilitatorConfig(cfg.CDP_API_KEY_ID, cfg.CDP_API_KEY_SECRET)
-    : { url: cfg.FACILITATOR === "url" ? cfg.FACILITATOR_URL : "https://x402.org/facilitator" }),
-  timeoutMs: cfg.FACILITATOR_TIMEOUT_MS,
-});
-const fallback = cfg.FALLBACK_FACILITATOR_URL ? new HTTPFacilitatorClient({ url: cfg.FALLBACK_FACILITATOR_URL, timeoutMs: cfg.FACILITATOR_TIMEOUT_MS }) : undefined;
+const { primary, fallback } = createFacilitatorClients(cfg);
 const facilitator = new FailoverFacilitator(primary, fallback, (name, state) => {
   metrics.set("breaker_open", state === "open" ? 1 : 0, { breaker: name });
   log.warn({ breaker: name, state }, "circuit breaker state change");
@@ -102,7 +95,7 @@ const deps: AppDeps = {
   settler,
   exposure,
   sanctions,
-  fx: new CoinbaseFx(cfg.FX_FALLBACK_USDC_GBP),
+  fx: cfg.FX_PROVIDER === "fixed" ? new FixedFx(cfg.FX_FALLBACK_USDC_GBP) : new CoinbaseFx(cfg.FX_FALLBACK_USDC_GBP),
   startedAt: Date.now(),
 };
 

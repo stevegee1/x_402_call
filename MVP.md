@@ -139,12 +139,15 @@ An AI agent or business can buy **live maritime data with no account** (x402, US
 | R2 | If sync settlement is indeterminate, the client gets 503 but the payment may settle later | Customer charged without data (rare) | Add a "redeem settled payment" path or an automatic refund policy |
 | R3 | The SDK counts spend when it signs, even if the seller rejects the payment | Budgets are conservative (over-count) | Intended. Reconcile with the seller's payment-status endpoint later. |
 | R4 | Exposure counters are per-instance (rehydrated from the DB at start) | Effective cap = N × cap | Move to a Postgres/Redis counter at more than 2 replicas |
+| E2E | **Addressed:** `pnpm e2e` runs four gateway replicas, the self-hosted facilitator and a real EIP-3009 token on a local chain, and reconciles ledger against chain | n/a | Done |
 | R5 | ~~No automated test against Postgres~~ **Addressed:** `pnpm test:integration` runs the Store contract plus concurrency tests (I3, I7, I8, I9) on Postgres 16 in CI | n/a | Done |
 | R6 | Admin auth is a single shared token | Weak for a team | SSO (M4) |
 | R7 | Anchorage polygons and region boxes are coarse rectangles | Queue and anomaly accuracy | Charted polygons (UKHO / PoR / ACP) |
 | R8 | Ledger journal writes are serialised by an advisory lock | Throughput ceiling of roughly 1–2k writes/s | Batch usage journals hourly; hash per batch |
 | R9 | The VAT treatment is our reading, not advice | Tax exposure | **Accountant sign-off before mainnet** (D9) |
 | R10 | Runs via `tsx` in production | Slower cold start | Bundle with esbuild/tsup before M2 |
+| R11 | The gateway exits at boot if the primary facilitator's `/supported` is unreachable and no fallback is set (`resourceServer.initialize()`). Verified by booting against a closed port | A CDP outage during a deploy crash-loops new pods | Always configure `FALLBACK_FACILITATOR_URL` in production; later, retry `initialize()` with backoff and report not-ready instead of exiting |
+| R12 | The self-hosted facilitator assigns transaction nonces in-process | Two replicas sharing one key would race for nonces | One replica per key; to scale out, run more facilitators, each with its own key |
 
 ---
 
