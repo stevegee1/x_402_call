@@ -8,7 +8,7 @@ import { decodePaymentResponseHeader } from "@x402/core/http";
 import { decodeEventLog, parseSignature, type Address, type Hex } from "viem";
 import { beforeAll, describe, expect, inject, it } from "vitest";
 import { pay, sendSigned, sign, newBuyer, encode, type Buyer } from "../src/buyer";
-import { BASE_SEPOLIA_USDC, clients, USDC_ABI, usdcBalance } from "../src/chain";
+import { ANVIL_KEYS, BASE_SEPOLIA_USDC, clients, ERC8004_IDENTITY, giveFeedback, registerAgent, transferAgent, USDC_ABI, usdcBalance } from "../src/chain";
 import { fetchPayments, reconcileStack } from "../src/reconcile";
 
 const stack = inject("stack");
@@ -183,6 +183,73 @@ describe("x402: exposure caps are global across replicas (R4)", () => {
     }
     expectedSettled += 6;
     expect(await usdcBalance(stack.rpcUrl, buyer.address)).toBe(1_000_000n - 6n * PRICE);
+  });
+});
+
+describe("ERC-8004 buyer tiers (loosen-only)", () => {
+  /** n concurrent payments from one buyer across two async replicas; returns each X-Settlement / X-Agent-Tier. */
+  async function burst(buyer: Buyer, n: number, agentId?: string) {
+    const headers: Record<string, string> = agentId ? { "X-Agent-Id": agentId } : {};
+    const paid = await Promise.all(Array.from({ length: n }, (_, i) => pay(buyer, `${i % 2 ? gw.async : gw.flaky}${VESSELS}`, headers)));
+    for (const p of paid) expect(p.res.status).toBe(200);
+    for (const [i, p] of paid.entries()) {
+      const s = await waitPayment(i % 2 ? gw.async : gw.flaky, p.res.headers.get("X-Payment-Id")!);
+      expect(s.status).toBe("settled");
+      await expectOnChainSettlement(s.transaction!, buyer.address, p.nonce);
+    }
+    expectedSettled += n;
+    return {
+      pending: paid.filter((p) => p.res.headers.get("X-Settlement") === "pending").length,
+      tiers: new Set(paid.map((p) => p.res.headers.get("X-Agent-Tier"))),
+    };
+  }
+
+  it("a registered agent paying from its verified wallet gets the identified cap (6 in flight, not 3)", async () => {
+    const buyer = await newBuyer(stack.rpcUrl, 1_000_000n);
+    const agentId = await registerAgent(stack.rpcUrl, buyer.key);
+    const r = await burst(buyer, 8, agentId.toString());
+    expect(r.pending).toBe(6);
+    expect(r.tiers).toEqual(new Set(["identified"]));
+  });
+
+  it("three good reviews from our trusted reviewer lift it to trusted (9 in flight), via the global id form", async () => {
+    const buyer = await newBuyer(stack.rpcUrl, 1_000_000n);
+    const agentId = await registerAgent(stack.rpcUrl, buyer.key);
+    for (const v of [90, 85, 95]) await giveFeedback(stack.rpcUrl, ANVIL_KEYS.reviewer, agentId, v);
+    const r = await burst(buyer, 10, `eip155:84532:${ERC8004_IDENTITY}:${agentId}`);
+    expect(r.pending).toBe(9);
+    expect(r.tiers).toEqual(new Set(["trusted"]));
+  });
+
+  it("reviews from anyone else don't count", async () => {
+    const buyer = await newBuyer(stack.rpcUrl, 1_000_000n);
+    const agentId = await registerAgent(stack.rpcUrl, buyer.key);
+    const stranger = (await newBuyer(stack.rpcUrl, 0n)).key;
+    for (let i = 0; i < 5; i++) await giveFeedback(stack.rpcUrl, stranger, agentId, 100);
+    const r = await burst(buyer, 7, agentId.toString());
+    expect(r.pending).toBe(6);
+    expect(r.tiers).toEqual(new Set(["identified"]));
+  });
+
+  it("claiming someone else's agent, or one whose NFT has been transferred, gets the default cap", async () => {
+    const owner = await newBuyer(stack.rpcUrl, 0n);
+    const famous = await registerAgent(stack.rpcUrl, owner.key);
+    for (const v of [99, 99, 99]) await giveFeedback(stack.rpcUrl, ANVIL_KEYS.reviewer, famous, v);
+    const impostor = await newBuyer(stack.rpcUrl, 1_000_000n);
+    const spoof = await burst(impostor, 4, famous.toString());
+    expect(spoof).toEqual({ pending: 3, tiers: new Set(["unknown"]) });
+
+    // A transfer clears the verified wallet: the old owner can no longer claim the agent.
+    const seller = await newBuyer(stack.rpcUrl, 1_000_000n);
+    const sold = await registerAgent(stack.rpcUrl, seller.key);
+    await transferAgent(stack.rpcUrl, seller.key, sold, impostor.address);
+    const after = await burst(seller, 4, sold.toString());
+    expect(after).toEqual({ pending: 3, tiers: new Set(["unknown"]) });
+  });
+
+  it("the gateway advertises the buyer header and registry", async () => {
+    const root = await (await fetch(`${gw.async}/`)).json();
+    expect(root.identity.buyer).toEqual({ header: "X-Agent-Id", agent_registry: `eip155:84532:${ERC8004_IDENTITY}` });
   });
 });
 

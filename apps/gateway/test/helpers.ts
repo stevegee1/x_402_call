@@ -112,6 +112,9 @@ export interface TestEnvOptions {
   products?: Product[];
   /** Maritime feed health (readiness tests). */
   feedConnected?: () => boolean;
+  /** ERC-8004 tier resolver (identity tests). */
+  identity?: AppDeps["identity"];
+  sellerIdentity?: AppDeps["sellerIdentity"];
 }
 
 export async function createTestEnv(overrides: Partial<Record<keyof Config, string>> = {}, opts: TestEnvOptions = {}): Promise<TestEnv> {
@@ -156,6 +159,8 @@ export async function createTestEnv(overrides: Partial<Record<keyof Config, stri
     facilitator: failover,
     settler,
     exposureCaps: exposureCaps(cfg),
+    identity: opts.identity,
+    sellerIdentity: opts.sellerIdentity,
     sanctions,
     fx: new FixedFx(0.8),
     startedAt: Date.now(),

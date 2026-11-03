@@ -15,7 +15,7 @@ export function createApp(d: AppDeps) {
     const t0 = performance.now();
     await next();
     c.res.headers.set("x-request-id", id);
-    c.res.headers.set("access-control-expose-headers", "PAYMENT-REQUIRED, PAYMENT-RESPONSE, X-Payment-Id, X-Settlement, X-Credits-Charged-Gbp-Micros, X-Credits-Balance-Gbp-Micros, Deprecation, Link");
+    c.res.headers.set("access-control-expose-headers", "PAYMENT-REQUIRED, PAYMENT-RESPONSE, X-Payment-Id, X-Settlement, X-Credits-Charged-Gbp-Micros, X-Credits-Balance-Gbp-Micros, X-Agent-Tier, Deprecation, Link");
     const ms = performance.now() - t0;
     d.metrics.inc("http_requests_total", { status: String(c.res.status) });
     if (ms > 500) d.log.warn({ path: c.req.path, status: c.res.status, ms: Math.round(ms) }, "slow request");

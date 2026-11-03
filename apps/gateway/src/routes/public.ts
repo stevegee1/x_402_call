@@ -21,6 +21,11 @@ export function publicRoutes(d: AppDeps) {
       docs: `${d.cfg.PUBLIC_BASE_URL}/openapi.json`,
       products: d.catalog.products.map((p) => ({ id: p.id, name: p.displayName, catalog: `${d.cfg.PUBLIC_BASE_URL}/v1/products/${p.id}` })),
       payment: { x402: { network: d.cfg.X402_NETWORK, asset: "USDC", header: "PAYMENT-SIGNATURE" }, credits: { header: "Authorization: Bearer mk_..." } },
+      identity: {
+        seller: d.sellerIdentity ? { agent_registry: d.sellerIdentity.agentRegistry, agent_id: d.sellerIdentity.agentId } : null,
+        // Buyers may declare their ERC-8004 agent; a verified identity raises their async allowance.
+        buyer: d.identity ? { header: "X-Agent-Id", agent_registry: `${d.identity.policy.network}:${d.identity.policy.identityRegistry}` } : null,
+      },
     }),
   );
 
