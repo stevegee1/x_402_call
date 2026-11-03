@@ -7,7 +7,7 @@ import { CreditsService } from "./credits/service";
 import { CoinbaseFx, FixedFx } from "./ledger/fx";
 import { createLogger } from "./logger";
 import { Metrics } from "./metrics";
-import { ExposureTracker, usdToAtomic } from "./payments/exposure";
+import { exposureCaps } from "./payments/exposure";
 import { FailoverFacilitator } from "./payments/facilitator";
 import { createFacilitatorClients } from "./payments/facilitator-clients";
 import { createAuthorizationChecker } from "./payments/onchain";
@@ -60,11 +60,9 @@ await resourceServer.initialize();
 const requirements = new RequirementsCache(resourceServer, { payTo: cfg.PAY_TO, network: cfg.X402_NETWORK, maxTimeoutSeconds: cfg.MAX_TIMEOUT_SECONDS });
 await requirements.warm(catalog.resources);
 
-const exposure = new ExposureTracker(usdToAtomic(cfg.EXPOSURE_CAP_USD), usdToAtomic(cfg.EXPOSURE_CAP_PER_PAYER_USD));
-exposure.rehydrate(await store.unsettledByPayer());
 const checker = cfg.BASE_RPC_URL ? createAuthorizationChecker(cfg.X402_NETWORK, cfg.BASE_RPC_URL) : undefined;
 if (!checker) log.warn("BASE_RPC_URL not set: indeterminate settlements cannot be reconciled on-chain");
-const settler = new Settler(store, resourceServer, exposure, log, metrics, checker);
+const settler = new Settler(store, resourceServer, log, metrics, checker);
 settler.start();
 
 const sanctions = new SanctionsService({
@@ -93,7 +91,7 @@ const deps: AppDeps = {
   requirements,
   facilitator,
   settler,
-  exposure,
+  exposureCaps: exposureCaps(cfg),
   sanctions,
   fx: cfg.FX_PROVIDER === "fixed" ? new FixedFx(cfg.FX_FALLBACK_USDC_GBP) : new CoinbaseFx(cfg.FX_FALLBACK_USDC_GBP),
   startedAt: Date.now(),

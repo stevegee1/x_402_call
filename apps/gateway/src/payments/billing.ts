@@ -162,31 +162,42 @@ async function chargeX402(c: Context<AppEnv>, next: () => Promise<void>, resourc
 
   const amount = BigInt(match.amount);
   const validBefore = new Date(Number(auth.validBefore) * 1000);
-  const sync =
-    d.cfg.SETTLEMENT_MODE === "sync" || d.exposure.wouldExceed(payer, amount) || validBefore.getTime() - Date.now() < MIN_ASYNC_VALIDITY_MS;
+  // Async only if configured and the authorisation outlives the settle delay comfortably; the store
+  // then admits it as async only if global and per-payer exposure (all replicas) stay within the caps.
+  const wantAsync = d.cfg.SETTLEMENT_MODE === "async" && validBefore.getTime() - Date.now() >= MIN_ASYNC_VALIDITY_MS;
 
   const fx = await d.fx.usdcGbp();
   const id = randomUUID();
-  const inserted = await d.store.insertPayment({
-    id,
-    network: match.network,
-    payer,
-    nonce: auth.nonce,
-    amountAtomic: amount,
-    endpoint: resource.id,
-    resource: new URL(c.req.url).pathname,
-    payload,
-    requirements: match,
-    validBefore,
-    fxRate: fx.rate,
-    fxSource: fx.source,
-    // Sync: keep the worker away while we settle inline. Async: let the handler finish first.
-    nextAttemptAt: new Date(Date.now() + (sync ? 120_000 : ASYNC_SETTLE_DELAY_MS)),
-  });
-  if (inserted === "duplicate") {
+  const now = Date.now();
+  const admission = await d.store.admitPayment(
+    {
+      id,
+      network: match.network,
+      payer,
+      nonce: auth.nonce,
+      amountAtomic: amount,
+      endpoint: resource.id,
+      resource: new URL(c.req.url).pathname,
+      payload,
+      requirements: match,
+      validBefore,
+      fxRate: fx.rate,
+      fxSource: fx.source,
+    },
+    {
+      wantAsync,
+      caps: d.exposureCaps,
+      // Async: let the handler finish first. Sync: keep the worker away while we settle inline.
+      asyncAttemptAt: new Date(now + ASYNC_SETTLE_DELAY_MS),
+      syncAttemptAt: new Date(now + 120_000),
+    },
+  );
+  if (admission.result === "duplicate") {
     d.metrics.inc("x402_replay_rejected_total");
     return paymentRequired(c, resource, d, "payment_already_used");
   }
+  const sync = admission.mode === "sync";
+  if (wantAsync && sync) d.metrics.inc("x402_exposure_cap_hits_total");
 
   if (sync) {
     const row = (await d.store.getPayment(id))!;
@@ -200,11 +211,10 @@ async function chargeX402(c: Context<AppEnv>, next: () => Promise<void>, resourc
     c.res.headers.set("X-Payment-Id", id);
     c.res.headers.set("X-Settlement", "settled");
   } else {
-    d.exposure.add(payer, amount);
     await next();
     if (c.res.status >= 400) {
+      // Cancelling also releases the exposure: it is derived from verified async rows.
       await d.store.cancelPayment(id, `handler_status_${c.res.status}`);
-      d.exposure.release(payer, amount);
       return;
     }
     c.res.headers.set("X-Payment-Id", id);

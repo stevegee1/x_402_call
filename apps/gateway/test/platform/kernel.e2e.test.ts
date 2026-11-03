@@ -198,7 +198,7 @@ describe("kernel invariants hold for any product", () => {
     expect(res.status).toBe(502);
     const [p] = await env.store.listPayments({ limit: 1 });
     expect(p).toMatchObject({ status: "cancelled", endpoint: "acme.reading" });
-    expect(env.deps.exposure.total).toBe(0n);
+    expect((await env.store.exposure()).totalAtomic).toBe(0n);
     await env.deps.settler.tick(new Date(Date.now() + 10_000));
     expect(env.facilitator.settled).toHaveLength(0);
     expect(await env.store.journal()).toHaveLength(0);

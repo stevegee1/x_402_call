@@ -11,7 +11,7 @@ import { CreditsService } from "../src/credits/service";
 import { FixedFx } from "../src/ledger/fx";
 import { createLogger } from "../src/logger";
 import { Metrics } from "../src/metrics";
-import { ExposureTracker, usdToAtomic } from "../src/payments/exposure";
+import { exposureCaps } from "../src/payments/exposure";
 import { FailoverFacilitator } from "../src/payments/facilitator";
 import { SanctionsService } from "../src/payments/sanctions";
 import { Settler } from "../src/payments/settlement";
@@ -141,8 +141,7 @@ export async function createTestEnv(overrides: Partial<Record<keyof Config, stri
   const resourceServer = createResourceServer(failover, cfg.X402_NETWORK);
   await resourceServer.initialize();
   const requirements = new RequirementsCache(resourceServer, { payTo: PAY_TO, network: cfg.X402_NETWORK, maxTimeoutSeconds: cfg.MAX_TIMEOUT_SECONDS });
-  const exposure = new ExposureTracker(usdToAtomic(cfg.EXPOSURE_CAP_USD), usdToAtomic(cfg.EXPOSURE_CAP_PER_PAYER_USD));
-  const settler = new Settler(store, resourceServer, exposure, log, metrics);
+  const settler = new Settler(store, resourceServer, log, metrics);
   const checkout = new FakeCheckout();
   const sanctions = new SanctionsService({ failClosed: false });
   const deps: AppDeps = {
@@ -156,7 +155,7 @@ export async function createTestEnv(overrides: Partial<Record<keyof Config, stri
     requirements,
     facilitator: failover,
     settler,
-    exposure,
+    exposureCaps: exposureCaps(cfg),
     sanctions,
     fx: new FixedFx(0.8),
     startedAt: Date.now(),

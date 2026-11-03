@@ -8,7 +8,8 @@ declare module "vitest" {
 }
 
 export default async function setup(project: TestProject) {
-  const { info, stop } = await startStack();
+  // $0.10 per payer: three $0.033 payments may be in flight, so cap enforcement is observable (R4).
+  const { info, stop } = await startStack({ perPayerCapUsd: 0.1 });
   project.provide("stack", info);
   return stop;
 }

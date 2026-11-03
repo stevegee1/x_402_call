@@ -1,7 +1,7 @@
 import type { AisEvent } from "@mx/shared";
 import { describe, expect, it } from "vitest";
 import { CircuitBreaker } from "../src/payments/breaker";
-import { ExposureTracker } from "../src/payments/exposure";
+import { exposureCaps, usdToAtomic } from "../src/payments/exposure";
 import { assertBalanced, computeHash, creditsUsageJournal, GENESIS_HASH, verifyChain, type JournalEntry } from "../src/ledger/journal";
 import { creditsVat, splitInclusive, validateTaxId } from "../src/ledger/vat";
 import { SnapshotEngine } from "../src/products/maritime/snapshot/engine";
@@ -60,15 +60,9 @@ describe("circuit breaker", () => {
 });
 
 describe("exposure", () => {
-  it("enforces global and per-payer caps", () => {
-    const e = new ExposureTracker(100_000n, 50_000n);
-    e.add("0xA", 33_000n);
-    expect(e.wouldExceed("0xa", 33_000n)).toBe(true);
-    expect(e.wouldExceed("0xb", 33_000n)).toBe(false);
-    e.add("0xB", 33_000n);
-    expect(e.wouldExceed("0xc", 66_000n)).toBe(true);
-    e.release("0xa", 33_000n);
-    expect(e.total).toBe(33_000n);
+  it("converts the USD caps to exact USDC atomic units", () => {
+    expect(exposureCaps({ EXPOSURE_CAP_USD: 25, EXPOSURE_CAP_PER_PAYER_USD: 0.099 })).toEqual({ totalAtomic: 25_000_000n, perPayerAtomic: 99_000n });
+    expect(usdToAtomic(0.033)).toBe(33_000n);
   });
 });
 

@@ -67,13 +67,13 @@ describe("x402 rail", () => {
 
     const id = res.headers.get("X-Payment-Id")!;
     expect((await env.store.getPayment(id))?.status).toBe("verified");
-    expect(env.deps.exposure.total).toBe(33_000n);
+    expect((await env.store.exposure()).totalAtomic).toBe(33_000n);
 
     await settleAll(env);
     const p = await env.store.getPayment(id);
     expect(p?.status).toBe("settled");
     expect(p?.txHash).toMatch(/^0x[0-9a-f]{64}$/);
-    expect(env.deps.exposure.total).toBe(0n);
+    expect((await env.store.exposure()).totalAtomic).toBe(0n);
 
     const journal = await env.store.journal();
     expect(journal).toHaveLength(1);
@@ -120,7 +120,7 @@ describe("x402 rail", () => {
     const settle = decodePaymentResponseHeader(res.headers.get("PAYMENT-RESPONSE")!);
     expect(settle.success).toBe(true);
     expect(env.facilitator.settled).toContain(settle.transaction);
-    expect(env.deps.exposure.total).toBe(0n);
+    expect((await env.store.exposure()).totalAtomic).toBe(0n);
   });
 
   it("refuses tampered payments", async () => {

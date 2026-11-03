@@ -39,7 +39,7 @@ export function adminRoutes(d: AppDeps) {
     return c.json({
       ledger_balances_gbp: Object.fromEntries(Object.entries(totals).map(([k, v]) => [k, Number(gbp(v))])),
       journal_entries: journal.length,
-      exposure_usdc: Number(d.exposure.total) / 1e6,
+      exposure_usdc: Number((await d.store.exposure()).totalAtomic) / 1e6,
       facilitator_breaker: d.facilitator.breaker.state,
       network: d.cfg.X402_NETWORK,
       settlement_mode: d.cfg.SETTLEMENT_MODE,

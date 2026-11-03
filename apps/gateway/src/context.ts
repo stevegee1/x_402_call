@@ -4,7 +4,7 @@ import type { CreditsService } from "./credits/service";
 import type { FxService } from "./ledger/fx";
 import type { Logger } from "./logger";
 import type { Metrics } from "./metrics";
-import type { ExposureTracker } from "./payments/exposure";
+import type { ExposureCaps } from "./store/types";
 import type { FailoverFacilitator } from "./payments/facilitator";
 import type { SanctionsScreen } from "./payments/sanctions";
 import type { Settler } from "./payments/settlement";
@@ -25,7 +25,8 @@ export interface AppDeps {
   requirements: RequirementsCache;
   facilitator: FailoverFacilitator;
   settler: Settler;
-  exposure: ExposureTracker;
+  /** Global caps on served-but-unsettled value; enforced by Store.admitPayment. */
+  exposureCaps: ExposureCaps;
   sanctions: SanctionsScreen;
   fx: FxService;
   startedAt: number;

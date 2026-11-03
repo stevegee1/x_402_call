@@ -165,6 +165,27 @@ describe("x402: replicas share one settlement queue (I7)", () => {
   });
 });
 
+describe("x402: exposure caps are global across replicas (R4)", () => {
+  it("one payer's concurrent payments on two replicas: only what fits the per-payer cap is served before settlement", async () => {
+    expect(stack.perPayerCapUsd).toBe(0.1); // three $0.033 payments fit; a fourth would not
+    const buyer = await newBuyer(stack.rpcUrl, 1_000_000n);
+    const paid = await Promise.all(Array.from({ length: 6 }, (_, i) => pay(buyer, `${i % 2 ? gw.async : gw.flaky}${VESSELS}`)));
+    for (const p of paid) expect(p.res.status).toBe(200);
+    const modes = paid.map((p) => p.res.headers.get("X-Settlement"));
+    // Per-replica counters would admit three on each replica: six served unsettled, double the cap.
+    expect(modes.filter((m) => m === "pending")).toHaveLength(3);
+    expect(modes.filter((m) => m === "settled")).toHaveLength(3);
+
+    for (const [i, p] of paid.entries()) {
+      const s = await waitPayment(i % 2 ? gw.async : gw.flaky, p.res.headers.get("X-Payment-Id")!);
+      expect(s.status).toBe("settled");
+      await expectOnChainSettlement(s.transaction!, buyer.address, p.nonce);
+    }
+    expectedSettled += 6;
+    expect(await usdcBalance(stack.rpcUrl, buyer.address)).toBe(1_000_000n - 6n * PRICE);
+  });
+});
+
 describe("x402: nothing is charged when the payment is bad or the request is refused", () => {
   it("a buyer without funds is refused at verify; no payment row, nothing on chain", async () => {
     const broke = await newBuyer(stack.rpcUrl, 0n);

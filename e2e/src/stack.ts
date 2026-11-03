@@ -30,11 +30,17 @@ export interface StackInfo {
   gateways: Record<GatewayName, string>;
   /** First block of the run: reconciliation scans USDC events from here. */
   startBlock: string;
+  perPayerCapUsd: number;
 }
 
 const token = () => randomBytes(24).toString("hex");
 
-export async function startStack(): Promise<{ info: StackInfo; stop: () => Promise<void> }> {
+export interface StackOptions {
+  /** EXPOSURE_CAP_PER_PAYER_USD for every replica (gateway default: 1). */
+  perPayerCapUsd?: number;
+}
+
+export async function startStack(opts: StackOptions = {}): Promise<{ info: StackInfo; stop: () => Promise<void> }> {
   const stops: (() => Promise<unknown>)[] = [];
   const stop = async () => {
     for (const s of stops.reverse()) await s().catch(() => undefined);
@@ -92,6 +98,7 @@ export async function startStack(): Promise<{ info: StackInfo; stop: () => Promi
       ADMIN_TOKEN: adminToken,
       FX_PROVIDER: "fixed",
       FX_FALLBACK_USDC_GBP: String(E2E_FX_USDC_GBP),
+      ...(opts.perPayerCapUsd ? { EXPOSURE_CAP_PER_PAYER_USD: String(opts.perPayerCapUsd) } : {}),
       ...over,
     });
     const specs: Record<GatewayName, Record<string, string>> = {
@@ -124,6 +131,7 @@ export async function startStack(): Promise<{ info: StackInfo; stop: () => Promi
         faultProxyControlUrl: proxy.controlUrl,
         gateways,
         startBlock: startBlock.toString(),
+        perPayerCapUsd: opts.perPayerCapUsd ?? 1,
       },
       stop,
     };

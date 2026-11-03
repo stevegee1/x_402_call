@@ -66,7 +66,7 @@ An AI agent or business can buy **live maritime data with no account** (x402, US
    2. Screen the payer for sanctions.
    3. **Verify with the facilitator** (behind a breaker).
    4. Insert into `x402_payments`. The unique key `(network, payer, nonce)` blocks replay.
-3. **Async mode (default):** add to exposure → serve → a worker settles after 2 s. If the handler returns ≥400, the payment is cancelled and never settled.
+3. **Async mode (default):** admitted as async only if global and per-payer exposure (summed over every replica, in Postgres) stays within the caps → serve → a worker settles after 2 s. If the handler returns ≥400, the payment is cancelled and never settled.
 4. **Sync fallback:** used when the global or per-payer exposure cap would be exceeded, or the authorisation expires within 30 s. Settle first, serve second, and return `PAYMENT-RESPONSE`.
 5. On settlement, write a journal: Dr USDC wallet (GBP at the FX quote captured at verify time) / Cr revenue (net) / Cr VAT output (gross ÷ 6).
 
@@ -88,7 +88,7 @@ An AI agent or business can buy **live maritime data with no account** (x402, US
 | I1 | We never charge for stale data | Staleness gate before billing | `never charges for stale data` |
 | I2 | Simulated or replay data is never sold on mainnet | Mode gate before billing | `never sells simulated data on mainnet` |
 | I3 | An authorisation is used at most once | DB unique key + facilitator + on-chain nonce | `rejects a replayed payment signature` |
-| I4 | Verified-but-unsettled value is bounded | `ExposureTracker` → sync settlement | `settles synchronously when the exposure cap…` |
+| I4 | Verified-but-unsettled value is bounded, globally | `Store.admitPayment`: admission under a Postgres advisory lock, exposure derived from unsettled async rows → otherwise sync | contract `admission and exposure (R4)`; Postgres `R4: exposure caps hold globally`; e2e `exposure caps are global across replicas` |
 | I5 | A failed handler never results in a charge | Precheck for 404s; refund (credits) / cancel (async x402) on ≥400 | `does not charge for a vessel…`, credits test |
 | I6 | Facilitator outage returns 503 (never charged), not 402 | `FailoverFacilitator` + breaker | `does not charge when the facilitator is down` |
 | I7 | Two replicas never settle the same payment concurrently | `claimDuePayments` lease (`FOR UPDATE SKIP LOCKED`) | `I7: two replicas claiming concurrently…` (integration) |
@@ -135,10 +135,10 @@ An AI agent or business can buy **live maritime data with no account** (x402, US
 
 | # | Gap | Impact | Proposed fix |
 |---|---|---|---|
-| R1 | Async mode serves data before settlement; a payer can empty their wallet between verify and settle | Bounded loss ≤ exposure cap (default $25 global / $1 per payer **per replica**) | Size caps per replica count; consider the x402 `upto`/batch schemes in M3 |
+| R1 | Async mode serves data before settlement; a payer can empty their wallet between verify and settle | Bounded loss ≤ exposure cap (default $25 global / $1 per payer, across all replicas) | Consider the x402 `upto`/batch schemes in M3 |
 | R2 | If sync settlement is indeterminate, the client gets 503 but the payment may settle later | Customer charged without data (rare) | Add a "redeem settled payment" path or an automatic refund policy |
 | R3 | The SDK counts spend when it signs, even if the seller rejects the payment | Budgets are conservative (over-count) | Intended. Reconcile with the seller's payment-status endpoint later. |
-| R4 | Exposure counters are per-instance (rehydrated from the DB at start) | Effective cap = N × cap | Move to a Postgres/Redis counter at more than 2 replicas |
+| R4 | ~~Exposure counters are per-instance~~ **Addressed:** exposure is derived from the payments table and enforced at admission under a short global lock (`db/migrations/003`); a contended lock (>2 s) degrades to sync settlement | n/a | Done. The lock serialises async admissions: revisit above ~1k paid req/s |
 | E2E | **Addressed:** `pnpm e2e` runs four gateway replicas, the self-hosted facilitator and a real EIP-3009 token on a local chain, and reconciles ledger against chain | n/a | Done |
 | R5 | ~~No automated test against Postgres~~ **Addressed:** `pnpm test:integration` runs the Store contract plus concurrency tests (I3, I7, I8, I9) on Postgres 16 in CI | n/a | Done |
 | R6 | Admin auth is a single shared token | Weak for a team | SSO (M4) |

@@ -60,8 +60,13 @@ export function publicRoutes(d: AppDeps) {
     return c.json({ id: p.id, status: p.status, network: p.network, resource: p.endpoint, amount_usdc: Number(p.amountAtomic) / 1e6, transaction: p.txHash, settled_at: p.settledAt?.toISOString() ?? null });
   });
 
-  r.get("/metrics", (c) => {
-    d.metrics.set("x402_exposure_usdc_atomic", Number(d.exposure.total));
+  r.get("/metrics", async (c) => {
+    // Global (all replicas): read from the payments table, not this process.
+    const exposure = await d.store.exposure().catch(() => null);
+    if (exposure) {
+      d.metrics.set("x402_exposure_usdc_atomic", Number(exposure.totalAtomic));
+      d.metrics.set("x402_exposure_payers", exposure.payers);
+    }
     for (const p of d.catalog.products) {
       d.metrics.set("product_ready", p.status().ready ? 1 : 0, { product: p.id });
       p.collectMetrics?.(d.metrics);
