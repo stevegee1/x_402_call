@@ -34,7 +34,7 @@
   <button id="csv">Download ledger CSV</button>
 </header>
 <main>
-  <section><h2>Regions</h2><div id="regions" class="muted">Loading…</div></section>
+  <section><h2>Products</h2><div id="regions" class="muted">Loading…</div></section>
   <section><h2>Money</h2><div id="money" class="muted">Enter admin token</div></section>
   <section><h2>VAT (all time, draft)</h2><div id="vat" class="muted">-</div></section>
   <section class="wide"><h2>x402 payments</h2><div id="payments" class="muted">-</div></section>
@@ -62,12 +62,14 @@ function table(cols, rows) {
 async function loadPublic() {
   const s = await (await fetch("/status")).json();
   network = s.payments.network;
+  const scopes = s.products.flatMap(p => p.scopes.map(x => ({ ...x, product: p.name, ready: p.ready })));
   $("regions").innerHTML = table([
-    ["Region", r => esc(r.name)],
+    ["Product", r => esc(r.product) + (r.ready ? "" : ' <span class="bad">unready</span>')],
+    ["Scope", r => esc(r.name ?? r.scope)],
     ["Mode", r => r.mode === "live" ? '<span class="ok">live</span>' : '<span class="warn">' + esc(r.mode) + "</span>"],
-    ["Vessels", r => r.vessels],
-    ["Data age", r => r.stale ? '<span class="bad">stale</span>' : esc(r.data_age_s) + " s"],
-  ], s.regions) + '<p class="muted">Snapshot build ' + s.snapshot_build_ms + " ms every " + s.snapshot_interval_ms + " ms · facilitator breaker: " + esc(s.payments.facilitator_breaker) + "</p>";
+    ["Items", r => esc(r.vessels ?? "")],
+    ["Data age", r => !r.fresh ? '<span class="bad">stale</span>' : (r.data_age_s == null ? "" : esc(r.data_age_s) + " s")],
+  ], scopes) + '<p class="muted">Facilitator breaker: ' + esc(s.payments.facilitator_breaker) + "</p>";
 }
 
 async function loadAdmin() {
@@ -85,7 +87,7 @@ async function loadAdmin() {
     "</span><span>Box 6 sales ex VAT</span><span>£" + vat.box6_total_sales_ex_vat_gbp.toFixed(2) + "</span></div>";
   $("payments").innerHTML = table([
     ["Created", p => esc(p.created_at.slice(11, 19))],
-    ["Endpoint", p => esc(p.endpoint)],
+    ["Resource", p => esc(p.endpoint)],
     ["USDC", p => p.amount_usdc.toFixed(3)],
     ["Status", p => '<span class="' + (p.status === "settled" ? "ok" : p.status === "verified" ? "warn" : "bad") + '">' + esc(p.status) + "</span>"],
     ["Payer", p => esc(p.payer.slice(0, 10)) + "…"],

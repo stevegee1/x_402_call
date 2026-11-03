@@ -5,11 +5,10 @@ import { fileURLToPath } from "node:url";
 import { Hono, type MiddlewareHandler } from "hono";
 import type { AppDeps, AppEnv } from "../context";
 import { CreditsError } from "../credits/service";
-import { verifyChain } from "../ledger/journal";
+import { ACCOUNTS, REVENUE_PREFIX, verifyChain } from "../ledger/journal";
 import type { PaymentStatus } from "../store/types";
 
 const CONSOLE_HTML = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../console/index.html"), "utf8");
-export const PANAMA_DRAUGHT_CONDITION = "panama.draught_limit";
 
 function adminAuth(token: string | undefined): MiddlewareHandler<AppEnv> {
   const expected = token ? Buffer.from(token) : undefined;
@@ -40,7 +39,7 @@ export function adminRoutes(d: AppDeps) {
     return c.json({
       ledger_balances_gbp: Object.fromEntries(Object.entries(totals).map(([k, v]) => [k, Number(gbp(v))])),
       journal_entries: journal.length,
-      exposure_usdc: Number(d.exposure.total) / 1e6,
+      exposure_usdc: Number((await d.store.exposure()).totalAtomic) / 1e6,
       facilitator_breaker: d.facilitator.breaker.state,
       network: d.cfg.X402_NETWORK,
       settlement_mode: d.cfg.SETTLEMENT_MODE,
@@ -56,6 +55,9 @@ export function adminRoutes(d: AppDeps) {
         status: p.status,
         endpoint: p.endpoint,
         payer: p.payer,
+        network: p.network,
+        nonce: p.nonce,
+        amount_atomic: p.amountAtomic.toString(),
         amount_usdc: Number(p.amountAtomic) / 1e6,
         tx: p.txHash,
         attempts: p.attempts,
@@ -92,9 +94,10 @@ export function adminRoutes(d: AppDeps) {
     let netSales = 0;
     for (const e of await d.store.journal({ from, to })) {
       for (const l of e.lines) {
-        if (l.account === "liability:vat_output") vatDue += l.credit - l.debit;
-        if (e.kind === "x402_settlement" && l.account === "revenue:data_api") netSales += l.credit;
-        if (e.kind === "credits_topup" && l.account === "liability:customer_credits") netSales += l.credit;
+        if (l.account === ACCOUNTS.vatOutput) vatDue += l.credit - l.debit;
+        // x402 revenue (any product) is recognised at settlement; credits at top-up.
+        if (e.kind === "x402_settlement" && l.account.startsWith(REVENUE_PREFIX)) netSales += l.credit;
+        if (e.kind === "credits_topup" && l.account === ACCOUNTS.creditsLiability) netSales += l.credit;
       }
     }
     return c.json({
@@ -113,16 +116,8 @@ export function adminRoutes(d: AppDeps) {
     return c.json({ result });
   });
 
-  a.put("/conditions/panama-draught", async (c) => {
-    const body = await c.req.json().catch(() => ({}));
-    const value = Number(body.value_m);
-    if (!(value > 5 && value < 20)) return c.json({ error: "value_m must be a plausible draught in metres" }, 400);
-    const source = String(body.source ?? "").slice(0, 300);
-    if (!source) return c.json({ error: "source is required (e.g. ACP advisory number)" }, 400);
-    await d.store.setCondition(PANAMA_DRAUGHT_CONDITION, { value_m: value }, source);
-    d.engine.draughtLimits.panama = { value_m: value, source, updated_at: new Date().toISOString() };
-    return c.json({ ok: true });
-  });
+  // Product operator routes (/admin/<productId>/…), behind the same auth.
+  for (const route of d.catalog.admin) a.on(route.method, route.path, (c) => route.handler(c));
 
   a.get("/policy-events", async (c) => {
     const rows = await d.store.listPolicyEvents(Math.min(Number(c.req.query("limit") ?? 100), 1_000));

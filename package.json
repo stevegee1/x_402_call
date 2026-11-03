@@ -15,7 +15,11 @@
     "dev:gateway": "pnpm --filter @mx/gateway dev",
     "db:migrate": "pnpm --filter @mx/gateway migrate",
     "demo:agent": "tsx scripts/demo-agent.ts",
-    "smoke": "tsx scripts/smoke.ts"
+    "smoke": "tsx scripts/smoke.ts",
+    "e2e": "pnpm --filter @mx/e2e e2e",
+    "test:contracts": "forge test --root contracts",
+    "e2e:stack": "pnpm --filter @mx/e2e stack",
+    "erc8004:probe": "tsx scripts/erc8004-probe.ts"
   },
   "dependencies": {
     "@mx/policy-sdk": "workspace:*",

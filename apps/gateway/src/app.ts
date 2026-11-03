@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 import { Hono } from "hono";
 import type { AppDeps, AppEnv } from "./context";
 import { adminRoutes } from "./routes/admin";
+import { productRoutes } from "./platform/mount";
 import { creditsRoutes } from "./routes/credits";
-import { dataRoutes } from "./routes/data";
 import { publicRoutes } from "./routes/public";
 
 export function createApp(d: AppDeps) {
@@ -15,7 +15,7 @@ export function createApp(d: AppDeps) {
     const t0 = performance.now();
     await next();
     c.res.headers.set("x-request-id", id);
-    c.res.headers.set("access-control-expose-headers", "PAYMENT-REQUIRED, PAYMENT-RESPONSE, X-Payment-Id, X-Settlement, X-Credits-Charged-Gbp-Micros, X-Credits-Balance-Gbp-Micros");
+    c.res.headers.set("access-control-expose-headers", "PAYMENT-REQUIRED, PAYMENT-RESPONSE, X-Payment-Id, X-Settlement, X-Credits-Charged-Gbp-Micros, X-Credits-Balance-Gbp-Micros, X-Agent-Tier, Deprecation, Link");
     const ms = performance.now() - t0;
     d.metrics.inc("http_requests_total", { status: String(c.res.status) });
     if (ms > 500) d.log.warn({ path: c.req.path, status: c.res.status, ms: Math.round(ms) }, "slow request");
@@ -24,7 +24,8 @@ export function createApp(d: AppDeps) {
   app.route("/", publicRoutes(d));
   app.route("/", creditsRoutes(d));
   app.route("/", adminRoutes(d));
-  app.route("/", dataRoutes(d));
+  // Products last: their deprecated aliases (/v1/:region/…) must never shadow platform routes.
+  app.route("/", productRoutes(d));
 
   app.notFound((c) => c.json({ error: "not_found" }, 404));
   app.onError((err, c) => {

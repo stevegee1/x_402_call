@@ -1,12 +1,16 @@
 import { randomUUID } from "node:crypto";
 import pg from "pg";
 import { assertBalanced, computeHash, GENESIS_HASH, normalizeJournal, type JournalEntry, type JournalInput } from "../ledger/journal";
-import type { CreditAccount, NewAccount, NewPayment, PaymentRow, PaymentStatus, Store } from "./types";
+import type { AdmitOptions, Admission, CreditAccount, NewAccount, NewPayment, PaymentRow, PaymentStatus, SettleMode, Store } from "./types";
 
 // bigint columns (balances, micros) fit in JS safe integers for our ranges; parse them as numbers.
 pg.types.setTypeParser(20, (v) => Number(v));
 
 const LEDGER_LOCK = 727274;
+/** Serialises async admissions so concurrent requests on any replica can't jointly exceed a cap. */
+const EXPOSURE_LOCK = 727275;
+/** Max wait for the exposure lock; past it we admit as sync (no exposure) rather than queue up. */
+const EXPOSURE_LOCK_TIMEOUT = "2s";
 
 type Q = pg.PoolClient | pg.Pool;
 
@@ -20,6 +24,7 @@ function rowToPayment(r: Record<string, any>): PaymentRow {
     endpoint: r.endpoint,
     resource: r.resource,
     status: r.status,
+    settleMode: r.settle_mode,
     payload: r.payload,
     requirements: r.requirements,
     validBefore: r.valid_before,
@@ -95,14 +100,55 @@ export class PgStore implements Store {
     );
   }
 
-  async insertPayment(p: NewPayment) {
-    const r = await this.pool.query(
-      `insert into x402_payments (id, network, payer, nonce, amount_atomic, endpoint, resource, status, payload, requirements, valid_before, fx_usdc_gbp, fx_source, next_attempt_at)
-       values ($1, $2, lower($3), $4, $5, $6, $7, 'verified', $8, $9, $10, $11, $12, $13)
+  private async insertRow(q: Q, p: NewPayment): Promise<boolean> {
+    const r = await q.query(
+      `insert into x402_payments (id, network, payer, nonce, amount_atomic, endpoint, resource, status, settle_mode, payload, requirements, valid_before, fx_usdc_gbp, fx_source, next_attempt_at)
+       values ($1, $2, lower($3), $4, $5, $6, $7, 'verified', $8, $9, $10, $11, $12, $13, $14)
        on conflict (network, payer, nonce) do nothing`,
-      [p.id, p.network, p.payer, p.nonce, p.amountAtomic.toString(), p.endpoint, p.resource, JSON.stringify(p.payload), JSON.stringify(p.requirements), p.validBefore, p.fxRate, p.fxSource, p.nextAttemptAt],
+      [p.id, p.network, p.payer, p.nonce, p.amountAtomic.toString(), p.endpoint, p.resource, p.settleMode ?? "async", JSON.stringify(p.payload), JSON.stringify(p.requirements), p.validBefore, p.fxRate, p.fxSource, p.nextAttemptAt],
     );
-    return r.rowCount === 1 ? ("inserted" as const) : ("duplicate" as const);
+    return r.rowCount === 1;
+  }
+
+  async insertPayment(p: NewPayment) {
+    return (await this.insertRow(this.pool, p)) ? ("inserted" as const) : ("duplicate" as const);
+  }
+
+  async admitPayment(p: Omit<NewPayment, "nextAttemptAt" | "settleMode">, o: AdmitOptions): Promise<Admission> {
+    const insert = async (q: Q, mode: SettleMode): Promise<Admission> =>
+      (await this.insertRow(q, { ...p, settleMode: mode, nextAttemptAt: mode === "async" ? o.asyncAttemptAt : o.syncAttemptAt }))
+        ? { result: "inserted", mode }
+        : { result: "duplicate" };
+    if (!o.wantAsync) return insert(this.pool, "sync");
+
+    try {
+      return await this.tx(async (c) => {
+        await c.query(`set local lock_timeout = '${EXPOSURE_LOCK_TIMEOUT}'`);
+        await c.query("select pg_advisory_xact_lock($1)", [EXPOSURE_LOCK]);
+        const r = await c.query<{ total: string; payer: string }>(
+          `select coalesce(sum(amount_atomic), 0)::text as total,
+                  coalesce(sum(amount_atomic) filter (where payer = lower($1)), 0)::text as payer
+           from x402_payments where status = 'verified' and settle_mode = 'async'`,
+          [p.payer],
+        );
+        const total = BigInt(r.rows[0]!.total);
+        const payer = BigInt(r.rows[0]!.payer);
+        const fits = total + p.amountAtomic <= o.caps.totalAtomic && payer + p.amountAtomic <= o.caps.perPayerAtomic;
+        return insert(c, fits ? "async" : "sync");
+      });
+    } catch (e) {
+      // Contended lock: settle this one inline. Safe (no exposure), just slower for the buyer.
+      if ((e as { code?: string }).code === "55P03") return insert(this.pool, "sync");
+      throw e;
+    }
+  }
+
+  async exposure() {
+    const r = await this.pool.query<{ total: string; payers: number }>(
+      `select coalesce(sum(amount_atomic), 0)::text as total, count(distinct payer)::int as payers
+       from x402_payments where status = 'verified' and settle_mode = 'async'`,
+    );
+    return { totalAtomic: BigInt(r.rows[0]!.total), payers: r.rows[0]!.payers };
   }
 
   async getPayment(id: string) {
@@ -157,13 +203,6 @@ export class PgStore implements Store {
       ? await this.pool.query("select * from x402_payments where status = $1 order by created_at desc limit $2", [opts.status, opts.limit])
       : await this.pool.query("select * from x402_payments order by created_at desc limit $1", [opts.limit]);
     return r.rows.map(rowToPayment);
-  }
-
-  async unsettledByPayer() {
-    const r = await this.pool.query<{ payer: string; atomic: string }>(
-      "select payer, sum(amount_atomic)::text as atomic from x402_payments where status = 'verified' group by payer",
-    );
-    return r.rows.map((x) => ({ payer: x.payer, atomic: BigInt(x.atomic) }));
   }
 
   async createAccount(a: NewAccount, keyHash: string, keyPrefix: string) {

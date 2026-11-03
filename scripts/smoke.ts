@@ -16,12 +16,15 @@ const check = (ok: boolean, msg: string) => {
 const health = await fetch(`${gateway}/readyz`);
 check(health.ok, `readyz ${health.status}`);
 
+type Scope = { scope: string; status?: string; fresh: boolean; data_age_s?: number | null };
 const status = await (await fetch(`${gateway}/status`)).json();
-for (const r of status.regions as { id: string; status: string; stale: boolean; data_age_s: number | null }[]) {
-  if (r.status === "live") check(!r.stale, `${r.id} fresh (data age ${r.data_age_s}s)`);
+for (const p of status.products as { id: string; ready: boolean; scopes: Scope[] }[]) {
+  check(p.ready, `${p.id} ready`);
+  // Scopes a product marks as live in production must be fresh; others may be dark.
+  for (const s of p.scopes) if (s.status === "live") check(s.fresh, `${p.id}/${s.scope} fresh (data age ${s.data_age_s ?? "?"}s)`);
 }
 
-const challenge = await fetch(`${gateway}/v1/dover/vessels`);
+const challenge = await fetch(`${gateway}/v1/maritime/dover/vessels`);
 check(challenge.status === 402 || challenge.status === 503, `paid endpoint challenges (${challenge.status})`);
 if (challenge.status === 402) {
   const pr = decodePaymentRequiredHeader(challenge.headers.get("PAYMENT-REQUIRED") ?? "");

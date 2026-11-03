@@ -1,8 +1,8 @@
 import { TrafficSimulator } from "@mx/ais";
 import { SUBJECTS, type AisEvent } from "@mx/shared";
 import { connect, JSONCodec, type NatsConnection } from "nats";
-import type { Logger } from "./logger";
-import type { Metrics } from "./metrics";
+import type { Logger } from "../../logger";
+import type { Metrics } from "../../metrics";
 import type { WorldState } from "./snapshot/state";
 
 export interface Feed {
