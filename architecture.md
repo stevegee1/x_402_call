@@ -78,7 +78,7 @@ Rule: **arrows into the kernel go through the `Product` interface only.** The ke
 Today [billing.ts:47-61](apps/gateway/src/payments/billing.ts#L47-L61) reads `:region`, calls `isRegionId` and checks `RegionSnapshot.stale` and `.mode`. [pricing.ts](packages/shared/src/pricing.ts) has a closed `EndpointId` union of maritime endpoints. These are the only places where maritime ideas reach the kernel. The gate logic itself is general ("is the data fresh?", "is it live?", "does the resource exist?"), so we keep it and move the maritime details behind an interface.
 
 ```ts
-// packages/platform/src/product.ts
+// apps/gateway/src/platform/product.ts (see §8 step 1: in-app for now, package later)
 export interface PricedResource {
   id: string;                 // "maritime.vessels", "dc.capacity"; namespaced by product
   method: "GET" | "POST";
@@ -136,7 +136,7 @@ This is the MVP order with two additions: `product.resolve()` replaces `engine.g
 ### 4.2 Money
 
 - **Ledger:** one chart of accounts. Revenue is split by product sub-account (`revenue:maritime`, `revenue:dc`) so the close pack and VAT returns can report per product. The hash chain and advisory lock stay global (R8 still applies).
-- **Credits:** one balance per account, spendable on any of our products. This is still prepayment for our own services, so the non-custodial position in implementation.md §8.2 does not change. Stripe line items use `Product.displayName`, which fixes the hard-coded label in [checkout.ts:44](apps/gateway/src/credits/checkout.ts#L44).
+- **Credits:** one balance per account, spendable on any of our products. This is still prepayment for our own services, so the non-custodial position in implementation.md §8.2 does not change. Because a top-up isn't for any one product, the Stripe line item is product-neutral ("API credits: <pack>"), not a product's display name.
 - **x402:** one `PAY_TO` Safe for all products. We attribute revenue by resource id in our own records, not by wallet.
 
 ### 4.3 Risk
@@ -233,7 +233,8 @@ The cost varies and is only known when the request finishes, so the current `exa
 
 Each step ships on its own and keeps all existing tests green.
 
-1. **Extract the kernel interface.** Add `packages/platform` with `Product`, `PricedResource` and `ResolvedScope`. Rewrite `paid()` to take a `Product` and a resource id. Wrap the current code as a `maritime` product. No behaviour change. Add a fake product to the e2e helpers and run the kernel invariants against it.
+1. **Extract the kernel interface.** Add `Product`, `PricedResource` and `ResolvedScope`. Rewrite `paid()` to take a `Product` and a resource id. Wrap the current code as a `maritime` product. No behaviour change. Add a fake product to the e2e helpers and run the kernel invariants against it.
+   *As built (`feat/platform-kernel`):* the kernel lives in `apps/gateway/src/platform/` and products in `apps/gateway/src/products/<id>/`, not yet in separate packages. A test enforces the import boundary instead (the kernel never imports a product; products import kernel modules as types only). Extract to `packages/` when a second deployable needs the kernel. Operator routes are per product under `/admin/<id>/…`, and the Panama draught route moved there without an alias, since admin is internal and not yet deployed.
 2. **Namespace pricing and ledger.** Use `maritime.*` resource ids, revenue sub-accounts and `displayName` in Stripe. Add the `/v1/maritime/…` routes and keep the old ones as aliases.
 3. **Fix R4.** Move exposure counters to Postgres (or Redis) so caps are global. Add the Testcontainers Postgres job in CI (R5) at the same time.
 4. **Add `packages/identity`.** Seller agent card and registration, buyer policy rules (§5.2), then seller trust tiers (§5.3) behind a flag.
