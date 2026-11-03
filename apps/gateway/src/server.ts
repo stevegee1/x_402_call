@@ -20,7 +20,11 @@ import { SanctionsService } from "./payments/sanctions";
 import { Settler } from "./payments/settlement";
 import { createResourceServer, RequirementsCache } from "./payments/x402";
 import { Catalog } from "./platform/catalog";
+import type { Product } from "./platform/product";
 import { natsFeed, simulatorFeed } from "./products/maritime/feed";
+import { GridFeed } from "./products/grid/feed";
+import { GridProduct } from "./products/grid";
+import { NesoGridSource } from "./products/grid/source";
 import { MaritimeProduct } from "./products/maritime";
 import { SnapshotEngine } from "./products/maritime/snapshot/engine";
 import { WorldState } from "./products/maritime/snapshot/state";
@@ -52,7 +56,15 @@ const engine = new SnapshotEngine(world, cfg.SNAPSHOT_INTERVAL_MS);
 const maritime = new MaritimeProduct({ engine, store, feedConnected: feed.connected, snapshotIntervalMs: cfg.SNAPSHOT_INTERVAL_MS });
 await maritime.load();
 engine.start();
-const catalog = new Catalog([maritime]);
+const products: Product[] = [maritime];
+let gridFeed: GridFeed | undefined;
+if (cfg.GRID_ENABLED) {
+  gridFeed = new GridFeed(new NesoGridSource(cfg.GRID_SOURCE_URL), log, cfg.GRID_POLL_MS);
+  await gridFeed.poll(); // serve with data from the first request, or report stale (never charge)
+  gridFeed.start();
+  products.push(new GridProduct(gridFeed));
+}
+const catalog = new Catalog(products);
 
 // Payments
 const { primary, fallback } = createFacilitatorClients(cfg);
@@ -144,6 +156,7 @@ async function shutdown(signal: string) {
   log.info({ signal }, "shutting down");
   server.close();
   engine.stop();
+  gridFeed?.stop();
   settler.stop();
   // Give in-flight settlements a moment; anything unfinished is re-claimed after its lease expires.
   await new Promise((r) => setTimeout(r, 1_000));

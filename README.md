@@ -80,6 +80,29 @@ billed by the platform kernel on both rails. `GET /v1/products` lists them with 
 `Link: <…>; rel="successor-version"` header. Credits endpoints are under `/v1/credits/*`.
 Operators use `/console`; product operator routes are under `/admin/{product}/…`.
 
+### Grid carbon product (`/v1/grid`)
+
+Carbon-aware scheduling signals for data-centre workloads, from the NESO **Country** Carbon Intensity
+Forecast (England, Scotland, Wales; half-hourly, about 48 h ahead). Enable with `GRID_ENABLED=true`.
+
+| Endpoint | Price (x402 / credits) | Returns |
+|---|---|---|
+| `GET /v1/grid/{country}/intensity` | $0.01 / £0.008 | gCO2/kWh now, next half-hour, share of the next 24 h that is cleaner |
+| `GET /v1/grid/{country}/forecast?hours=1-48` | $0.02 / £0.015 | half-hourly forecast from now |
+| `GET /v1/grid/{country}/window?duration_h=0.5-12&within_h=…48` | $0.05 / £0.04 | cleanest contiguous window and the saving versus starting now |
+
+- **Licence.** The data is used under the NESO Open Data Licence, which permits commercial use with
+  the attribution "Supported by National Energy SO Open Data". Every response carries it, plus a
+  notice that the service is not provided or endorsed by NESO. We deliberately do *not* use the
+  carbonintensity.org.uk API (its terms forbid selling access to it), nor NESO's regional dataset
+  (it stopped updating on 2026-07-24), so signals are country-level, not regional (e.g. Slough).
+- **Freshness (I1).** A country is sellable only if the last fetch succeeded within 45 min, the current
+  half-hour has a value, the forecast reaches 12 h ahead, and the horizon has advanced within 3 h. That
+  last rule catches a frozen upstream whose old forecast still looks plausible. Otherwise paid calls are
+  503 and nothing is charged. An upstream outage never makes the gateway unready.
+- Bad parameters, unknown countries and jobs that fit no window are refused before any charge.
+- `pnpm grid:probe` runs the adapter, freshness rules and signals read-only against live NESO data.
+
 ### ERC-8004 identity (buyer tiers)
 
 With `ERC8004_ENABLED=true`, a buyer can declare its ERC-8004 agent with `X-Agent-Id: 42` (or the

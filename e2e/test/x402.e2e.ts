@@ -19,6 +19,12 @@ const PRICE = 33_000n; // maritime.vessels: $0.033
 
 /** Payments each scenario expects to end up settled; the final reconciliation checks the total. */
 let expectedSettled = 0;
+let expectedAtomic = 0n;
+/** Records payments a scenario expects to settle, at their price (atomic USDC). */
+const countSettled = (n = 1, price = PRICE) => {
+  expectedSettled += n;
+  expectedAtomic += price * BigInt(n);
+};
 
 const isUsed = (payer: Address, nonce: string) =>
   chain.public.readContract({ address: BASE_SEPOLIA_USDC, abi: USDC_ABI, functionName: "authorizationState", args: [payer, nonce as Hex] });
@@ -56,7 +62,7 @@ describe("stack", () => {
   it("every gateway replica is ready and serving maritime", async () => {
     for (const url of Object.values(gw)) {
       const r = await (await fetch(`${url}/readyz`)).json();
-      expect(r).toEqual({ ok: true, db: true, products: { maritime: true }, facilitator_breaker: "closed" });
+      expect(r).toEqual({ ok: true, db: true, products: { maritime: true, grid: true }, facilitator_breaker: "closed" });
     }
   });
 
@@ -96,7 +102,7 @@ describe("x402: async settlement", () => {
     const p = await waitPayment(gw.async, id);
     expect(p).toMatchObject({ status: "settled", amount_usdc: 0.033, resource: "maritime.vessels" });
     await expectOnChainSettlement(p.transaction!, buyer.address, nonce);
-    expectedSettled++;
+    countSettled();
 
     expect(await usdcBalance(stack.rpcUrl, buyer.address)).toBe(1_000_000n - PRICE);
     expect(await chain.public.getBalance({ address: buyer.address })).toBe(0n);
@@ -114,14 +120,14 @@ describe("x402: async settlement", () => {
     }
     const p = await waitPayment(gw.async, res.headers.get("X-Payment-Id")!);
     await expectOnChainSettlement(p.transaction!, buyer.address, nonce);
-    expectedSettled++;
+    countSettled();
   });
 
   it("a replay after settlement is refused at verify (nonce used on chain), and nothing moves", async () => {
     const { res, header } = await pay(buyer, `${gw.async}${VESSELS}`);
     expect(res.status).toBe(200);
     await waitPayment(gw.async, res.headers.get("X-Payment-Id")!);
-    expectedSettled++;
+    countSettled();
     const balance = await usdcBalance(stack.rpcUrl, buyer.address);
 
     for (const url of [gw.async, gw.sync, gw.failover]) {
@@ -142,7 +148,7 @@ describe("x402: sync settlement", () => {
     const settle = decodePaymentResponseHeader(res.headers.get("PAYMENT-RESPONSE")!);
     expect(settle).toMatchObject({ success: true, network: "eip155:84532" });
     await expectOnChainSettlement(settle.transaction, buyer.address, nonce);
-    expectedSettled++;
+    countSettled();
 
     const p = await waitPayment(gw.sync, res.headers.get("X-Payment-Id")!);
     expect(p.transaction).toBe(settle.transaction);
@@ -161,7 +167,7 @@ describe("x402: replicas share one settlement queue (I7)", () => {
     expect(new Set(settled.map((s) => s.transaction)).size).toBe(10);
     await Promise.all(settled.map((s, i) => expectOnChainSettlement(s.transaction!, buyers[i]!.address, paid[i]!.nonce)));
     for (const b of buyers) expect(await usdcBalance(stack.rpcUrl, b.address)).toBe(100_000n - PRICE);
-    expectedSettled += 10;
+    countSettled(10);
   });
 });
 
@@ -181,7 +187,7 @@ describe("x402: exposure caps are global across replicas (R4)", () => {
       expect(s.status).toBe("settled");
       await expectOnChainSettlement(s.transaction!, buyer.address, p.nonce);
     }
-    expectedSettled += 6;
+    countSettled(6);
     expect(await usdcBalance(stack.rpcUrl, buyer.address)).toBe(1_000_000n - 6n * PRICE);
   });
 });
@@ -197,7 +203,7 @@ describe("ERC-8004 buyer tiers (loosen-only)", () => {
       expect(s.status).toBe("settled");
       await expectOnChainSettlement(s.transaction!, buyer.address, p.nonce);
     }
-    expectedSettled += n;
+    countSettled(n);
     return {
       pending: paid.filter((p) => p.res.headers.get("X-Settlement") === "pending").length,
       tiers: new Set(paid.map((p) => p.res.headers.get("X-Agent-Tier"))),
@@ -317,7 +323,7 @@ describe("x402: nothing is charged when the payment is bad or the request is ref
     // The untouched authorisation is still good for what it was signed for.
     const ok = await sendSigned(`${gw.sync}${VESSELS}`, header);
     expect(ok.status).toBe(200);
-    expectedSettled++;
+    countSettled();
   });
 });
 
@@ -339,7 +345,7 @@ describe("x402: facilitator outage", () => {
       expect(fo.res.status).toBe(200);
       expect(fo.res.headers.get("X-Settlement")).toBe("settled");
       await expectOnChainSettlement(decodePaymentResponseHeader(fo.res.headers.get("PAYMENT-RESPONSE")!).transaction, buyer.address, fo.nonce);
-      expectedSettled++;
+      countSettled();
     } finally {
       await proxy("up");
     }
@@ -349,7 +355,39 @@ describe("x402: facilitator outage", () => {
     const p = await waitPayment(gw.flaky, again.res.headers.get("X-Payment-Id")!);
     expect(p.status).toBe("settled");
     await expectOnChainSettlement(p.transaction!, buyer.address, again.nonce);
-    expectedSettled++;
+    countSettled();
+  });
+});
+
+describe("grid product (second product on the kernel)", () => {
+  const GRID = "/v1/grid/england";
+
+  it("pays for a cleanest-window query with x402; it settles on chain at the grid price", async () => {
+    const buyer = await newBuyer(stack.rpcUrl, 1_000_000n);
+    const { res, nonce } = await pay(buyer, `${gw.sync}${GRID}/window?duration_h=1&within_h=24`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toMatchObject({ country: "england", unit: "gCO2/kWh", mode: "live", window: { mean_intensity: 115 } });
+    expect(body.source.attribution).toBe("Supported by National Energy SO Open Data");
+    const settle = decodePaymentResponseHeader(res.headers.get("PAYMENT-RESPONSE")!);
+    await expectOnChainSettlement(settle.transaction, buyer.address, nonce, 50_000n);
+    countSettled(1, 50_000n);
+    const p = await waitPayment(gw.sync, res.headers.get("X-Payment-Id")!);
+    expect(p).toMatchObject({ status: "settled", resource: "grid.window", amount_usdc: 0.05 });
+  });
+
+  it("bad parameters are refused before the challenge, on every replica, and nothing is signed or charged", async () => {
+    for (const url of Object.values(gw)) {
+      const res = await fetch(`${url}${GRID}/window?duration_h=99`);
+      expect(res.status).toBe(400);
+      expect((await res.json()).detail).toMatch(/not been charged/);
+    }
+  });
+
+  it("grid revenue is booked to its own ledger account", async () => {
+    const summary = await (await fetch(`${gw.async}/admin/summary`, { headers: { authorization: `Bearer ${stack.adminToken}` } })).json();
+    expect(summary.ledger_balances_gbp["revenue:grid"]).toBeLessThan(0); // credit balance: 0.05 USD * 0.8, ex VAT
+    expect(summary.ledger_balances_gbp["revenue:grid"]).toBeCloseTo(-(0.05 * 0.8) / 1.2, 6);
   });
 });
 
@@ -399,7 +437,7 @@ describe("reconciliation", () => {
     const report = await run();
     expect(report.problems).toEqual([]);
     expect(report.totals.settledCount).toBe(expectedSettled);
-    expect(report.totals.payToBalance).toBe(PRICE * BigInt(expectedSettled));
+    expect(report.totals.payToBalance).toBe(expectedAtomic);
   });
 
   it("every successful facilitator settle is exactly one settled payment (no double settlement)", async () => {
@@ -426,7 +464,7 @@ describe("reconciliation", () => {
     expect(report.ok).toBe(false);
     expect(report.problems).toEqual([
       { code: "unrecorded_onchain_transfer", tx: hash, from: rogue.address.toLowerCase(), value: "33000", nonce: a.nonce },
-      { code: "balance_mismatch", balance: String(PRICE * BigInt(expectedSettled + 1)), transfers: String(PRICE * BigInt(expectedSettled + 1)), settled: String(PRICE * BigInt(expectedSettled)) },
+      { code: "balance_mismatch", balance: String(expectedAtomic + PRICE), transfers: String(expectedAtomic + PRICE), settled: String(expectedAtomic) },
     ]);
   });
 });

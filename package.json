@@ -19,7 +19,8 @@
     "e2e": "pnpm --filter @mx/e2e e2e",
     "test:contracts": "forge test --root contracts",
     "e2e:stack": "pnpm --filter @mx/e2e stack",
-    "erc8004:probe": "tsx scripts/erc8004-probe.ts"
+    "erc8004:probe": "tsx scripts/erc8004-probe.ts",
+    "grid:probe": "tsx scripts/grid-probe.ts"
   },
   "dependencies": {
     "@mx/policy-sdk": "workspace:*",

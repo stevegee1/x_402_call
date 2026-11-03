@@ -37,6 +37,11 @@ const schema = z
     NATS_URL: z.string().default("nats://localhost:4222"),
     SNAPSHOT_INTERVAL_MS: z.coerce.number().int().default(250),
 
+    // Grid carbon product (NESO country forecast). Off unless enabled.
+    GRID_ENABLED: bool.default("false"),
+    GRID_SOURCE_URL: z.string().url().default("https://api.neso.energy"),
+    GRID_POLL_MS: z.coerce.number().int().min(60_000).default(600_000),
+
     // Persistence (unset => in-memory store, dev only)
     DATABASE_URL: z.string().optional(),
 
@@ -91,6 +96,7 @@ const schema = z
       if (c.FACILITATOR === "url" && !c.FACILITATOR_AUTH_TOKEN) ctx.addIssue({ code: "custom", path: ["FACILITATOR_AUTH_TOKEN"], message: "required in production when FACILITATOR=url" });
       if (c.FALLBACK_FACILITATOR_URL && !c.FALLBACK_FACILITATOR_AUTH_TOKEN)
         ctx.addIssue({ code: "custom", path: ["FALLBACK_FACILITATOR_AUTH_TOKEN"], message: "required in production with FALLBACK_FACILITATOR_URL" });
+      if (c.GRID_ENABLED && !c.GRID_SOURCE_URL.startsWith("https://")) ctx.addIssue({ code: "custom", path: ["GRID_SOURCE_URL"], message: "must be https in production" });
       if (c.FX_PROVIDER === "fixed") ctx.addIssue({ code: "custom", path: ["FX_PROVIDER"], message: "fixed FX is for tests; production values crypto at spot" });
       if (!c.DATABASE_URL) ctx.addIssue({ code: "custom", path: ["DATABASE_URL"], message: "required in production" });
       if (!c.ADMIN_TOKEN) ctx.addIssue({ code: "custom", path: ["ADMIN_TOKEN"], message: "required in production" });
