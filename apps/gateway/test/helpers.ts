@@ -16,8 +16,11 @@ import { FailoverFacilitator } from "../src/payments/facilitator";
 import { SanctionsService } from "../src/payments/sanctions";
 import { Settler } from "../src/payments/settlement";
 import { createResourceServer, RequirementsCache } from "../src/payments/x402";
-import { SnapshotEngine } from "../src/snapshot/engine";
-import { WorldState } from "../src/snapshot/state";
+import { Catalog } from "../src/platform/catalog";
+import type { Product } from "../src/platform/product";
+import { MaritimeProduct } from "../src/products/maritime";
+import { SnapshotEngine } from "../src/products/maritime/snapshot/engine";
+import { WorldState } from "../src/products/maritime/snapshot/state";
 import { MemoryStore } from "../src/store/memory";
 
 export const BASE_URL = "http://gw.test";
@@ -99,10 +102,19 @@ export interface TestEnv {
   facilitator: FakeFacilitator;
   checkout: FakeCheckout;
   world: WorldState;
+  engine: SnapshotEngine;
+  maritime: MaritimeProduct;
   fetch: typeof fetch;
 }
 
-export async function createTestEnv(overrides: Partial<Record<keyof Config, string>> = {}): Promise<TestEnv> {
+export interface TestEnvOptions {
+  /** Extra products hosted next to maritime (kernel tests use a fake product). */
+  products?: Product[];
+  /** Maritime feed health (readiness tests). */
+  feedConnected?: () => boolean;
+}
+
+export async function createTestEnv(overrides: Partial<Record<keyof Config, string>> = {}, opts: TestEnvOptions = {}): Promise<TestEnv> {
   const cfg = loadConfig({
     NODE_ENV: "test",
     PUBLIC_BASE_URL: BASE_URL,
@@ -121,6 +133,8 @@ export async function createTestEnv(overrides: Partial<Record<keyof Config, stri
   for (const e of sim.allStatics()) world.apply(e);
   for (let i = 0; i < 60; i++) for (const e of sim.step(1_000)) world.apply(e);
   const engine = new SnapshotEngine(world, cfg.SNAPSHOT_INTERVAL_MS);
+  const maritime = new MaritimeProduct({ engine, store, feedConnected: opts.feedConnected ?? (() => true), snapshotIntervalMs: cfg.SNAPSHOT_INTERVAL_MS });
+  const catalog = new Catalog([maritime, ...(opts.products ?? [])]);
 
   const facilitator = new FakeFacilitator([cfg.X402_NETWORK]);
   const failover = new FailoverFacilitator(facilitator, undefined, undefined, { windowMs: 30_000, minCalls: 3, failureRate: 0.5, slowCallMs: 5_000, openMs: 60_000 });
@@ -136,7 +150,7 @@ export async function createTestEnv(overrides: Partial<Record<keyof Config, stri
     log,
     metrics,
     store,
-    engine,
+    catalog,
     credits: new CreditsService(store, checkout, { publicBaseUrl: BASE_URL, keyEnv: "test" }),
     resourceServer,
     requirements,
@@ -145,10 +159,9 @@ export async function createTestEnv(overrides: Partial<Record<keyof Config, stri
     exposure,
     sanctions,
     fx: new FixedFx(0.8),
-    feedConnected: () => true,
     startedAt: Date.now(),
   };
   const app = createApp(deps);
   const f = ((input: string | URL | Request, init?: RequestInit) => app.fetch(new Request(input, init))) as typeof fetch;
-  return { app, deps, store, facilitator, checkout, world, fetch: f };
+  return { app, deps, store, facilitator, checkout, world, engine, maritime, fetch: f };
 }

@@ -61,17 +61,17 @@ async function call(path: string) {
 if (runaway) {
   console.log(`${c.cyan}Runaway agent: hammering the API until the policy engine stops it${c.reset}`);
   for (let i = 0; i < 30; i++) {
-    const r = await call(`/v1/dover/vessels?min_speed_kn=${i % 5}`);
+    const r = await call(`/v1/maritime/dover/vessels?min_speed_kn=${i % 5}`);
     if (!r) break;
   }
 } else {
   console.log(`${c.cyan}Ops agent: Dover Strait situational picture${c.reset}`);
-  await call("/v1/regions");
-  const v = await call("/v1/dover/vessels?category=tanker");
-  await call("/v1/dover/anomalies");
-  await call("/v1/dover/queue");
+  await call("/v1/maritime/regions");
+  const v = await call("/v1/maritime/dover/vessels?category=tanker");
+  await call("/v1/maritime/dover/anomalies");
+  await call("/v1/maritime/dover/queue");
   const first = v?.body?.data?.[0];
-  if (first) await call(`/v1/dover/vessels/${first.mmsi}`);
+  if (first) await call(`/v1/maritime/dover/vessels/${first.mmsi}`);
 }
 
 // Show settlement results for x402 payments.

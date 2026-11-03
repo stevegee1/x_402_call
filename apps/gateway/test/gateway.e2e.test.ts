@@ -25,7 +25,7 @@ async function settleAll(env: TestEnv) {
 describe("public endpoints", () => {
   it("lists regions with prices for both rails", async () => {
     const env = await createTestEnv();
-    const res = await env.fetch(`${BASE_URL}/v1/regions`);
+    const res = await env.fetch(`${BASE_URL}/v1/maritime/regions`);
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.data.map((r: { id: string }) => r.id)).toEqual(["dover", "rotterdam", "panama"]);
@@ -34,7 +34,7 @@ describe("public endpoints", () => {
 
   it("unknown region is a free 404", async () => {
     const env = await createTestEnv();
-    expect((await env.fetch(`${BASE_URL}/v1/atlantis/vessels`)).status).toBe(404);
+    expect((await env.fetch(`${BASE_URL}/v1/maritime/atlantis/vessels`)).status).toBe(404);
   });
 });
 
@@ -46,19 +46,19 @@ describe("x402 rail", () => {
   });
 
   it("challenges with a v2 PAYMENT-REQUIRED header and a credits alternative", async () => {
-    const res = await env.fetch(`${BASE_URL}/v1/dover/vessels`);
+    const res = await env.fetch(`${BASE_URL}/v1/maritime/dover/vessels`);
     expect(res.status).toBe(402);
     const pr = decodePaymentRequiredHeader(res.headers.get("PAYMENT-REQUIRED")!);
     expect(pr.x402Version).toBe(2);
     expect(pr.accepts[0]).toMatchObject({ scheme: "exact", network: "eip155:84532", amount: "33000", payTo: PAY_TO });
-    expect(pr.resource.url).toBe(`${BASE_URL}/v1/dover/vessels`);
+    expect(pr.resource.url).toBe(`${BASE_URL}/v1/maritime/dover/vessels`);
     const body = await res.json();
     expect(body.credits.price_gbp).toBe(0.025);
   });
 
   it("pays via the policy SDK, serves data, settles async and books VAT-inclusive revenue", async () => {
     const client = createPolicyClient({ policy: policy(), signer: account, fetch: env.fetch });
-    const res = await client.fetch(`${BASE_URL}/v1/dover/vessels`);
+    const res = await client.fetch(`${BASE_URL}/v1/maritime/dover/vessels`);
     expect(res.status).toBe(200);
     expect(res.headers.get("X-Settlement")).toBe("pending");
     const body = await res.json();
@@ -80,7 +80,7 @@ describe("x402 rail", () => {
     // 0.033 USD * 0.8 = £0.0264 gross; VAT = 1/6 of gross.
     expect(journal[0]!.lines).toEqual([
       { account: "asset:usdc_wallet", debit: 26_400, credit: 0 },
-      { account: "revenue:data_api", debit: 0, credit: 22_000 },
+      { account: "revenue:maritime", debit: 0, credit: 22_000 },
       { account: "liability:vat_output", debit: 0, credit: 4_400 },
     ]);
     expect(verifyChain(journal)).toEqual({ ok: true });
@@ -98,9 +98,9 @@ describe("x402 rail", () => {
       return env.fetch(r);
     }) as typeof fetch;
     const client = createPolicyClient({ policy: policy(), signer: account, fetch: spy });
-    expect((await client.fetch(`${BASE_URL}/v1/dover/density`)).status).toBe(200);
+    expect((await client.fetch(`${BASE_URL}/v1/maritime/dover/density`)).status).toBe(200);
     const paid = seen.find((r) => r.headers.has("PAYMENT-SIGNATURE"))!;
-    const replay = await env.fetch(`${BASE_URL}/v1/dover/density`, { headers: { "PAYMENT-SIGNATURE": paid.headers.get("PAYMENT-SIGNATURE")! } });
+    const replay = await env.fetch(`${BASE_URL}/v1/maritime/dover/density`, { headers: { "PAYMENT-SIGNATURE": paid.headers.get("PAYMENT-SIGNATURE")! } });
     expect(replay.status).toBe(402);
     expect(decodePaymentRequiredHeader(replay.headers.get("PAYMENT-REQUIRED")!).error).toBe("payment_already_used");
   });
@@ -108,7 +108,7 @@ describe("x402 rail", () => {
   it("settles synchronously when the exposure cap would be exceeded", async () => {
     env = await createTestEnv({ EXPOSURE_CAP_PER_PAYER_USD: "0.01" });
     const client = createPolicyClient({ policy: policy(), signer: account, fetch: env.fetch });
-    const res = await client.fetch(`${BASE_URL}/v1/dover/queue`);
+    const res = await client.fetch(`${BASE_URL}/v1/maritime/dover/queue`);
     expect(res.status).toBe(200);
     expect(res.headers.get("X-Settlement")).toBe("settled");
     const settle = decodePaymentResponseHeader(res.headers.get("PAYMENT-RESPONSE")!);
@@ -125,12 +125,12 @@ describe("x402 rail", () => {
       return env.fetch(r);
     }) as typeof fetch;
     // Sign for density, then try to use a modified payload (value lowered) elsewhere.
-    await createPolicyClient({ policy: policy(), signer: account, fetch: spy }).fetch(`${BASE_URL}/v1/dover/vessels`);
+    await createPolicyClient({ policy: policy(), signer: account, fetch: spy }).fetch(`${BASE_URL}/v1/maritime/dover/vessels`);
     const header = seen.find((r) => r.headers.has("PAYMENT-SIGNATURE"))!.headers.get("PAYMENT-SIGNATURE")!;
     const payload = JSON.parse(Buffer.from(header, "base64").toString());
     payload.payload.authorization.nonce = `0x${"ab".repeat(32)}`;
     const forged = Buffer.from(JSON.stringify(payload)).toString("base64");
-    const res = await env.fetch(`${BASE_URL}/v1/dover/vessels`, { headers: { "PAYMENT-SIGNATURE": forged } });
+    const res = await env.fetch(`${BASE_URL}/v1/maritime/dover/vessels`, { headers: { "PAYMENT-SIGNATURE": forged } });
     expect(res.status).toBe(402);
     expect(decodePaymentRequiredHeader(res.headers.get("PAYMENT-REQUIRED")!).error).toContain("signature");
   });
@@ -141,7 +141,7 @@ describe("x402 rail", () => {
     // raise it here so we observe the gateway-side breaker.
     const client = createPolicyClient({ policy: policy({ breakers: { ...DEFAULT_BREAKERS, payAndFailThreshold: 100 } }), signer: account, fetch: env.fetch });
     for (let i = 0; i < 4; i++) {
-      const res = await client.fetch(`${BASE_URL}/v1/dover/vessels?min_speed_kn=${i}`);
+      const res = await client.fetch(`${BASE_URL}/v1/maritime/dover/vessels?min_speed_kn=${i}`);
       expect(res.status).toBe(503);
     }
     expect(env.deps.facilitator.breaker.state).toBe("open");
@@ -150,29 +150,29 @@ describe("x402 rail", () => {
 
   it("refuses sanctioned payers", async () => {
     (env.deps.sanctions as unknown as { addToDenylist(a: string): void }).addToDenylist(account.address);
-    const res = await createPolicyClient({ policy: policy(), signer: account, fetch: env.fetch }).fetch(`${BASE_URL}/v1/dover/vessels`);
+    const res = await createPolicyClient({ policy: policy(), signer: account, fetch: env.fetch }).fetch(`${BASE_URL}/v1/maritime/dover/vessels`);
     expect(res.status).toBe(403);
     expect(await env.store.listPayments({ limit: 10 })).toHaveLength(0);
   });
 
   it("never charges for stale data", async () => {
     env.world.regions.get("dover")!.lastMessageAt = Date.now() - 10 * 60_000;
-    env.deps.engine.buildAll();
-    const res = await env.fetch(`${BASE_URL}/v1/dover/vessels`);
+    env.engine.buildAll();
+    const res = await env.fetch(`${BASE_URL}/v1/maritime/dover/vessels`);
     expect(res.status).toBe(503);
     expect((await res.json()).error).toBe("data_stale");
   });
 
   it("never sells simulated data on mainnet", async () => {
     env = await createTestEnv({ X402_NETWORK: "eip155:8453" });
-    const res = await env.fetch(`${BASE_URL}/v1/dover/vessels`);
+    const res = await env.fetch(`${BASE_URL}/v1/maritime/dover/vessels`);
     expect(res.status).toBe(503);
     expect((await res.json()).error).toBe("not_for_sale");
   });
 
   it("does not charge for a vessel that is not in the snapshot", async () => {
     const client = createPolicyClient({ policy: policy(), signer: account, fetch: env.fetch });
-    const res = await client.fetch(`${BASE_URL}/v1/dover/vessels/999999999`);
+    const res = await client.fetch(`${BASE_URL}/v1/maritime/dover/vessels/999999999`);
     expect(res.status).toBe(404);
     expect(await env.store.listPayments({ limit: 10 })).toHaveLength(0);
     expect(client.spendLog.spentToday("USD")).toBe(0);
@@ -183,7 +183,7 @@ describe("policy engine (buyer side)", () => {
   it("denies payments above the policy max before signing", async () => {
     const env = await createTestEnv();
     const client = createPolicyClient({ policy: policy({ maxPricePerRequestUsd: 0.05 }), signer: privateKeyToAccount(generatePrivateKey()), fetch: env.fetch });
-    await expect(client.fetch(`${BASE_URL}/v1/dover/anomalies`)).rejects.toMatchObject({ code: "price_above_max" });
+    await expect(client.fetch(`${BASE_URL}/v1/maritime/dover/anomalies`)).rejects.toMatchObject({ code: "price_above_max" });
     expect(await env.store.listPayments({ limit: 10 })).toHaveLength(0);
   });
 
@@ -198,7 +198,7 @@ describe("policy engine (buyer side)", () => {
     let denied: PolicyDeniedError | undefined;
     for (let i = 0; i < 20 && !denied; i++) {
       try {
-        if ((await client.fetch(`${BASE_URL}/v1/dover/vessels?min_speed_kn=${i}`)).ok) paid++;
+        if ((await client.fetch(`${BASE_URL}/v1/maritime/dover/vessels?min_speed_kn=${i}`)).ok) paid++;
       } catch (e) {
         denied = e as PolicyDeniedError;
       }
@@ -235,7 +235,7 @@ describe("fiat credits rail", () => {
     expect(key).toMatch(/^mk_test_/);
 
     // No balance yet: 402 with both rails advertised.
-    const empty = await env.fetch(`${BASE_URL}/v1/dover/vessels`, { headers: { authorization: `Bearer ${key}` } });
+    const empty = await env.fetch(`${BASE_URL}/v1/maritime/dover/vessels`, { headers: { authorization: `Bearer ${key}` } });
     expect(empty.status).toBe(402);
     expect((await empty.json()).credits_balance_gbp).toBe(0);
 
@@ -255,14 +255,14 @@ describe("fiat credits rail", () => {
     expect((await again.json()).result).toBe("duplicate");
 
     const client = createPolicyClient({ policy: policy(), credits: { apiKey: key, origins: [BASE_URL] }, fetch: env.fetch });
-    const res = await client.fetch(`${BASE_URL}/v1/dover/queue`);
+    const res = await client.fetch(`${BASE_URL}/v1/maritime/dover/queue`);
     expect(res.status).toBe(200);
     expect(res.headers.get("X-Credits-Charged-Gbp-Micros")).toBe("50000");
     expect(res.headers.get("X-Credits-Balance-Gbp-Micros")).toBe(String(20_000_000 - 50_000));
     expect(client.spendLog.spentToday("GBP")).toBeCloseTo(0.05);
 
     // 404 on a missing vessel is not charged.
-    const miss = await env.fetch(`${BASE_URL}/v1/dover/vessels/1`, { headers: { authorization: `Bearer ${key}` } });
+    const miss = await env.fetch(`${BASE_URL}/v1/maritime/dover/vessels/1`, { headers: { authorization: `Bearer ${key}` } });
     expect(miss.status).toBe(404);
     const bal = await (await env.fetch(`${BASE_URL}/v1/credits/balance`, { headers: { authorization: `Bearer ${key}` } })).json();
     expect(bal.balance_gbp).toBeCloseTo(19.95);
@@ -295,8 +295,8 @@ describe("fiat credits rail", () => {
   });
 
   it("rejects malformed and unknown API keys", async () => {
-    expect((await env.fetch(`${BASE_URL}/v1/dover/vessels`, { headers: { authorization: "Bearer mk_test_short" } })).status).toBe(401);
-    expect((await env.fetch(`${BASE_URL}/v1/dover/vessels`, { headers: { authorization: `Bearer mk_test_${"a".repeat(32)}` } })).status).toBe(401);
+    expect((await env.fetch(`${BASE_URL}/v1/maritime/dover/vessels`, { headers: { authorization: "Bearer mk_test_short" } })).status).toBe(401);
+    expect((await env.fetch(`${BASE_URL}/v1/maritime/dover/vessels`, { headers: { authorization: `Bearer mk_test_${"a".repeat(32)}` } })).status).toBe(401);
   });
 });
 
@@ -311,7 +311,7 @@ describe("admin", () => {
   it("exports an HMRC-ready ledger CSV with crypto valuation evidence", async () => {
     const env = await createTestEnv();
     const client = createPolicyClient({ policy: policy(), signer: privateKeyToAccount(generatePrivateKey()), fetch: env.fetch });
-    await client.fetch(`${BASE_URL}/v1/dover/vessels`);
+    await client.fetch(`${BASE_URL}/v1/maritime/dover/vessels`);
     await settleAll(env);
     const csv = await (await env.fetch(`${BASE_URL}/admin/ledger.csv`, { headers: admin })).text();
     const lines = csv.trim().split("\n");
@@ -323,14 +323,14 @@ describe("admin", () => {
 
   it("feeds the Panama draught limit into the queue product", async () => {
     const env = await createTestEnv();
-    const put = await env.fetch(`${BASE_URL}/admin/conditions/panama-draught`, {
+    const put = await env.fetch(`${BASE_URL}/admin/maritime/conditions/panama-draught`, {
       method: "PUT",
       headers: { ...admin, "content-type": "application/json" },
       body: JSON.stringify({ value_m: 13.4, source: "ACP Advisory to Shipping A-XX-2026" }),
     });
     expect(put.status).toBe(200);
-    env.deps.engine.buildAll();
-    const q = JSON.parse(env.deps.engine.get("panama").bodies.queue);
+    env.engine.buildAll();
+    const q = JSON.parse(env.engine.get("panama").bodies.queue);
     expect(q.data.draught_limit).toMatchObject({ value_m: 13.4, source: "ACP Advisory to Shipping A-XX-2026" });
   });
 });

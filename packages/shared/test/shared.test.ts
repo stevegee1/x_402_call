@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { inPolygon, haversineM, PAID_ENDPOINTS, regionForPoint, REGIONS, usdToUsdcAtomic } from "../src";
+import { inPolygon, haversineM, regionForPoint, REGIONS, usdToUsdcAtomic } from "../src";
 
 describe("geo", () => {
   it("point in polygon", () => {
@@ -28,13 +28,5 @@ describe("pricing", () => {
     expect(usdToUsdcAtomic("0.066")).toBe(66_000n);
     expect(usdToUsdcAtomic("12")).toBe(12_000_000n);
     expect(() => usdToUsdcAtomic("0.0000001")).toThrow();
-  });
-
-  it("all endpoints priced inside the 0.033-0.066 USDC band", () => {
-    for (const ep of Object.values(PAID_ENDPOINTS)) {
-      const atomic = usdToUsdcAtomic(ep.priceUsd);
-      expect(atomic >= 33_000n && atomic <= 66_000n).toBe(true);
-      expect(ep.creditsGbpMicros).toBeGreaterThan(0);
-    }
   });
 });

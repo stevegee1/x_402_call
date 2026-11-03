@@ -25,7 +25,7 @@ pnpm test:integration    # Postgres 16 via Testcontainers (needs Docker; or set 
 
 | Path | What |
 |---|---|
-| `apps/gateway` | Hono API: snapshots, billing (x402 + credits), settlement, ledger, admin console |
+| `apps/gateway` | Hono API: platform kernel (catalog, billing on x402 + credits, settlement, ledger, admin console) and products (`src/products/maritime`) |
 | `apps/ingest` | AIS ingest: own receivers (UDP/TCP NMEA), aisstream.io, simulator → NATS + Postgres |
 | `apps/mcp` | MCP server (stdio) for agents, paying through the policy SDK |
 | `packages/ais` | NMEA/AIS decoder, dedupe, traffic simulator |
@@ -36,13 +36,28 @@ pnpm test:integration    # Postgres 16 via Testcontainers (needs Docker; or set 
 
 ## API
 
+The gateway hosts **products**. Each product's paid resources live under `/v1/{product}/…` and are
+billed by the platform kernel on both rails. `GET /v1/products` lists them with prices.
+
 | Endpoint | x402 | Credits |
 |---|---|---|
-| `GET /v1/regions`, `/status`, `/openapi.json` | free | free |
-| `GET /v1/{region}/vessels` (`?category=&min_speed_kn=&bbox=`) | 0.033 USDC | £0.025 |
-| `GET /v1/{region}/vessels/{mmsi}` | 0.033 USDC | £0.025 |
-| `GET /v1/{region}/density` | 0.033 USDC | £0.025 |
-| `GET /v1/{region}/queue` | 0.066 USDC | £0.05 |
-| `GET /v1/{region}/anomalies` | 0.066 USDC | £0.05 |
+| `GET /v1/products`, `/v1/products/{id}`, `/status`, `/openapi.json` | free | free |
+| `GET /v1/maritime/regions` | free | free |
+| `GET /v1/maritime/{region}/vessels` (`?category=&min_speed_kn=&bbox=`) | 0.033 USDC | £0.025 |
+| `GET /v1/maritime/{region}/vessels/{mmsi}` | 0.033 USDC | £0.025 |
+| `GET /v1/maritime/{region}/density` | 0.033 USDC | £0.025 |
+| `GET /v1/maritime/{region}/queue` | 0.066 USDC | £0.05 |
+| `GET /v1/maritime/{region}/anomalies` | 0.066 USDC | £0.05 |
 
-`{region}` is one of `dover`, `rotterdam`, `panama`. Credits endpoints are under `/v1/credits/*`. Operators use `/console`.
+`{region}` is one of `dover`, `rotterdam`, `panama`. The pre-platform paths (`/v1/regions`,
+`/v1/{region}/…`) are still served as deprecated aliases with `Deprecation: true` and a
+`Link: <…>; rel="successor-version"` header. Credits endpoints are under `/v1/credits/*`.
+Operators use `/console`; product operator routes are under `/admin/{product}/…`.
+
+### Adding a product
+
+Implement `Product` ([platform/product.ts](apps/gateway/src/platform/product.ts)) under
+`apps/gateway/src/products/<id>/`, declare its priced resources, and add it to the `Catalog` in
+[server.ts](apps/gateway/src/server.ts). The catalog validates it at boot. Billing, settlement,
+the ledger (`revenue:<id>`), OpenAPI, `/status` and `/readyz` come from the kernel. Products may
+not import kernel internals (enforced by `test/platform/boundaries.test.ts`).

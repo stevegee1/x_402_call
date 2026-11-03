@@ -6,7 +6,6 @@ import { loadConfig, isMainnet } from "./config";
 import type { AppDeps } from "./context";
 import { StripeCheckout } from "./credits/checkout";
 import { CreditsService } from "./credits/service";
-import { natsFeed, simulatorFeed } from "./feed";
 import { CoinbaseFx } from "./ledger/fx";
 import { createLogger } from "./logger";
 import { Metrics } from "./metrics";
@@ -16,9 +15,11 @@ import { createAuthorizationChecker } from "./payments/onchain";
 import { SanctionsService } from "./payments/sanctions";
 import { Settler } from "./payments/settlement";
 import { createResourceServer, RequirementsCache } from "./payments/x402";
-import { PANAMA_DRAUGHT_CONDITION } from "./routes/admin";
-import { SnapshotEngine } from "./snapshot/engine";
-import { WorldState } from "./snapshot/state";
+import { Catalog } from "./platform/catalog";
+import { natsFeed, simulatorFeed } from "./products/maritime/feed";
+import { MaritimeProduct } from "./products/maritime";
+import { SnapshotEngine } from "./products/maritime/snapshot/engine";
+import { WorldState } from "./products/maritime/snapshot/state";
 import { migrate } from "./store/migrate";
 import { MemoryStore } from "./store/memory";
 import { PgStore } from "./store/pg";
@@ -40,15 +41,14 @@ if (cfg.DATABASE_URL) {
   store = new MemoryStore();
 }
 
-// Data plane
+// Products. Each owns its data plane; the catalog validates them all before we serve anything.
 const world = new WorldState();
 const feed = cfg.DATA_SOURCE === "nats" ? await natsFeed(cfg.NATS_URL, world, log, metrics) : simulatorFeed(world);
 const engine = new SnapshotEngine(world, cfg.SNAPSHOT_INTERVAL_MS);
-const draught = await store.getCondition(PANAMA_DRAUGHT_CONDITION);
-if (draught) {
-  engine.draughtLimits.panama = { value_m: (draught.value as { value_m: number }).value_m, source: draught.source, updated_at: draught.updatedAt.toISOString() };
-}
+const maritime = new MaritimeProduct({ engine, store, feedConnected: feed.connected, snapshotIntervalMs: cfg.SNAPSHOT_INTERVAL_MS });
+await maritime.load();
 engine.start();
+const catalog = new Catalog([maritime]);
 
 // Payments
 const primary = new HTTPFacilitatorClient({
@@ -65,7 +65,7 @@ const facilitator = new FailoverFacilitator(primary, fallback, (name, state) => 
 const resourceServer = createResourceServer(facilitator, cfg.X402_NETWORK);
 await resourceServer.initialize();
 const requirements = new RequirementsCache(resourceServer, { payTo: cfg.PAY_TO, network: cfg.X402_NETWORK, maxTimeoutSeconds: cfg.MAX_TIMEOUT_SECONDS });
-await requirements.warm();
+await requirements.warm(catalog.resources);
 
 const exposure = new ExposureTracker(usdToAtomic(cfg.EXPOSURE_CAP_USD), usdToAtomic(cfg.EXPOSURE_CAP_PER_PAYER_USD));
 exposure.rehydrate(await store.unsettledByPayer());
@@ -94,7 +94,7 @@ const deps: AppDeps = {
   log,
   metrics,
   store,
-  engine,
+  catalog,
   credits,
   resourceServer,
   requirements,
@@ -103,12 +103,11 @@ const deps: AppDeps = {
   exposure,
   sanctions,
   fx: new CoinbaseFx(cfg.FX_FALLBACK_USDC_GBP),
-  feedConnected: feed.connected,
   startedAt: Date.now(),
 };
 
 const server = serve({ fetch: createApp(deps).fetch, port: cfg.PORT }, (info) =>
-  log.info({ port: info.port, network: cfg.X402_NETWORK, dataSource: cfg.DATA_SOURCE, settlement: cfg.SETTLEMENT_MODE }, "gateway listening"),
+  log.info({ port: info.port, network: cfg.X402_NETWORK, products: catalog.products.map((p) => p.id), dataSource: cfg.DATA_SOURCE, settlement: cfg.SETTLEMENT_MODE }, "gateway listening"),
 );
 
 async function shutdown(signal: string) {

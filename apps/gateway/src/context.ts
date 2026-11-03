@@ -9,7 +9,8 @@ import type { FailoverFacilitator } from "./payments/facilitator";
 import type { SanctionsScreen } from "./payments/sanctions";
 import type { Settler } from "./payments/settlement";
 import type { RequirementsCache } from "./payments/x402";
-import type { RegionSnapshot, SnapshotEngine } from "./snapshot/engine";
+import type { Catalog } from "./platform/catalog";
+import type { Resolution } from "./platform/product";
 import type { CreditAccount, Store } from "./store/types";
 
 export interface AppDeps {
@@ -17,7 +18,8 @@ export interface AppDeps {
   log: Logger;
   metrics: Metrics;
   store: Store;
-  engine: SnapshotEngine;
+  /** The products this gateway hosts (maritime, …). */
+  catalog: Catalog;
   credits: CreditsService;
   resourceServer: x402ResourceServer;
   requirements: RequirementsCache;
@@ -26,15 +28,14 @@ export interface AppDeps {
   exposure: ExposureTracker;
   sanctions: SanctionsScreen;
   fx: FxService;
-  /** Health of the data feed connection (NATS); simulator mode is always true. */
-  feedConnected: () => boolean;
   startedAt: number;
 }
 
 export type AppEnv = {
   Variables: {
     requestId: string;
-    snapshot: RegionSnapshot;
+    /** Set by billing after the product resolved the request: scope + product-owned state. */
+    resolution: Resolution<unknown>;
     account: CreditAccount;
   };
 };
