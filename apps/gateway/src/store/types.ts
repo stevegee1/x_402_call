@@ -1,6 +1,8 @@
 import type { JournalEntry, JournalInput } from "../ledger/journal";
 
 export type PaymentStatus = "verified" | "settled" | "failed" | "cancelled";
+/** async: served before settlement (carries exposure). sync: settled before anything is served. */
+export type SettleMode = "async" | "sync";
 
 export interface PaymentRow {
   id: string;
@@ -11,6 +13,7 @@ export interface PaymentRow {
   endpoint: string;
   resource: string;
   status: PaymentStatus;
+  settleMode: SettleMode;
   /** Full x402 PaymentPayload / PaymentRequirements, kept so settlement survives restarts. */
   payload: unknown;
   requirements: unknown;
@@ -31,7 +34,32 @@ export type NewPayment = Pick<
 > & {
   /** When the settlement worker may first pick this row up (lets the request path settle/cancel first). */
   nextAttemptAt: Date;
+  /** Default "async" (conservative: counts as exposure while unsettled). */
+  settleMode?: SettleMode;
 };
+
+/** Caps on value served against unsettled payments, across every replica. */
+export interface ExposureCaps {
+  totalAtomic: bigint;
+  perPayerAtomic: bigint;
+}
+
+export interface AdmitOptions {
+  /** The caller would settle asynchronously if the caps allow it. false: always admit as sync. */
+  wantAsync: boolean;
+  caps: ExposureCaps;
+  /** next_attempt_at for each outcome: async waits for the handler; sync keeps the worker away while settling inline. */
+  asyncAttemptAt: Date;
+  syncAttemptAt: Date;
+}
+
+export type Admission = { result: "duplicate" } | { result: "inserted"; mode: SettleMode };
+
+export interface ExposureSnapshot {
+  totalAtomic: bigint;
+  /** Payers with open exposure. */
+  payers: number;
+}
 
 export interface CreditAccount {
   id: string;
@@ -81,7 +109,14 @@ export interface Store {
   failPayment(id: string, error: string, final: boolean, nextAttemptAt?: Date): Promise<void>;
   cancelPayment(id: string, reason: string): Promise<void>;
   listPayments(opts: { status?: PaymentStatus; limit: number }): Promise<PaymentRow[]>;
-  unsettledByPayer(): Promise<{ payer: string; atomic: bigint }[]>;
+  /**
+   * Inserts a verified payment and decides its settle mode in one atomic step: async only if the
+   * global and per-payer exposure (summed over every replica's unsettled async payments) stay within
+   * the caps; otherwise sync. Concurrent admissions cannot jointly exceed a cap.
+   */
+  admitPayment(p: Omit<NewPayment, "nextAttemptAt" | "settleMode">, o: AdmitOptions): Promise<Admission>;
+  /** Current exposure: unsettled payments that were served before settlement. */
+  exposure(): Promise<ExposureSnapshot>;
 
   // Fiat credits
   createAccount(a: NewAccount, keyHash: string, keyPrefix: string): Promise<CreditAccount>;

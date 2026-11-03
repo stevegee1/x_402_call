@@ -1,56 +1,7 @@
 /**
- * Single source of truth for paid endpoints. Both payment rails price from here:
- *  - x402: USD-denominated, settled in USDC (6 decimals). VAT-inclusive (anonymous buyers, see MVP.md §VAT).
- *  - Fiat credits: GBP micros (1 GBP = 1_000_000), net of VAT (B2B accounts; VAT charged at top-up).
+ * Money helpers shared by the gateway, SDK and scripts. Product price lists live with each product
+ * (e.g. apps/gateway/src/products/maritime/resources.ts).
  */
-export type EndpointId = "vessels" | "vessel" | "density" | "queue" | "anomalies";
-
-export interface PaidEndpoint {
-  id: EndpointId;
-  /** Hono route pattern. */
-  path: string;
-  description: string;
-  priceUsd: string;
-  creditsGbpMicros: number;
-}
-
-export const PAID_ENDPOINTS: Record<EndpointId, PaidEndpoint> = {
-  vessels: {
-    id: "vessels",
-    path: "/v1/:region/vessels",
-    description: "Live vessel snapshot for a region (filterable)",
-    priceUsd: "0.033",
-    creditsGbpMicros: 25_000,
-  },
-  vessel: {
-    id: "vessel",
-    path: "/v1/:region/vessels/:mmsi",
-    description: "Single vessel latest state and recent track",
-    priceUsd: "0.033",
-    creditsGbpMicros: 25_000,
-  },
-  density: {
-    id: "density",
-    path: "/v1/:region/density",
-    description: "H3-binned traffic density (moving vs anchored)",
-    priceUsd: "0.033",
-    creditsGbpMicros: 25_000,
-  },
-  queue: {
-    id: "queue",
-    path: "/v1/:region/queue",
-    description: "Anchorage queue: vessels waiting, wait-time stats, draught constraints",
-    priceUsd: "0.066",
-    creditsGbpMicros: 50_000,
-  },
-  anomalies: {
-    id: "anomalies",
-    path: "/v1/:region/anomalies",
-    description: "AIS gaps (vessels going dark), position jumps, loitering",
-    priceUsd: "0.066",
-    creditsGbpMicros: 50_000,
-  },
-};
 
 /** USD decimal string -> USDC atomic units (6 dp). Exact; no floating point. */
 export function usdToUsdcAtomic(usd: string): bigint {

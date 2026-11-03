@@ -1,24 +1,33 @@
-import { createFacilitatorConfig } from "@coinbase/x402";
 import { serve } from "@hono/node-server";
-import { HTTPFacilitatorClient } from "@x402/core/server";
 import { createApp } from "./app";
 import { loadConfig, isMainnet } from "./config";
 import type { AppDeps } from "./context";
 import { StripeCheckout } from "./credits/checkout";
 import { CreditsService } from "./credits/service";
-import { natsFeed, simulatorFeed } from "./feed";
-import { CoinbaseFx } from "./ledger/fx";
+import { CoinbaseFx, FixedFx } from "./ledger/fx";
 import { createLogger } from "./logger";
 import { Metrics } from "./metrics";
-import { ExposureTracker, usdToAtomic } from "./payments/exposure";
+import { createPublicClient, getAddress, http } from "viem";
+import { base, baseSepolia } from "viem/chains";
+import { createAgentRegistry } from "./identity/erc8004";
+import { agentRegistryId, ERC8004_REGISTRIES } from "./identity/registries";
+import { TierResolver } from "./identity/tiers";
+import { exposureCaps, usdToAtomic } from "./payments/exposure";
 import { FailoverFacilitator } from "./payments/facilitator";
+import { createFacilitatorClients } from "./payments/facilitator-clients";
 import { createAuthorizationChecker } from "./payments/onchain";
 import { SanctionsService } from "./payments/sanctions";
 import { Settler } from "./payments/settlement";
 import { createResourceServer, RequirementsCache } from "./payments/x402";
-import { PANAMA_DRAUGHT_CONDITION } from "./routes/admin";
-import { SnapshotEngine } from "./snapshot/engine";
-import { WorldState } from "./snapshot/state";
+import { Catalog } from "./platform/catalog";
+import type { Product } from "./platform/product";
+import { natsFeed, simulatorFeed } from "./products/maritime/feed";
+import { GridFeed } from "./products/grid/feed";
+import { GridProduct } from "./products/grid";
+import { NesoGridSource } from "./products/grid/source";
+import { MaritimeProduct } from "./products/maritime";
+import { SnapshotEngine } from "./products/maritime/snapshot/engine";
+import { WorldState } from "./products/maritime/snapshot/state";
 import { migrate } from "./store/migrate";
 import { MemoryStore } from "./store/memory";
 import { PgStore } from "./store/pg";
@@ -40,24 +49,25 @@ if (cfg.DATABASE_URL) {
   store = new MemoryStore();
 }
 
-// Data plane
+// Products. Each owns its data plane; the catalog validates them all before we serve anything.
 const world = new WorldState();
 const feed = cfg.DATA_SOURCE === "nats" ? await natsFeed(cfg.NATS_URL, world, log, metrics) : simulatorFeed(world);
 const engine = new SnapshotEngine(world, cfg.SNAPSHOT_INTERVAL_MS);
-const draught = await store.getCondition(PANAMA_DRAUGHT_CONDITION);
-if (draught) {
-  engine.draughtLimits.panama = { value_m: (draught.value as { value_m: number }).value_m, source: draught.source, updated_at: draught.updatedAt.toISOString() };
-}
+const maritime = new MaritimeProduct({ engine, store, feedConnected: feed.connected, snapshotIntervalMs: cfg.SNAPSHOT_INTERVAL_MS });
+await maritime.load();
 engine.start();
+const products: Product[] = [maritime];
+let gridFeed: GridFeed | undefined;
+if (cfg.GRID_ENABLED) {
+  gridFeed = new GridFeed(new NesoGridSource(cfg.GRID_SOURCE_URL), log, cfg.GRID_POLL_MS);
+  await gridFeed.poll(); // serve with data from the first request, or report stale (never charge)
+  gridFeed.start();
+  products.push(new GridProduct(gridFeed));
+}
+const catalog = new Catalog(products);
 
 // Payments
-const primary = new HTTPFacilitatorClient({
-  ...(cfg.FACILITATOR === "cdp"
-    ? createFacilitatorConfig(cfg.CDP_API_KEY_ID, cfg.CDP_API_KEY_SECRET)
-    : { url: cfg.FACILITATOR === "url" ? cfg.FACILITATOR_URL : "https://x402.org/facilitator" }),
-  timeoutMs: cfg.FACILITATOR_TIMEOUT_MS,
-});
-const fallback = cfg.FALLBACK_FACILITATOR_URL ? new HTTPFacilitatorClient({ url: cfg.FALLBACK_FACILITATOR_URL, timeoutMs: cfg.FACILITATOR_TIMEOUT_MS }) : undefined;
+const { primary, fallback } = createFacilitatorClients(cfg);
 const facilitator = new FailoverFacilitator(primary, fallback, (name, state) => {
   metrics.set("breaker_open", state === "open" ? 1 : 0, { breaker: name });
   log.warn({ breaker: name, state }, "circuit breaker state change");
@@ -65,14 +75,44 @@ const facilitator = new FailoverFacilitator(primary, fallback, (name, state) => 
 const resourceServer = createResourceServer(facilitator, cfg.X402_NETWORK);
 await resourceServer.initialize();
 const requirements = new RequirementsCache(resourceServer, { payTo: cfg.PAY_TO, network: cfg.X402_NETWORK, maxTimeoutSeconds: cfg.MAX_TIMEOUT_SECONDS });
-await requirements.warm();
+await requirements.warm(catalog.resources);
 
-const exposure = new ExposureTracker(usdToAtomic(cfg.EXPOSURE_CAP_USD), usdToAtomic(cfg.EXPOSURE_CAP_PER_PAYER_USD));
-exposure.rehydrate(await store.unsettledByPayer());
 const checker = cfg.BASE_RPC_URL ? createAuthorizationChecker(cfg.X402_NETWORK, cfg.BASE_RPC_URL) : undefined;
 if (!checker) log.warn("BASE_RPC_URL not set: indeterminate settlements cannot be reconciled on-chain");
-const settler = new Settler(store, resourceServer, exposure, log, metrics, checker);
+const settler = new Settler(store, resourceServer, log, metrics, checker);
 settler.start();
+
+// ERC-8004 buyer identity (loosen-only tiers) and our own seller identity.
+const registries = {
+  identity: getAddress(cfg.ERC8004_IDENTITY_REGISTRY ?? ERC8004_REGISTRIES[cfg.X402_NETWORK]!.identity),
+  reputation: getAddress(cfg.ERC8004_REPUTATION_REGISTRY ?? ERC8004_REGISTRIES[cfg.X402_NETWORK]!.reputation),
+};
+let identity: TierResolver | undefined;
+if (cfg.ERC8004_ENABLED) {
+  const client = createPublicClient({ chain: isMainnet(cfg) ? base : baseSepolia, transport: http(cfg.BASE_RPC_URL, { timeout: cfg.ERC8004_LOOKUP_TIMEOUT_MS }) });
+  const caps = exposureCaps(cfg);
+  identity = new TierResolver(
+    createAgentRegistry(client, registries),
+    {
+      network: cfg.X402_NETWORK,
+      identityRegistry: registries.identity,
+      reviewers: cfg.ERC8004_TRUSTED_REVIEWERS.map((a) => getAddress(a)),
+      tag: cfg.ERC8004_REPUTATION_TAG,
+      minFeedback: cfg.ERC8004_TRUSTED_MIN_FEEDBACK,
+      minScore: cfg.ERC8004_TRUSTED_MIN_SCORE,
+      timeoutMs: cfg.ERC8004_LOOKUP_TIMEOUT_MS,
+      totalCapAtomic: caps.totalAtomic,
+      perPayerCapAtomic: {
+        unknown: caps.perPayerAtomic,
+        identified: usdToAtomic(cfg.EXPOSURE_CAP_PER_PAYER_IDENTIFIED_USD),
+        trusted: usdToAtomic(cfg.EXPOSURE_CAP_PER_PAYER_TRUSTED_USD),
+      },
+    },
+    (reason) => metrics.inc("erc8004_lookups_total", { reason }),
+  );
+  log.info({ registries, reviewers: cfg.ERC8004_TRUSTED_REVIEWERS.length }, "ERC-8004 buyer tiers enabled");
+}
+const sellerIdentity = cfg.SELLER_AGENT_ID ? { agentRegistry: agentRegistryId(cfg.X402_NETWORK, registries.identity), agentId: cfg.SELLER_AGENT_ID } : undefined;
 
 const sanctions = new SanctionsService({
   denylistPath: cfg.SANCTIONS_DENYLIST_PATH,
@@ -94,27 +134,29 @@ const deps: AppDeps = {
   log,
   metrics,
   store,
-  engine,
+  catalog,
   credits,
   resourceServer,
   requirements,
   facilitator,
   settler,
-  exposure,
+  exposureCaps: exposureCaps(cfg),
+  identity,
+  sellerIdentity,
   sanctions,
-  fx: new CoinbaseFx(cfg.FX_FALLBACK_USDC_GBP),
-  feedConnected: feed.connected,
+  fx: cfg.FX_PROVIDER === "fixed" ? new FixedFx(cfg.FX_FALLBACK_USDC_GBP) : new CoinbaseFx(cfg.FX_FALLBACK_USDC_GBP),
   startedAt: Date.now(),
 };
 
 const server = serve({ fetch: createApp(deps).fetch, port: cfg.PORT }, (info) =>
-  log.info({ port: info.port, network: cfg.X402_NETWORK, dataSource: cfg.DATA_SOURCE, settlement: cfg.SETTLEMENT_MODE }, "gateway listening"),
+  log.info({ port: info.port, network: cfg.X402_NETWORK, products: catalog.products.map((p) => p.id), dataSource: cfg.DATA_SOURCE, settlement: cfg.SETTLEMENT_MODE }, "gateway listening"),
 );
 
 async function shutdown(signal: string) {
   log.info({ signal }, "shutting down");
   server.close();
   engine.stop();
+  gridFeed?.stop();
   settler.stop();
   // Give in-flight settlements a moment; anything unfinished is re-claimed after its lease expires.
   await new Promise((r) => setTimeout(r, 1_000));

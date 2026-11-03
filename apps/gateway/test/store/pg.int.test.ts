@@ -76,7 +76,7 @@ describe("PgStore: Postgres-specific guarantees", () => {
       const p = newPayment({ amountAtomic: max });
       await a.insertPayment(p);
       expect((await a.getPayment(p.id))!.amountAtomic).toBe(max);
-      expect((await a.unsettledByPayer()).find((r) => r.payer === p.payer.toLowerCase())!.atomic).toBe(max);
+      expect((await a.exposure()).totalAtomic).toBe(max);
     });
   });
 
@@ -134,6 +134,52 @@ describe("PgStore: Postgres-specific guarantees", () => {
       const r = await Promise.all(Array.from({ length: 10 }, (_, i) => (i % 2 ? a : b).applyTopUp(t, topUpJournal(acct.id, t.ref, t.netMicros, t.vatMicros))));
       expect(r.filter((x) => x === "applied")).toHaveLength(1);
       expect((await a.getAccount(acct.id))!.balanceMicros).toBe(5_000_000);
+    });
+
+    describe("R4: exposure caps hold globally", () => {
+      const at = () => ({ asyncAttemptAt: new Date(Date.now() + 2_000), syncAttemptAt: new Date(Date.now() + 120_000) });
+      const admitOn = (store: PgStore, p: ReturnType<typeof newPayment>, caps: { totalAtomic: bigint; perPayerAtomic: bigint }) => {
+        const { nextAttemptAt: _, settleMode: __, ...rest } = p;
+        return store.admitPayment(rest, { wantAsync: true, caps, ...at() });
+      };
+
+      it("concurrent admissions on two replicas never exceed the global cap", async () => {
+        const caps = { totalAtomic: 10n * 33_000n, perPayerAtomic: 1_000_000n };
+        const results = await Promise.all(Array.from({ length: 40 }, (_, i) => admitOn(i % 2 ? a : b, newPayment(), caps)));
+        const modes = results.map((r) => (r.result === "inserted" ? r.mode : r.result));
+        expect(modes.filter((m) => m === "async")).toHaveLength(10);
+        expect(modes.filter((m) => m === "sync")).toHaveLength(30);
+        expect((await a.exposure()).totalAtomic).toBe(330_000n);
+        const db = await sql.query("select settle_mode, count(*)::int as n from x402_payments group by settle_mode order by 1");
+        expect(db.rows).toEqual([{ settle_mode: "async", n: 10 }, { settle_mode: "sync", n: 30 }]);
+      });
+
+      it("concurrent admissions for one payer on two replicas never exceed the per-payer cap", async () => {
+        const payer = newPayment().payer;
+        const caps = { totalAtomic: 10_000_000n, perPayerAtomic: 3n * 33_000n };
+        const results = await Promise.all(Array.from({ length: 20 }, (_, i) => admitOn(i % 2 ? a : b, newPayment({ payer }), caps)));
+        expect(results.filter((r) => r.result === "inserted" && r.mode === "async")).toHaveLength(3);
+        expect(await b.exposure()).toEqual({ totalAtomic: 99_000n, payers: 1 });
+      });
+
+      it("a contended exposure lock degrades to sync (no exposure) instead of queueing", async () => {
+        await sql.query("begin");
+        await sql.query("select pg_advisory_xact_lock(727275)"); // the admission lock, held elsewhere
+        const t0 = Date.now();
+        const r = await admitOn(a, newPayment(), { totalAtomic: 1_000_000n, perPayerAtomic: 1_000_000n });
+        const waited = Date.now() - t0;
+        await sql.query("rollback");
+        expect(r).toEqual({ result: "inserted", mode: "sync" });
+        expect(waited).toBeGreaterThanOrEqual(1_900);
+        expect(waited).toBeLessThan(5_000);
+        expect((await a.exposure()).totalAtomic).toBe(0n);
+      });
+
+      it("the settle_mode column only accepts async or sync", async () => {
+        const p = newPayment();
+        await a.insertPayment(p);
+        await expect(sql.query("update x402_payments set settle_mode = 'later' where id = $1", [p.id])).rejects.toThrow(/check constraint/);
+      });
     });
 
     it("I8: the hash chain stays valid and gap-free under concurrent mixed writes from two replicas", async () => {

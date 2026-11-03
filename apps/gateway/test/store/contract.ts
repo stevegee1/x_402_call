@@ -186,19 +186,84 @@ export function describeStoreContract(name: string, make: () => Promise<StoreHar
         expect((await s.listPayments({ status: "settled", limit: 10 })).map((p) => p.id)).toEqual([ids[0]]);
       });
 
-      it("sums verified-but-unsettled value per payer (exposure rehydration)", async () => {
-        const payer = "0xC0FFEE000000000000000000000000000000000A";
-        const a = newPayment({ payer, amountAtomic: 33_000n });
-        const b = newPayment({ payer, amountAtomic: 66_000n });
-        const settled = newPayment({ payer, amountAtomic: 1_000_000n });
-        const other = newPayment({ amountAtomic: 5n });
-        for (const p of [a, b, settled, other]) await s.insertPayment(p);
-        await s.settlePayment(settled.id, "0xtx", settlementJournal(settled.id, settled.amountAtomic));
-        const rows = await s.unsettledByPayer();
-        const byPayer = Object.fromEntries(rows.map((r) => [r.payer, r.atomic]));
-        expect(byPayer[payer.toLowerCase()]).toBe(99_000n);
-        expect(byPayer[other.payer.toLowerCase()]).toBe(5n);
-        expect(rows).toHaveLength(2);
+      it("a plain insert defaults to async settle mode (conservative: counts as exposure)", async () => {
+        const p = newPayment();
+        await s.insertPayment(p);
+        expect((await s.getPayment(p.id))!.settleMode).toBe("async");
+        expect(await s.exposure()).toEqual({ totalAtomic: 33_000n, payers: 1 });
+      });
+    });
+
+    describe("admission and exposure (R4)", () => {
+      const caps = { totalAtomic: 100_000n, perPayerAtomic: 66_000n };
+      const at = { asyncAttemptAt: new Date(Date.now() + 2_000), syncAttemptAt: new Date(Date.now() + 120_000) };
+      const admit = (p: ReturnType<typeof newPayment>, wantAsync = true, c = caps) => {
+        const { nextAttemptAt: _, settleMode: __, ...rest } = p;
+        return s.admitPayment(rest, { wantAsync, caps: c, ...at });
+      };
+
+      it("admits async while within both caps, and records the mode and the matching next attempt", async () => {
+        const p = newPayment();
+        expect(await admit(p)).toEqual({ result: "inserted", mode: "async" });
+        const row = (await s.getPayment(p.id))!;
+        expect(row).toMatchObject({ status: "verified", settleMode: "async" });
+        expect(row.nextAttemptAt.getTime()).toBe(at.asyncAttemptAt.getTime());
+        expect(await s.exposure()).toEqual({ totalAtomic: 33_000n, payers: 1 });
+      });
+
+      it("falls back to sync when the per-payer cap would be exceeded; other payers are unaffected", async () => {
+        const payer = newPayment().payer;
+        expect(await admit(newPayment({ payer }))).toMatchObject({ mode: "async" });
+        expect(await admit(newPayment({ payer }))).toMatchObject({ mode: "async" }); // 66_000: exactly at the cap
+        const third = newPayment({ payer: payer.toUpperCase().replace("0X", "0x") }); // same payer, other case
+        expect(await admit(third)).toEqual({ result: "inserted", mode: "sync" });
+        expect((await s.getPayment(third.id))!.nextAttemptAt.getTime()).toBe(at.syncAttemptAt.getTime());
+        expect(await admit(newPayment())).toMatchObject({ mode: "async" });
+        expect(await s.exposure()).toEqual({ totalAtomic: 99_000n, payers: 2 });
+      });
+
+      it("falls back to sync when the global cap would be exceeded", async () => {
+        for (let i = 0; i < 3; i++) expect(await admit(newPayment())).toMatchObject({ mode: "async" });
+        expect(await admit(newPayment({ amountAtomic: 1_001n }))).toMatchObject({ mode: "sync" });
+        expect(await admit(newPayment({ amountAtomic: 1_000n }))).toMatchObject({ mode: "async" }); // exactly 100_000
+        expect((await s.exposure()).totalAtomic).toBe(100_000n);
+      });
+
+      it("sync admissions carry no exposure", async () => {
+        expect(await admit(newPayment(), false)).toMatchObject({ mode: "sync" });
+        expect(await s.exposure()).toEqual({ totalAtomic: 0n, payers: 0 });
+      });
+
+      it("a payment larger than the cap on its own is sync", async () => {
+        expect(await admit(newPayment({ amountAtomic: 66_001n }))).toMatchObject({ mode: "sync" });
+      });
+
+      it("rejects a replayed authorisation whatever the mode", async () => {
+        const p = newPayment();
+        await admit(p);
+        expect(await admit({ ...p, id: randomUUID() })).toEqual({ result: "duplicate" });
+        expect(await admit({ ...p, id: randomUUID() }, false)).toEqual({ result: "duplicate" });
+        expect((await s.exposure()).totalAtomic).toBe(33_000n);
+      });
+
+      it("settling, failing for good and cancelling release exposure; a retryable failure does not", async () => {
+        const [a, b, c, d] = [newPayment(), newPayment(), newPayment(), newPayment()];
+        for (const p of [a, b, c, d]) await admit(p, true, { totalAtomic: 1_000_000n, perPayerAtomic: 1_000_000n });
+        expect((await s.exposure()).totalAtomic).toBe(132_000n);
+        await s.settlePayment(a.id, "0xtx", settlementJournal(a.id));
+        await s.failPayment(b.id, "insufficient_funds", true);
+        await s.cancelPayment(c.id, "handler_status_502");
+        await s.failPayment(d.id, "indeterminate: timeout", false, new Date(Date.now() + 1_000));
+        expect(await s.exposure()).toEqual({ totalAtomic: 33_000n, payers: 1 });
+      });
+
+      it("released exposure is available to the next admission", async () => {
+        const payer = newPayment().payer;
+        const first = newPayment({ payer, amountAtomic: 66_000n });
+        await admit(first);
+        expect(await admit(newPayment({ payer }))).toMatchObject({ mode: "sync" });
+        await s.settlePayment(first.id, "0xtx", settlementJournal(first.id, first.amountAtomic));
+        expect(await admit(newPayment({ payer }))).toMatchObject({ mode: "async" });
       });
     });
 

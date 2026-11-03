@@ -1,43 +1,15 @@
+import type { Config } from "../config";
+import type { ExposureCaps } from "../store/types";
+
 /**
- * Tracks value we have served against verified-but-unsettled payments ("credit risk" of async
- * settlement). When a cap would be exceeded the request path settles synchronously instead.
- *
- * Per-instance counters, rehydrated from the DB on start. With N replicas the effective global cap
- * is N x capTotal; size the cap accordingly (documented in MVP.md).
+ * Exposure is value served against verified-but-unsettled payments: the credit risk of async
+ * settlement. It is enforced globally, across replicas, at admission (Store.admitPayment): a
+ * payment is served before settlement only if it keeps total and per-payer exposure within these
+ * caps; otherwise the request settles synchronously. See db/migrations/003.
  */
-export class ExposureTracker {
-  private byPayer = new Map<string, bigint>();
-  total = 0n;
-
-  constructor(
-    readonly capTotalAtomic: bigint,
-    readonly capPerPayerAtomic: bigint,
-  ) {}
-
-  wouldExceed(payer: string, amount: bigint): boolean {
-    const p = this.byPayer.get(payer.toLowerCase()) ?? 0n;
-    return this.total + amount > this.capTotalAtomic || p + amount > this.capPerPayerAtomic;
-  }
-
-  add(payer: string, amount: bigint) {
-    const k = payer.toLowerCase();
-    this.byPayer.set(k, (this.byPayer.get(k) ?? 0n) + amount);
-    this.total += amount;
-  }
-
-  release(payer: string, amount: bigint) {
-    const k = payer.toLowerCase();
-    const next = (this.byPayer.get(k) ?? 0n) - amount;
-    if (next <= 0n) this.byPayer.delete(k);
-    else this.byPayer.set(k, next);
-    this.total = this.total - amount < 0n ? 0n : this.total - amount;
-  }
-
-  rehydrate(rows: { payer: string; atomic: bigint }[]) {
-    this.byPayer.clear();
-    this.total = 0n;
-    for (const r of rows) this.add(r.payer, r.atomic);
-  }
-}
-
 export const usdToAtomic = (usd: number) => BigInt(Math.round(usd * 1_000_000));
+
+export const exposureCaps = (cfg: Pick<Config, "EXPOSURE_CAP_USD" | "EXPOSURE_CAP_PER_PAYER_USD">): ExposureCaps => ({
+  totalAtomic: usdToAtomic(cfg.EXPOSURE_CAP_USD),
+  perPayerAtomic: usdToAtomic(cfg.EXPOSURE_CAP_PER_PAYER_USD),
+});

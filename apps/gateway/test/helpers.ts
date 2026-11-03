@@ -11,13 +11,16 @@ import { CreditsService } from "../src/credits/service";
 import { FixedFx } from "../src/ledger/fx";
 import { createLogger } from "../src/logger";
 import { Metrics } from "../src/metrics";
-import { ExposureTracker, usdToAtomic } from "../src/payments/exposure";
+import { exposureCaps } from "../src/payments/exposure";
 import { FailoverFacilitator } from "../src/payments/facilitator";
 import { SanctionsService } from "../src/payments/sanctions";
 import { Settler } from "../src/payments/settlement";
 import { createResourceServer, RequirementsCache } from "../src/payments/x402";
-import { SnapshotEngine } from "../src/snapshot/engine";
-import { WorldState } from "../src/snapshot/state";
+import { Catalog } from "../src/platform/catalog";
+import type { Product } from "../src/platform/product";
+import { MaritimeProduct } from "../src/products/maritime";
+import { SnapshotEngine } from "../src/products/maritime/snapshot/engine";
+import { WorldState } from "../src/products/maritime/snapshot/state";
 import { MemoryStore } from "../src/store/memory";
 
 export const BASE_URL = "http://gw.test";
@@ -99,10 +102,22 @@ export interface TestEnv {
   facilitator: FakeFacilitator;
   checkout: FakeCheckout;
   world: WorldState;
+  engine: SnapshotEngine;
+  maritime: MaritimeProduct;
   fetch: typeof fetch;
 }
 
-export async function createTestEnv(overrides: Partial<Record<keyof Config, string>> = {}): Promise<TestEnv> {
+export interface TestEnvOptions {
+  /** Extra products hosted next to maritime (kernel tests use a fake product). */
+  products?: Product[];
+  /** Maritime feed health (readiness tests). */
+  feedConnected?: () => boolean;
+  /** ERC-8004 tier resolver (identity tests). */
+  identity?: AppDeps["identity"];
+  sellerIdentity?: AppDeps["sellerIdentity"];
+}
+
+export async function createTestEnv(overrides: Partial<Record<keyof Config, string>> = {}, opts: TestEnvOptions = {}): Promise<TestEnv> {
   const cfg = loadConfig({
     NODE_ENV: "test",
     PUBLIC_BASE_URL: BASE_URL,
@@ -121,14 +136,15 @@ export async function createTestEnv(overrides: Partial<Record<keyof Config, stri
   for (const e of sim.allStatics()) world.apply(e);
   for (let i = 0; i < 60; i++) for (const e of sim.step(1_000)) world.apply(e);
   const engine = new SnapshotEngine(world, cfg.SNAPSHOT_INTERVAL_MS);
+  const maritime = new MaritimeProduct({ engine, store, feedConnected: opts.feedConnected ?? (() => true), snapshotIntervalMs: cfg.SNAPSHOT_INTERVAL_MS });
+  const catalog = new Catalog([maritime, ...(opts.products ?? [])]);
 
   const facilitator = new FakeFacilitator([cfg.X402_NETWORK]);
   const failover = new FailoverFacilitator(facilitator, undefined, undefined, { windowMs: 30_000, minCalls: 3, failureRate: 0.5, slowCallMs: 5_000, openMs: 60_000 });
   const resourceServer = createResourceServer(failover, cfg.X402_NETWORK);
   await resourceServer.initialize();
   const requirements = new RequirementsCache(resourceServer, { payTo: PAY_TO, network: cfg.X402_NETWORK, maxTimeoutSeconds: cfg.MAX_TIMEOUT_SECONDS });
-  const exposure = new ExposureTracker(usdToAtomic(cfg.EXPOSURE_CAP_USD), usdToAtomic(cfg.EXPOSURE_CAP_PER_PAYER_USD));
-  const settler = new Settler(store, resourceServer, exposure, log, metrics);
+  const settler = new Settler(store, resourceServer, log, metrics);
   const checkout = new FakeCheckout();
   const sanctions = new SanctionsService({ failClosed: false });
   const deps: AppDeps = {
@@ -136,19 +152,20 @@ export async function createTestEnv(overrides: Partial<Record<keyof Config, stri
     log,
     metrics,
     store,
-    engine,
+    catalog,
     credits: new CreditsService(store, checkout, { publicBaseUrl: BASE_URL, keyEnv: "test" }),
     resourceServer,
     requirements,
     facilitator: failover,
     settler,
-    exposure,
+    exposureCaps: exposureCaps(cfg),
+    identity: opts.identity,
+    sellerIdentity: opts.sellerIdentity,
     sanctions,
     fx: new FixedFx(0.8),
-    feedConnected: () => true,
     startedAt: Date.now(),
   };
   const app = createApp(deps);
   const f = ((input: string | URL | Request, init?: RequestInit) => app.fetch(new Request(input, init))) as typeof fetch;
-  return { app, deps, store, facilitator, checkout, world, fetch: f };
+  return { app, deps, store, facilitator, checkout, world, engine, maritime, fetch: f };
 }

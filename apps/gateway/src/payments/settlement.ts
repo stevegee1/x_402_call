@@ -4,7 +4,6 @@ import { x402SettlementJournal } from "../ledger/journal";
 import type { Logger } from "../logger";
 import type { Metrics } from "../metrics";
 import type { PaymentRow, Store } from "../store/types";
-import type { ExposureTracker } from "./exposure";
 import type { AuthorizationChecker } from "./onchain";
 
 const MAX_ATTEMPTS = 6;
@@ -33,7 +32,6 @@ export class Settler {
   constructor(
     private readonly store: Store,
     private readonly server: x402ResourceServer,
-    private readonly exposure: ExposureTracker,
     private readonly log: Logger,
     private readonly metrics: Metrics,
     private readonly checker?: AuthorizationChecker,
@@ -115,7 +113,6 @@ export class Settler {
       occurredAt: new Date().toISOString(),
     });
     await this.store.settlePayment(row.id, res?.transaction || null, journal);
-    this.exposure.release(row.payer, row.amountAtomic);
     this.metrics.inc("x402_settlements_total", { result: "success" });
     this.metrics.inc("x402_revenue_usdc_atomic_total", {}, Number(row.amountAtomic));
     this.log.info({ paymentId: row.id, tx: res?.transaction ?? null }, "payment settled");
@@ -127,7 +124,6 @@ export class Settler {
     const backoffMs = Math.min(30_000, 1_000 * 2 ** row.attempts);
     await this.store.failPayment(row.id, reason, final, final ? undefined : new Date(Date.now() + backoffMs));
     if (final) {
-      this.exposure.release(row.payer, row.amountAtomic);
       this.metrics.inc("x402_settlements_total", { result: "failed" });
       this.metrics.inc("x402_settlement_failed_usdc_atomic_total", {}, Number(row.amountAtomic));
       this.log.warn({ paymentId: row.id, reason }, "payment settlement failed permanently");

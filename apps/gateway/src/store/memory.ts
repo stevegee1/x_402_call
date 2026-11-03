@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { assertBalanced, computeHash, GENESIS_HASH, normalizeJournal, type JournalEntry, type JournalInput } from "../ledger/journal";
-import type { CreditAccount, NewAccount, NewPayment, PaymentRow, PaymentStatus, PolicyEventRow, Store, UsageRow } from "./types";
+import type { AdmitOptions, Admission, CreditAccount, NewAccount, NewPayment, PaymentRow, PaymentStatus, PolicyEventRow, Store, UsageRow } from "./types";
 
 /**
  * In-memory Store for tests and zero-dependency local runs. Not durable: never used when
@@ -34,7 +34,7 @@ export class MemoryStore implements Store {
     if (this.nonces.has(k)) return "duplicate" as const;
     this.nonces.add(k);
     const now = new Date();
-    this.payments.set(p.id, { ...p, payer: p.payer.toLowerCase(), status: "verified", attempts: 0, txHash: null, error: null, createdAt: now, settledAt: null });
+    this.payments.set(p.id, { ...p, payer: p.payer.toLowerCase(), status: "verified", settleMode: p.settleMode ?? "async", attempts: 0, txHash: null, error: null, createdAt: now, settledAt: null });
     return "inserted" as const;
   }
 
@@ -80,10 +80,33 @@ export class MemoryStore implements Store {
       .slice(0, opts.limit);
   }
 
-  async unsettledByPayer() {
-    const m = new Map<string, bigint>();
-    for (const p of this.payments.values()) if (p.status === "verified") m.set(p.payer, (m.get(p.payer) ?? 0n) + p.amountAtomic);
-    return [...m].map(([payer, atomic]) => ({ payer, atomic }));
+  private exposureOf(payer?: string) {
+    let total = 0n;
+    let mine = 0n;
+    const payers = new Set<string>();
+    for (const p of this.payments.values()) {
+      if (p.status !== "verified" || p.settleMode !== "async") continue;
+      total += p.amountAtomic;
+      payers.add(p.payer);
+      if (payer && p.payer === payer.toLowerCase()) mine += p.amountAtomic;
+    }
+    return { total, mine, payers: payers.size };
+  }
+
+  // Single-threaded: check and insert happen with no await between them, so admission is atomic.
+  async admitPayment(p: Omit<NewPayment, "nextAttemptAt" | "settleMode">, o: AdmitOptions): Promise<Admission> {
+    let mode: "async" | "sync" = "sync";
+    if (o.wantAsync) {
+      const e = this.exposureOf(p.payer);
+      if (e.total + p.amountAtomic <= o.caps.totalAtomic && e.mine + p.amountAtomic <= o.caps.perPayerAtomic) mode = "async";
+    }
+    const r = await this.insertPayment({ ...p, settleMode: mode, nextAttemptAt: mode === "async" ? o.asyncAttemptAt : o.syncAttemptAt });
+    return r === "duplicate" ? { result: "duplicate" } : { result: "inserted", mode };
+  }
+
+  async exposure() {
+    const e = this.exposureOf();
+    return { totalAtomic: e.total, payers: e.payers };
   }
 
   async createAccount(a: NewAccount, keyHash: string, _keyPrefix: string) {

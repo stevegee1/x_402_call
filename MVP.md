@@ -66,7 +66,7 @@ An AI agent or business can buy **live maritime data with no account** (x402, US
    2. Screen the payer for sanctions.
    3. **Verify with the facilitator** (behind a breaker).
    4. Insert into `x402_payments`. The unique key `(network, payer, nonce)` blocks replay.
-3. **Async mode (default):** add to exposure → serve → a worker settles after 2 s. If the handler returns ≥400, the payment is cancelled and never settled.
+3. **Async mode (default):** admitted as async only if global and per-payer exposure (summed over every replica, in Postgres) stays within the caps → serve → a worker settles after 2 s. If the handler returns ≥400, the payment is cancelled and never settled.
 4. **Sync fallback:** used when the global or per-payer exposure cap would be exceeded, or the authorisation expires within 30 s. Settle first, serve second, and return `PAYMENT-RESPONSE`.
 5. On settlement, write a journal: Dr USDC wallet (GBP at the FX quote captured at verify time) / Cr revenue (net) / Cr VAT output (gross ÷ 6).
 
@@ -85,16 +85,17 @@ An AI agent or business can buy **live maritime data with no account** (x402, US
 
 | # | Invariant | Enforced by | Tested in |
 |---|---|---|---|
-| I1 | We never charge for stale data | Staleness gate before billing | `never charges for stale data` |
+| I1 | We never charge for stale data | Staleness gate before billing; each product defines freshness (grid: fetch age, current half-hour, 12 h horizon, horizon still advancing) | `never charges for stale data`; `grid freshness (I1)`; grid `a frozen source turns into 503` |
 | I2 | Simulated or replay data is never sold on mainnet | Mode gate before billing | `never sells simulated data on mainnet` |
 | I3 | An authorisation is used at most once | DB unique key + facilitator + on-chain nonce | `rejects a replayed payment signature` |
-| I4 | Verified-but-unsettled value is bounded | `ExposureTracker` → sync settlement | `settles synchronously when the exposure cap…` |
+| I4 | Verified-but-unsettled value is bounded, globally | `Store.admitPayment`: admission under a Postgres advisory lock, exposure derived from unsettled async rows → otherwise sync | contract `admission and exposure (R4)`; Postgres `R4: exposure caps hold globally`; e2e `exposure caps are global across replicas` |
 | I5 | A failed handler never results in a charge | Precheck for 404s; refund (credits) / cancel (async x402) on ≥400 | `does not charge for a vessel…`, credits test |
 | I6 | Facilitator outage returns 503 (never charged), not 402 | `FailoverFacilitator` + breaker | `does not charge when the facilitator is down` |
 | I7 | Two replicas never settle the same payment concurrently | `claimDuePayments` lease (`FOR UPDATE SKIP LOCKED`) | `I7: two replicas claiming concurrently…` (integration) |
 | I8 | Ledger is balanced, append-only and tamper-evident | `assertBalanced`, DB trigger, hash chain | `detects tampering…`; trigger verified on Postgres |
 | I9 | Credits balance never goes negative | Conditional `UPDATE … WHERE balance >= $price` + CHECK constraint | credits test |
 | I10 | The buyer signs exactly the requirement its policy approved | SDK passes only the approved `accepts` entry to the signer | policy tests |
+| I12 | ERC-8004 identity only ever loosens limits: every failure (no or malformed id, wallet mismatch, transferred agent, registry error or timeout, weak reputation) is the no-identity behaviour, and no tier raises the global cap | `TierResolver` (strict `getAgentWallet` == payer binding), config check `unknown <= identified <= trusted <= global` | `test/identity/*`; e2e `ERC-8004 buyer tiers (loosen-only)` |
 
 ---
 
@@ -135,16 +136,22 @@ An AI agent or business can buy **live maritime data with no account** (x402, US
 
 | # | Gap | Impact | Proposed fix |
 |---|---|---|---|
-| R1 | Async mode serves data before settlement; a payer can empty their wallet between verify and settle | Bounded loss ≤ exposure cap (default $25 global / $1 per payer **per replica**) | Size caps per replica count; consider the x402 `upto`/batch schemes in M3 |
+| R1 | Async mode serves data before settlement; a payer can empty their wallet between verify and settle | Bounded loss ≤ exposure cap (default $25 global / $1 per payer, across all replicas) | Consider the x402 `upto`/batch schemes in M3 |
 | R2 | If sync settlement is indeterminate, the client gets 503 but the payment may settle later | Customer charged without data (rare) | Add a "redeem settled payment" path or an automatic refund policy |
 | R3 | The SDK counts spend when it signs, even if the seller rejects the payment | Budgets are conservative (over-count) | Intended. Reconcile with the seller's payment-status endpoint later. |
-| R4 | Exposure counters are per-instance (rehydrated from the DB at start) | Effective cap = N × cap | Move to a Postgres/Redis counter at more than 2 replicas |
+| R4 | ~~Exposure counters are per-instance~~ **Addressed:** exposure is derived from the payments table and enforced at admission under a short global lock (`db/migrations/003`); a contended lock (>2 s) degrades to sync settlement | n/a | Done. The lock serialises async admissions: revisit above ~1k paid req/s |
+| E2E | **Addressed:** `pnpm e2e` runs four gateway replicas, the self-hosted facilitator and a real EIP-3009 token on a local chain, and reconciles ledger against chain | n/a | Done |
 | R5 | ~~No automated test against Postgres~~ **Addressed:** `pnpm test:integration` runs the Store contract plus concurrency tests (I3, I7, I8, I9) on Postgres 16 in CI | n/a | Done |
 | R6 | Admin auth is a single shared token | Weak for a team | SSO (M4) |
 | R7 | Anchorage polygons and region boxes are coarse rectangles | Queue and anomaly accuracy | Charted polygons (UKHO / PoR / ACP) |
 | R8 | Ledger journal writes are serialised by an advisory lock | Throughput ceiling of roughly 1–2k writes/s | Batch usage journals hourly; hash per batch |
 | R9 | The VAT treatment is our reading, not advice | Tax exposure | **Accountant sign-off before mainnet** (D9) |
 | R10 | Runs via `tsx` in production | Slower cold start | Bundle with esbuild/tsup before M2 |
+| R11 | The gateway exits at boot if the primary facilitator's `/supported` is unreachable and no fallback is set (`resourceServer.initialize()`). Verified by booting against a closed port | A CDP outage during a deploy crash-loops new pods | Always configure `FALLBACK_FACILITATOR_URL` in production; later, retry `initialize()` with backoff and report not-ready instead of exiting |
+| R12 | The self-hosted facilitator assigns transaction nonces in-process | Two replicas sharing one key would race for nonces | One replica per key; to scale out, run more facilitators, each with its own key |
+| R13 | A verified tier is cached for 5 minutes, so a transferred agent keeps its tier on that gateway for up to 5 minutes | Bounded: at most the trusted per-payer cap of extra exposure | Accept; shorten the TTL or watch Transfer events if tiers grow large |
+| R14 | We treat NESO's `datetime` as the start of each half-hour (it lines up with the Carbon Intensity API's `from`), not confirmed in NESO documentation | Window times could be 30 min off | Confirm with NESO; one-line change in `parseRecords` |
+| R15 | NESO gives no availability guarantee and "does not guarantee the continued supply" of the data | Grid revenue stops if the dataset is withdrawn or freezes (freezes are detected and never charged) | Alerts on `grid_fresh == 0`; regional data needs NESO permission or a fix to their regional dataset |
 
 ---
 
