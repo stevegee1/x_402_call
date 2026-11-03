@@ -41,7 +41,7 @@ export class StripeCheckout implements CheckoutGateway {
 
   async createCheckout(r: CheckoutRequest) {
     const lineItems: Stripe.Checkout.SessionCreateParams.LineItem[] = [
-      { quantity: 1, price_data: { currency: "gbp", unit_amount: toPence(r.netMicros), product_data: { name: `Maritime data credits: ${r.label}` } } },
+      { quantity: 1, price_data: { currency: "gbp", unit_amount: toPence(r.netMicros), product_data: { name: `API credits: ${r.label}` } } }, // credits are spendable on every product
     ];
     if (r.vatMicros > 0) {
       lineItems.push({ quantity: 1, price_data: { currency: "gbp", unit_amount: toPence(r.vatMicros), product_data: { name: "UK VAT @ 20%" } } });

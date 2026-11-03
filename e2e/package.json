@@ -1,0 +1,25 @@
+{
+  "name": "@mx/e2e",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "End-to-end harness: anvil + mock USDC (EIP-3009) + self-hosted facilitator + gateway replicas on Postgres",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run --config vitest.unit.config.ts",
+    "e2e": "vitest run",
+    "stack": "tsx src/stack-cli.ts"
+  },
+  "dependencies": {
+    "@mx/policy-sdk": "workspace:*",
+    "@x402/core": "2.28.0",
+    "@x402/evm": "2.28.0",
+    "pg": "8.23.1",
+    "viem": "2.57.10"
+  },
+  "devDependencies": {
+    "@testcontainers/postgresql": "12.2.1",
+    "@types/pg": "8.23.1",
+    "testcontainers": "12.2.1"
+  }
+}

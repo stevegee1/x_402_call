@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { productOfResource } from "../platform/catalog";
 import { splitInclusive } from "./vat";
 
 /**
@@ -11,8 +12,14 @@ export const ACCOUNTS = {
   bankTransfer: "asset:bank_transfer",
   creditsLiability: "liability:customer_credits",
   vatOutput: "liability:vat_output",
-  revenueData: "revenue:data_api",
 } as const;
+
+export const REVENUE_PREFIX = "revenue:";
+
+/** Revenue is booked per product: `revenue:<productId>`, derived from the namespaced resource id. */
+export function revenueAccount(resourceId: string): string {
+  return `${REVENUE_PREFIX}${productOfResource(resourceId)}`;
+}
 
 export type JournalKind = "x402_settlement" | "credits_topup" | "credits_usage" | "credits_refund";
 
@@ -98,9 +105,11 @@ export function x402SettlementJournal(p: {
   transaction: string | null;
   payer: string;
   network: string;
+  /** Namespaced resource id, e.g. "maritime.vessels". */
   endpoint: string;
   occurredAt: string;
 }): JournalInput {
+  const revenue = revenueAccount(p.endpoint);
   // USDC atomic (6dp) is numerically USD micros; convert to GBP micros at the quote used at verify time.
   const grossMicros = Math.round(Number(p.amountAtomic) * p.fxRate);
   const { netMicros, vatMicros } = splitInclusive(grossMicros);
@@ -109,7 +118,7 @@ export function x402SettlementJournal(p: {
     kind: "x402_settlement",
     ref: p.paymentId,
     occurredAt: p.occurredAt,
-    lines: [L(ACCOUNTS.usdcWallet, grossMicros, 0), L(ACCOUNTS.revenueData, 0, netMicros), L(ACCOUNTS.vatOutput, 0, vatMicros)],
+    lines: [L(ACCOUNTS.usdcWallet, grossMicros, 0), L(revenue, 0, netMicros), L(ACCOUNTS.vatOutput, 0, vatMicros)],
     memo: {
       usdc_atomic: p.amountAtomic.toString(),
       fx_usdc_gbp: p.fxRate,
@@ -146,9 +155,10 @@ export function creditsTopUpJournal(p: {
 }
 
 export function creditsUsageJournal(p: { accountId: string; micros: number; endpoint: string; ref: string; occurredAt: string; refund?: boolean }): JournalInput {
+  const revenue = revenueAccount(p.endpoint);
   const lines = p.refund
-    ? [L(ACCOUNTS.revenueData, p.micros, 0), L(ACCOUNTS.creditsLiability, 0, p.micros)]
-    : [L(ACCOUNTS.creditsLiability, p.micros, 0), L(ACCOUNTS.revenueData, 0, p.micros)];
+    ? [L(revenue, p.micros, 0), L(ACCOUNTS.creditsLiability, 0, p.micros)]
+    : [L(ACCOUNTS.creditsLiability, p.micros, 0), L(revenue, 0, p.micros)];
   return {
     id: randomUUID(),
     kind: p.refund ? "credits_refund" : "credits_usage",

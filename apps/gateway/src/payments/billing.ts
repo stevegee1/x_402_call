@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { isRegionId, PAID_ENDPOINTS, REGION_IDS, type EndpointId, type PaidEndpoint } from "@mx/shared";
 import { decodePaymentSignatureHeader, encodePaymentRequiredHeader, encodePaymentResponseHeader } from "@x402/core/http";
 import type { PaymentPayload } from "@x402/core/types";
 import type { Context, MiddlewareHandler } from "hono";
@@ -7,7 +6,7 @@ import { isMainnet } from "../config";
 import type { AppDeps, AppEnv } from "../context";
 import { looksLikeApiKey } from "../credits/keys";
 import { creditsUsageJournal } from "../ledger/journal";
-import type { RegionSnapshot } from "../snapshot/engine";
+import type { PricedResource, Precheck, Product } from "../platform/product";
 import { FacilitatorUnavailableError } from "./facilitator";
 
 /** Async mode: give the request path this long to serve or cancel before the worker may settle. */
@@ -27,57 +26,52 @@ interface ExactAuthorization {
 }
 
 /**
- * Charges for a paid endpoint via one of two rails, then runs the handler:
+ * Charges for a product resource via one of two rails, then runs the handler:
  *   1. Fiat credits:  Authorization: Bearer mk_...       (identified B2B account, GBP prepaid)
  *   2. x402:          PAYMENT-SIGNATURE: <base64 payload> (account-free, USDC on Base)
  * With neither, responds 402 advertising both.
  *
- * Invariants:
- *   - We never charge for stale data, or for simulated data on mainnet (503 instead).
- *   - Credits are refunded and (async) x402 payments cancelled if the handler returns >= 400.
+ * Product-agnostic. Invariants enforced here for every product:
+ *   - I1/I2: never charge for stale data, or for non-live data on mainnet (503 instead).
+ *   - I5: the product precheck runs before any charge; credits are refunded and (async) x402
+ *     payments cancelled if the handler returns >= 400.
  */
-export function paid(
-  id: EndpointId,
-  d: AppDeps,
-  /** Cheap validation that must pass BEFORE charging (e.g. the vessel exists), so sync-settled payments are never taken for a 404. */
-  precheck?: (c: Context<AppEnv>, snap: RegionSnapshot) => Response | null,
-): MiddlewareHandler<AppEnv> {
-  const ep = PAID_ENDPOINTS[id];
-
+export function paid(product: Product, resource: PricedResource, d: AppDeps, precheck?: Precheck<unknown>): MiddlewareHandler<AppEnv> {
   return async (c, next) => {
-    const region = c.req.param("region") ?? "";
-    if (!isRegionId(region)) return c.json({ error: "unknown_region", regions: REGION_IDS }, 404);
+    const resolved = product.resolve(c);
+    if (resolved instanceof Response) return resolved;
+    const { scope } = resolved;
+    const labels = { product: product.id, scope: scope.scope };
 
-    const snap = d.engine.get(region);
-    if (snap.stale) {
-      d.metrics.inc("paid_requests_refused_total", { reason: "stale", region });
+    if (!scope.fresh) {
+      d.metrics.inc("paid_requests_refused_total", { reason: "stale", ...labels });
       c.header("Retry-After", "30");
-      return c.json({ error: "data_stale", detail: "region feed is stale; you have not been charged", source_ts: snap.sourceTs ? new Date(snap.sourceTs).toISOString() : null }, 503);
+      return c.json({ error: "data_stale", detail: "data feed is stale; you have not been charged", source_ts: scope.sourceTs ? new Date(scope.sourceTs).toISOString() : null }, 503);
     }
-    if (snap.mode !== "live" && isMainnet(d.cfg)) {
-      d.metrics.inc("paid_requests_refused_total", { reason: "not_live", region });
-      return c.json({ error: "not_for_sale", detail: `region is serving ${snap.mode} data, which is never sold on mainnet` }, 503);
+    if (scope.mode !== "live" && isMainnet(d.cfg)) {
+      d.metrics.inc("paid_requests_refused_total", { reason: "not_live", ...labels });
+      return c.json({ error: "not_for_sale", detail: `serving ${scope.mode} data, which is never sold on mainnet` }, 503);
     }
-    c.set("snapshot", snap);
-    const rejected = precheck?.(c, snap);
+    c.set("resolution", resolved);
+    const rejected = precheck?.(c, resolved.state);
     if (rejected) return rejected;
 
     const auth = c.req.header("authorization");
-    if (auth?.startsWith("Bearer mk_")) return chargeCredits(c, next, ep, auth.slice(7), d);
+    if (auth?.startsWith("Bearer mk_")) return chargeCredits(c, next, resource, auth.slice(7), d);
 
     const sig = c.req.header("payment-signature");
-    if (sig) return chargeX402(c, next, ep, sig, d);
+    if (sig) return chargeX402(c, next, resource, sig, d);
 
-    if (c.req.header("x-payment")) return paymentRequired(c, ep, d, "x402_v1_not_supported: use PAYMENT-SIGNATURE (x402 v2)");
-    return paymentRequired(c, ep, d);
+    if (c.req.header("x-payment")) return paymentRequired(c, resource, d, "x402_v1_not_supported: use PAYMENT-SIGNATURE (x402 v2)");
+    return paymentRequired(c, resource, d);
   };
 }
 
-async function paymentRequired(c: Context<AppEnv>, ep: PaidEndpoint, d: AppDeps, error?: string, extra: Record<string, unknown> = {}) {
-  const reqs = await d.requirements.get(ep.id);
+async function paymentRequired(c: Context<AppEnv>, resource: PricedResource, d: AppDeps, error?: string, extra: Record<string, unknown> = {}) {
+  const reqs = await d.requirements.get(resource);
   const resourceUrl = `${d.cfg.PUBLIC_BASE_URL}${new URL(c.req.url).pathname}`;
-  const pr = await d.resourceServer.createPaymentRequiredResponse(reqs, { url: resourceUrl, description: ep.description, mimeType: "application/json" }, error);
-  d.metrics.inc("payment_required_total", { endpoint: ep.id });
+  const pr = await d.resourceServer.createPaymentRequiredResponse(reqs, { url: resourceUrl, description: resource.summary, mimeType: "application/json" }, error);
+  d.metrics.inc("payment_required_total", { resource: resource.id });
   c.header("PAYMENT-REQUIRED", encodePaymentRequiredHeader(pr));
   c.header("Cache-Control", "private, no-store");
   return c.json(
@@ -85,7 +79,7 @@ async function paymentRequired(c: Context<AppEnv>, ep: PaidEndpoint, d: AppDeps,
       ...pr,
       // Non-standard extension: the fiat alternative for identified business customers.
       credits: {
-        price_gbp: ep.creditsGbpMicros / 1_000_000,
+        price_gbp: resource.pricing.creditsGbpMicros / 1_000_000,
         usage: "Authorization: Bearer <api key>",
         signup: `${d.cfg.PUBLIC_BASE_URL}/v1/credits/accounts`,
       },
@@ -95,7 +89,7 @@ async function paymentRequired(c: Context<AppEnv>, ep: PaidEndpoint, d: AppDeps,
   );
 }
 
-async function chargeCredits(c: Context<AppEnv>, next: () => Promise<void>, ep: PaidEndpoint, apiKey: string, d: AppDeps) {
+async function chargeCredits(c: Context<AppEnv>, next: () => Promise<void>, resource: PricedResource, apiKey: string, d: AppDeps) {
   if (!looksLikeApiKey(apiKey)) return c.json({ error: "invalid_api_key" }, 401);
   const account = await d.credits.resolveKey(apiKey);
   if (!account) return c.json({ error: "invalid_api_key" }, 401);
@@ -104,11 +98,11 @@ async function chargeCredits(c: Context<AppEnv>, next: () => Promise<void>, ep: 
 
   const ref = c.get("requestId");
   const occurredAt = new Date().toISOString();
-  const journal = creditsUsageJournal({ accountId: account.id, micros: ep.creditsGbpMicros, endpoint: ep.id, ref, occurredAt });
-  const debit = await d.store.debit(account.id, ep.creditsGbpMicros, ep.id, journal);
+  const journal = creditsUsageJournal({ accountId: account.id, micros: resource.pricing.creditsGbpMicros, endpoint: resource.id, ref, occurredAt });
+  const debit = await d.store.debit(account.id, resource.pricing.creditsGbpMicros, resource.id, journal);
   if (!debit.ok) {
     d.metrics.inc("credits_insufficient_total");
-    return paymentRequired(c, ep, d, "insufficient_credits", {
+    return paymentRequired(c, resource, d, "insufficient_credits", {
       credits_balance_gbp: debit.balanceMicros / 1_000_000,
       topup: `${d.cfg.PUBLIC_BASE_URL}/v1/credits/checkout`,
     });
@@ -117,30 +111,30 @@ async function chargeCredits(c: Context<AppEnv>, next: () => Promise<void>, ep: 
   await next();
 
   if (c.res.status >= 400) {
-    await d.store.refund(account.id, ep.creditsGbpMicros, creditsUsageJournal({ accountId: account.id, micros: ep.creditsGbpMicros, endpoint: ep.id, ref, occurredAt: new Date().toISOString(), refund: true }));
+    await d.store.refund(account.id, resource.pricing.creditsGbpMicros, creditsUsageJournal({ accountId: account.id, micros: resource.pricing.creditsGbpMicros, endpoint: resource.id, ref, occurredAt: new Date().toISOString(), refund: true }));
     c.res.headers.set(CREDITS_CHARGED_HEADER, "0");
     return;
   }
-  d.metrics.inc("paid_requests_total", { rail: "credits", endpoint: ep.id });
-  d.metrics.inc("credits_revenue_gbp_micros_total", {}, ep.creditsGbpMicros);
-  c.res.headers.set(CREDITS_CHARGED_HEADER, String(ep.creditsGbpMicros));
+  d.metrics.inc("paid_requests_total", { rail: "credits", resource: resource.id });
+  d.metrics.inc("credits_revenue_gbp_micros_total", { resource: resource.id }, resource.pricing.creditsGbpMicros);
+  c.res.headers.set(CREDITS_CHARGED_HEADER, String(resource.pricing.creditsGbpMicros));
   c.res.headers.set(CREDITS_BALANCE_HEADER, String(debit.balanceMicros));
 }
 
-async function chargeX402(c: Context<AppEnv>, next: () => Promise<void>, ep: PaidEndpoint, header: string, d: AppDeps) {
+async function chargeX402(c: Context<AppEnv>, next: () => Promise<void>, resource: PricedResource, header: string, d: AppDeps) {
   let payload: PaymentPayload;
   try {
     payload = decodePaymentSignatureHeader(header);
   } catch {
-    return paymentRequired(c, ep, d, "invalid_payment_header");
+    return paymentRequired(c, resource, d, "invalid_payment_header");
   }
 
-  const reqs = await d.requirements.get(ep.id);
+  const reqs = await d.requirements.get(resource);
   const match = d.resourceServer.findMatchingRequirements(reqs, payload);
-  if (!match) return paymentRequired(c, ep, d, "payment_does_not_match_requirements");
+  if (!match) return paymentRequired(c, resource, d, "payment_does_not_match_requirements");
 
   const auth = (payload.payload as { authorization?: ExactAuthorization }).authorization;
-  if (!auth?.from || !auth.nonce || !auth.validBefore) return paymentRequired(c, ep, d, "unsupported_payment_payload");
+  if (!auth?.from || !auth.nonce || !auth.validBefore) return paymentRequired(c, resource, d, "unsupported_payment_payload");
   const payer = auth.from.toLowerCase();
 
   const screening = await d.sanctions.screen(payer);
@@ -163,7 +157,7 @@ async function chargeX402(c: Context<AppEnv>, next: () => Promise<void>, ep: Pai
   }
   if (!verify.isValid) {
     d.metrics.inc("x402_verify_invalid_total", { reason: verify.invalidReason ?? "unknown" });
-    return paymentRequired(c, ep, d, verify.invalidReason ?? "payment_invalid");
+    return paymentRequired(c, resource, d, verify.invalidReason ?? "payment_invalid");
   }
 
   const amount = BigInt(match.amount);
@@ -179,7 +173,7 @@ async function chargeX402(c: Context<AppEnv>, next: () => Promise<void>, ep: Pai
     payer,
     nonce: auth.nonce,
     amountAtomic: amount,
-    endpoint: ep.id,
+    endpoint: resource.id,
     resource: new URL(c.req.url).pathname,
     payload,
     requirements: match,
@@ -191,7 +185,7 @@ async function chargeX402(c: Context<AppEnv>, next: () => Promise<void>, ep: Pai
   });
   if (inserted === "duplicate") {
     d.metrics.inc("x402_replay_rejected_total");
-    return paymentRequired(c, ep, d, "payment_already_used");
+    return paymentRequired(c, resource, d, "payment_already_used");
   }
 
   if (sync) {
@@ -199,7 +193,7 @@ async function chargeX402(c: Context<AppEnv>, next: () => Promise<void>, ep: Pai
     const outcome = await d.settler.settleNow(row);
     if (!outcome.ok) {
       if (!outcome.final) return c.json({ error: "settlement_pending", payment_id: id, detail: "settlement did not complete; retry shortly" }, 503);
-      return paymentRequired(c, ep, d, `settlement_failed: ${outcome.reason}`);
+      return paymentRequired(c, resource, d, `settlement_failed: ${outcome.reason}`);
     }
     await next();
     if (outcome.response) c.res.headers.set("PAYMENT-RESPONSE", encodePaymentResponseHeader(outcome.response));
@@ -216,5 +210,5 @@ async function chargeX402(c: Context<AppEnv>, next: () => Promise<void>, ep: Pai
     c.res.headers.set("X-Payment-Id", id);
     c.res.headers.set("X-Settlement", "pending");
   }
-  d.metrics.inc("paid_requests_total", { rail: "x402", endpoint: ep.id, mode: sync ? "sync" : "async" });
+  d.metrics.inc("paid_requests_total", { rail: "x402", resource: resource.id, mode: sync ? "sync" : "async" });
 }

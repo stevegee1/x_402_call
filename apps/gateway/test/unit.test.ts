@@ -4,8 +4,8 @@ import { CircuitBreaker } from "../src/payments/breaker";
 import { ExposureTracker } from "../src/payments/exposure";
 import { assertBalanced, computeHash, creditsUsageJournal, GENESIS_HASH, verifyChain, type JournalEntry } from "../src/ledger/journal";
 import { creditsVat, splitInclusive, validateTaxId } from "../src/ledger/vat";
-import { SnapshotEngine } from "../src/snapshot/engine";
-import { WorldState } from "../src/snapshot/state";
+import { SnapshotEngine } from "../src/products/maritime/snapshot/engine";
+import { WorldState } from "../src/products/maritime/snapshot/state";
 
 describe("VAT", () => {
   it("extracts VAT from inclusive prices without losing pennies", () => {
@@ -33,7 +33,7 @@ describe("ledger", () => {
     const entries: JournalEntry[] = [];
     let prev = GENESIS_HASH;
     for (let i = 0; i < 3; i++) {
-      const j = creditsUsageJournal({ accountId: "a", micros: 25_000, endpoint: "vessels", ref: `r${i}`, occurredAt: new Date(i).toISOString() });
+      const j = creditsUsageJournal({ accountId: "a", micros: 25_000, endpoint: "maritime.vessels", ref: `r${i}`, occurredAt: new Date(i).toISOString() });
       const hash = computeHash(prev, j);
       entries.push({ ...j, seq: i + 1, prevHash: prev, hash });
       prev = hash;

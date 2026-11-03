@@ -68,7 +68,7 @@ const server = new McpServer({ name: "maritime-data", version: "0.1.0" });
 server.registerTool(
   "list_regions",
   { title: "List regions", description: "Free. Lists covered regions, data freshness and per-call prices." },
-  () => call("/v1/regions"),
+  () => call("/v1/maritime/regions"),
 );
 
 server.registerTool(
@@ -87,32 +87,32 @@ server.registerTool(
     const q = new URLSearchParams();
     if (category) q.set("category", category);
     if (min_speed_kn !== undefined) q.set("min_speed_kn", String(min_speed_kn));
-    return call(`/v1/${region}/vessels${q.size ? `?${q}` : ""}`, (b) => ({ ...b, data: b.data?.slice(0, limit), truncated: (b.count ?? 0) > limit }));
+    return call(`/v1/maritime/${region}/vessels${q.size ? `?${q}` : ""}`, (b) => ({ ...b, data: b.data?.slice(0, limit), truncated: (b.count ?? 0) > limit }));
   },
 );
 
 server.registerTool(
   "get_vessel",
   { title: "Vessel detail", description: "Paid (0.033 USDC). One vessel's latest state and recent track.", inputSchema: { region, mmsi: z.number().int() } },
-  ({ region, mmsi }) => call(`/v1/${region}/vessels/${mmsi}`),
+  ({ region, mmsi }) => call(`/v1/maritime/${region}/vessels/${mmsi}`),
 );
 
 server.registerTool(
   "get_density",
   { title: "Traffic density", description: "Paid (0.033 USDC). H3-binned vessel density, moving vs stationary.", inputSchema: { region } },
-  ({ region }) => call(`/v1/${region}/density`, (b) => ({ ...b, data: b.data?.slice(0, 40) })),
+  ({ region }) => call(`/v1/maritime/${region}/density`, (b) => ({ ...b, data: b.data?.slice(0, 40) })),
 );
 
 server.registerTool(
   "get_anchorage_queue",
   { title: "Anchorage queue", description: "Paid (0.066 USDC). Vessels waiting at anchor, wait-time stats, draught-limit exposure (Panama).", inputSchema: { region } },
-  ({ region }) => call(`/v1/${region}/queue`),
+  ({ region }) => call(`/v1/maritime/${region}/queue`),
 );
 
 server.registerTool(
   "get_anomalies",
   { title: "Anomalies", description: "Paid (0.066 USDC). Vessels going dark (AIS gaps), position jumps, loitering.", inputSchema: { region } },
-  ({ region }) => call(`/v1/${region}/anomalies`),
+  ({ region }) => call(`/v1/maritime/${region}/anomalies`),
 );
 
 server.registerTool(

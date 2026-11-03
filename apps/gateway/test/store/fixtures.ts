@@ -11,8 +11,8 @@ export function newPayment(over: Partial<NewPayment> = {}): NewPayment {
     payer: `0x${randomBytes(20).toString("hex")}`,
     nonce: `0x${randomBytes(32).toString("hex")}`,
     amountAtomic: 33_000n,
-    endpoint: "vessels",
-    resource: "http://gw.test/v1/dover/vessels",
+    endpoint: "maritime.vessels",
+    resource: "http://gw.test/v1/maritime/dover/vessels",
     payload: { x402Version: 2, payload: { signature: "0xabc", authorization: { value: "33000" } } },
     requirements: { scheme: "exact", network: NETWORK, amount: "33000", extra: { name: "USDC", version: "2" } },
     validBefore: new Date(Date.now() + 600_000),
@@ -38,12 +38,12 @@ export const settlementJournal = (paymentId: string, amountAtomic = 33_000n): Jo
     transaction: `0x${randomBytes(32).toString("hex")}`,
     payer: "0xpayer",
     network: NETWORK,
-    endpoint: "vessels",
+    endpoint: "maritime.vessels",
     occurredAt: new Date().toISOString(),
   });
 
 export const usageJournal = (accountId: string, micros: number, refund = false): JournalInput =>
-  creditsUsageJournal({ accountId, micros, endpoint: "vessels", ref: randomUUID(), occurredAt: new Date().toISOString(), refund });
+  creditsUsageJournal({ accountId, micros, endpoint: "maritime.vessels", ref: randomUUID(), occurredAt: new Date().toISOString(), refund });
 
 export const topUpJournal = (accountId: string, ref: string, netMicros: number, vatMicros: number): JournalInput =>
   creditsTopUpJournal({ accountId, netMicros, vatMicros, vatTreatment: "uk_standard", method: "stripe", ref, occurredAt: new Date().toISOString() });
@@ -55,7 +55,7 @@ export const unbalancedJournal = (): JournalInput => ({
   occurredAt: new Date().toISOString(),
   lines: [
     { account: ACCOUNTS.creditsLiability, debit: 100, credit: 0 },
-    { account: ACCOUNTS.revenueData, debit: 0, credit: 99 },
+    { account: "revenue:maritime", debit: 0, credit: 99 },
   ],
   memo: {},
 });
