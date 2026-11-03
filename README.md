@@ -17,7 +17,8 @@ The repo also contains a **policy SDK** that enterprises use to govern agent spe
 pnpm install
 cp .env.example .env     # set PAY_TO
 pnpm dev:gateway         # http://localhost:8080  (simulated data, in-memory store)
-pnpm test                # 65 tests
+pnpm test                # unit + in-process e2e (no dependencies)
+pnpm test:integration    # Postgres 16 via Testcontainers (needs Docker; or set TEST_PG_URL)
 ```
 
 ## Layout

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import pg from "pg";
-import { assertBalanced, computeHash, GENESIS_HASH, type JournalEntry, type JournalInput } from "../ledger/journal";
+import { assertBalanced, computeHash, GENESIS_HASH, normalizeJournal, type JournalEntry, type JournalInput } from "../ledger/journal";
 import type { CreditAccount, NewAccount, NewPayment, PaymentRow, PaymentStatus, Store } from "./types";
 
 // bigint columns (balances, micros) fit in JS safe integers for our ranges; parse them as numbers.
@@ -83,7 +83,8 @@ export class PgStore implements Store {
   }
 
   /** Must run inside a transaction: the advisory lock serialises the hash chain. */
-  private async appendJournal(c: pg.PoolClient, j: JournalInput) {
+  private async appendJournal(c: pg.PoolClient, input: JournalInput) {
+    const j = normalizeJournal(input);
     assertBalanced(j.lines);
     await c.query("select pg_advisory_xact_lock($1)", [LEDGER_LOCK]);
     const prev = (await c.query<{ hash: string }>("select hash from ledger_journal order by seq desc limit 1")).rows[0]?.hash ?? GENESIS_HASH;
@@ -111,13 +112,17 @@ export class PgStore implements Store {
 
   async claimDuePayments(now: Date, limit: number, leaseMs: number) {
     const r = await this.pool.query(
-      `update x402_payments set next_attempt_at = $1::timestamptz + make_interval(secs => $3::double precision / 1000)
-       where id in (
-         select id from x402_payments
-         where status = 'verified' and next_attempt_at <= $1
-         order by created_at limit $2
-         for update skip locked)
-       returning *`,
+      // UPDATE … RETURNING does not preserve the subquery's ORDER BY, so re-sort the claimed rows:
+      // oldest first, because the oldest authorisations are the closest to validBefore.
+      `with claimed as (
+         update x402_payments set next_attempt_at = $1::timestamptz + make_interval(secs => $3::double precision / 1000)
+         where id in (
+           select id from x402_payments
+           where status = 'verified' and next_attempt_at <= $1
+           order by created_at limit $2
+           for update skip locked)
+         returning *)
+       select * from claimed order by created_at, id`,
       [now, limit, leaseMs],
     );
     return r.rows.map(rowToPayment);
@@ -205,7 +210,8 @@ export class PgStore implements Store {
 
   async refund(accountId: string, micros: number, journal: JournalInput) {
     await this.tx(async (c) => {
-      await c.query("update credit_accounts set balance_micros = balance_micros + $2 where id = $1", [accountId, micros]);
+      const r = await c.query("update credit_accounts set balance_micros = balance_micros + $2 where id = $1", [accountId, micros]);
+      if (r.rowCount !== 1) throw new Error(`unknown account ${accountId}`);
       await c.query("insert into credit_usage (account_id, endpoint, micros) values ($1, 'refund', $2)", [accountId, -micros]);
       await this.appendJournal(c, journal);
     });
@@ -213,6 +219,10 @@ export class PgStore implements Store {
 
   async applyTopUp(t: { ref: string; accountId: string; netMicros: number; vatMicros: number }, journal: JournalInput) {
     return this.tx(async (c) => {
+      // Lock the account first: gives a clear error for an unknown account (rather than an FK
+      // violation) and serialises top-ups per account.
+      const acct = await c.query("select 1 from credit_accounts where id = $1 for update", [t.accountId]);
+      if (acct.rowCount !== 1) throw new Error(`unknown account ${t.accountId}`);
       const r = await c.query(
         "insert into credit_topups (ref, account_id, net_micros, vat_micros) values ($1, $2, $3, $4) on conflict (ref) do nothing",
         [t.ref, t.accountId, t.netMicros, t.vatMicros],
