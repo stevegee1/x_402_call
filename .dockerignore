@@ -1,0 +1,15 @@
+# Build context: only what the Dockerfile copies (keeps secrets, tests and tooling out of images).
+**/node_modules
+.git
+.github
+.env
+.env.*
+.railway
+contracts
+e2e
+scripts
+docs
+**/test
+**/*.test.ts
+**/.logs
+*.md

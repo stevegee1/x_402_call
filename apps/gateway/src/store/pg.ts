@@ -198,10 +198,14 @@ export class PgStore implements Store {
     await this.pool.query("update x402_payments set status = 'cancelled', error = $2 where id = $1 and status = 'verified'", [id, reason]);
   }
 
-  async listPayments(opts: { status?: PaymentStatus; limit: number }) {
-    const r = opts.status
-      ? await this.pool.query("select * from x402_payments where status = $1 order by created_at desc limit $2", [opts.status, opts.limit])
-      : await this.pool.query("select * from x402_payments order by created_at desc limit $1", [opts.limit]);
+  async listPayments(opts: { status?: PaymentStatus; limit: number; before?: string }) {
+    const r = await this.pool.query(
+      `select * from x402_payments
+       where ($1::text is null or status = $1)
+         and ($2::uuid is null or (created_at, id) < (select created_at, id from x402_payments where id = $2::uuid))
+       order by created_at desc, id desc limit $3`,
+      [opts.status ?? null, opts.before ?? null, opts.limit],
+    );
     return r.rows.map(rowToPayment);
   }
 

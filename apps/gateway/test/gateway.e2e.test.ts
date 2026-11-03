@@ -38,6 +38,29 @@ describe("public endpoints", () => {
   });
 });
 
+describe("admin payments listing", () => {
+  it("pages with next_cursor and rejects a malformed cursor", async () => {
+    const env = await createTestEnv();
+    const { newPayment } = await import("./store/fixtures");
+    for (let i = 0; i < 5; i++) await env.store.insertPayment(newPayment());
+    const get = async (q: string) => env.fetch(`${BASE_URL}/admin/payments?${q}`, { headers: admin });
+    const first = await (await get("limit=2")).json();
+    expect(first.data).toHaveLength(2);
+    expect(first.next_cursor).toBe(first.data[1].id);
+    const ids = [...first.data.map((p: { id: string }) => p.id)];
+    let cursor = first.next_cursor;
+    while (cursor) {
+      const page = await (await get(`limit=2&cursor=${cursor}`)).json();
+      ids.push(...page.data.map((p: { id: string }) => p.id));
+      cursor = page.next_cursor;
+    }
+    expect(new Set(ids).size).toBe(5);
+    expect((await get("cursor=not-a-uuid")).status).toBe(400);
+    expect((await (await get("limit=0")).json()).data).toHaveLength(5); // 0 or invalid: the default page size (50)
+    expect((await (await get("limit=9999")).json()).data).toHaveLength(5); // capped at 500
+  });
+});
+
 describe("x402 rail", () => {
   let env: TestEnv;
   const account = privateKeyToAccount(generatePrivateKey());

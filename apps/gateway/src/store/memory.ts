@@ -73,10 +73,14 @@ export class MemoryStore implements Store {
     if (p?.status === "verified") Object.assign(p, { status: "cancelled", error: reason });
   }
 
-  async listPayments(opts: { status?: PaymentStatus; limit: number }) {
+  async listPayments(opts: { status?: PaymentStatus; limit: number; before?: string }) {
+    // Mirrors PgStore: order by (created_at, id) descending; `before` is an exclusive cursor (a payment id).
+    const cmp = (a: PaymentRow, b: PaymentRow) => a.createdAt.getTime() - b.createdAt.getTime() || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+    const anchor = opts.before ? this.payments.get(opts.before) : undefined;
+    if (opts.before && !anchor) return [];
     return [...this.payments.values()]
-      .filter((p) => !opts.status || p.status === opts.status)
-      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+      .filter((p) => (!opts.status || p.status === opts.status) && (!anchor || cmp(p, anchor) < 0))
+      .sort((a, b) => -cmp(a, b))
       .slice(0, opts.limit);
   }
 

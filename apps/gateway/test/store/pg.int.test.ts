@@ -136,6 +136,21 @@ describe("PgStore: Postgres-specific guarantees", () => {
       expect((await a.getAccount(acct.id))!.balanceMicros).toBe(5_000_000);
     });
 
+    it("paginates rows sharing one microsecond timestamp without skipping any (cursor compares stored values)", async () => {
+      const ps = Array.from({ length: 9 }, () => newPayment());
+      for (const p of ps) await a.insertPayment(p);
+      await sql.query("update x402_payments set created_at = '2026-11-03T12:00:00.123456Z'");
+      const seen: string[] = [];
+      let before: string | undefined;
+      for (;;) {
+        const page = await b.listPayments({ limit: 2, before });
+        seen.push(...page.map((p) => p.id));
+        if (page.length < 2) break;
+        before = page.at(-1)!.id;
+      }
+      expect(seen.sort()).toEqual(ps.map((p) => p.id).sort());
+    });
+
     describe("R4: exposure caps hold globally", () => {
       const at = () => ({ asyncAttemptAt: new Date(Date.now() + 2_000), syncAttemptAt: new Date(Date.now() + 120_000) });
       const admitOn = (store: PgStore, p: ReturnType<typeof newPayment>, caps: { totalAtomic: bigint; perPayerAtomic: bigint }) => {

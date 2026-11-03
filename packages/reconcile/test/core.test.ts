@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { reconcile, type ChainTransfer, type JournalSettlement, type LedgerPayment, type ReconcileInput } from "../src/reconcile";
+import { reconcile, type ChainTransfer, type JournalSettlement, type LedgerPayment, type ReconcileInput } from "../src/core";
 
 const A = "0x00000000000000000000000000000000000000a1";
 const B = "0x00000000000000000000000000000000000000b2";

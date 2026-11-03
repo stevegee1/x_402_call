@@ -108,7 +108,12 @@ export interface Store {
   /** final=false schedules a retry at nextAttemptAt. */
   failPayment(id: string, error: string, final: boolean, nextAttemptAt?: Date): Promise<void>;
   cancelPayment(id: string, reason: string): Promise<void>;
-  listPayments(opts: { status?: PaymentStatus; limit: number }): Promise<PaymentRow[]>;
+  /**
+   * Newest first, ordered by (created_at, id). Keyset pagination: pass the last row's id as `before`
+   * for the next page (stable under concurrent inserts, unlike offsets). The comparison uses the
+   * row's stored timestamp, so sub-millisecond precision is never lost in a cursor.
+   */
+  listPayments(opts: { status?: PaymentStatus; limit: number; before?: string }): Promise<PaymentRow[]>;
   /**
    * Inserts a verified payment and decides its settle mode in one atomic step: async only if the
    * global and per-payer exposure (summed over every replica's unsettled async payments) stay within

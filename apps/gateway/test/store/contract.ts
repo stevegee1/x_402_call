@@ -194,6 +194,43 @@ export function describeStoreContract(name: string, make: () => Promise<StoreHar
       });
     });
 
+    describe("payments pagination", () => {
+      it("pages newest first with an exclusive cursor, losing and repeating nothing", async () => {
+        const ids: string[] = [];
+        for (let i = 0; i < 7; i++) {
+          const p = newPayment();
+          await s.insertPayment(p);
+          ids.push(p.id);
+        }
+        const seen: string[] = [];
+        let before: string | undefined;
+        for (;;) {
+          const page = await s.listPayments({ limit: 3, before });
+          seen.push(...page.map((p) => p.id));
+          if (page.length < 3) break;
+          before = page.at(-1)!.id;
+        }
+        expect(seen).toHaveLength(7);
+        expect(new Set(seen)).toEqual(new Set(ids));
+        expect(seen).toEqual((await s.listPayments({ limit: 100 })).map((p) => p.id));
+      });
+
+      it("combines the cursor with a status filter", async () => {
+        const ps = Array.from({ length: 5 }, () => newPayment());
+        for (const p of ps) await s.insertPayment(p);
+        await s.cancelPayment(ps[1]!.id, "x");
+        await s.cancelPayment(ps[3]!.id, "x");
+        const first = await s.listPayments({ status: "verified", limit: 2 });
+        const rest = await s.listPayments({ status: "verified", limit: 10, before: first.at(-1)!.id });
+        expect([...first, ...rest].map((p) => p.id).sort()).toEqual([ps[0]!.id, ps[2]!.id, ps[4]!.id].sort());
+      });
+
+      it("an unknown cursor returns nothing (never the first page again)", async () => {
+        await s.insertPayment(newPayment());
+        expect(await s.listPayments({ limit: 10, before: randomUUID() })).toEqual([]);
+      });
+    });
+
     describe("admission and exposure (R4)", () => {
       const caps = { totalAtomic: 100_000n, perPayerAtomic: 66_000n };
       const at = { asyncAttemptAt: new Date(Date.now() + 2_000), syncAttemptAt: new Date(Date.now() + 120_000) };

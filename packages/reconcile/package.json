@@ -1,0 +1,19 @@
+{
+  "name": "@mx/reconcile",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Ledger <-> chain reconciliation for the x402 rail: library, and a watch service for live environments.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "start": "tsx src/watch.ts"
+  },
+  "dependencies": {
+    "viem": "2.57.10",
+    "zod": "3.25.76"
+  }
+}

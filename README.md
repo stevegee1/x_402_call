@@ -10,6 +10,7 @@ The repo also contains a **policy SDK** that enterprises use to govern agent spe
 - Plan: [implementation.md](implementation.md)
 - MVP review notes: [MVP.md](MVP.md)
 - Receiver setup: [docs/receiver-setup.md](docs/receiver-setup.md)
+- Staging (Railway, Base Sepolia): [docs/staging.md](docs/staging.md)
 
 ## Quick start
 
@@ -54,6 +55,8 @@ Install Foundry with `foundryup --install v1.8.5` (CI pins the same version). Co
 | `apps/mcp` | MCP server (stdio) for agents, paying through the policy SDK |
 | `packages/ais` | NMEA/AIS decoder, dedupe, traffic simulator |
 | `packages/policy-sdk` | Buyer-side policy engine (Product B, thin) |
+| `packages/reconcile` | Ledger against chain reconciliation: library (used by e2e) and the staging/production watch service |
+| `.railway/railway.ts` | Railway infrastructure for staging (see [docs/staging.md](docs/staging.md)) |
 | `packages/shared` | Regions, pricing, geo, types |
 | `contracts` | Foundry: test-only MockUSDC (EIP-3009), Multicall3Lite and ERC-8004 registry mocks, with Forge tests |
 | `e2e` | End-to-end harness and ledger/chain reconciler |

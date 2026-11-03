@@ -20,7 +20,8 @@
     "test:contracts": "forge test --root contracts",
     "e2e:stack": "pnpm --filter @mx/e2e stack",
     "erc8004:probe": "tsx scripts/erc8004-probe.ts",
-    "grid:probe": "tsx scripts/grid-probe.ts"
+    "grid:probe": "tsx scripts/grid-probe.ts",
+    "staging:wallets": "tsx scripts/staging-wallets.ts"
   },
   "dependencies": {
     "@mx/policy-sdk": "workspace:*",
@@ -29,6 +30,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.18.0",
+    "railway": "3.16.0",
     "tsx": "4.23.15",
     "typescript": "5.9.3",
     "vitest": "3.2.7"

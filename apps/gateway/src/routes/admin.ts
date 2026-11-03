@@ -48,8 +48,15 @@ export function adminRoutes(d: AppDeps) {
 
   a.get("/payments", async (c) => {
     const status = c.req.query("status") as PaymentStatus | undefined;
-    const rows = await d.store.listPayments({ status, limit: Math.min(Number(c.req.query("limit") ?? 50), 500) });
+    // Page size: 1-500; missing, 0 or non-numeric means the default (50).
+    const limit = Math.min(Math.max(Number(c.req.query("limit") ?? 50) || 50, 1), 500);
+    // Keyset cursor: the id of the last row of the previous page, returned as next_cursor.
+    const before = c.req.query("cursor");
+    if (before !== undefined && !/^[0-9a-f-]{36}$/.test(before)) return c.json({ error: "invalid_cursor" }, 400);
+    const rows = await d.store.listPayments({ status, limit, before });
+    const last = rows.at(-1);
     return c.json({
+      next_cursor: rows.length === limit && last ? last.id : null,
       data: rows.map((p) => ({
         id: p.id,
         status: p.status,
@@ -62,6 +69,7 @@ export function adminRoutes(d: AppDeps) {
         tx: p.txHash,
         attempts: p.attempts,
         error: p.error,
+        settle_mode: p.settleMode,
         created_at: p.createdAt.toISOString(),
         settled_at: p.settledAt?.toISOString() ?? null,
       })),
