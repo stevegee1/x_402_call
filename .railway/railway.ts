@@ -34,8 +34,12 @@ const build = (app: string) => ({
   watchPatterns: [`/${app}/**`, "/packages/**", "/db/**", "/Dockerfile", "/package.json", "/pnpm-lock.yaml", "/pnpm-workspace.yaml"],
 });
 
-/** Deploy from main only after CI passes (checkSuites), never from an unreviewed branch. */
-const source = github(REPO, { branch: "main", checkSuites: true });
+/**
+ * The git branch staging builds from. It tracks this branch so the setup can be proven on staging
+ * before merging; switch it to "main" (and re-apply) when the PR merges.
+ */
+const STAGING_BRANCH = "feat/staging-railway";
+const source = github(REPO, { branch: STAGING_BRANCH, checkSuites: true });
 
 const deploy = (startCommand: string, healthcheckPath: string) => ({
   startCommand,

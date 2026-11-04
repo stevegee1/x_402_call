@@ -11,7 +11,8 @@ any environment other than `staging`.
 | `reconciler` | Ledger against chain every 15 min; alerts on persistent mismatches | private only | `/healthz` |
 | `postgres` | Railway-managed Postgres | private | (managed) |
 
-Deploys come from `main`, only after CI passes (`checkSuites`). A service redeploys only when its own
+Deploys come from the branch named by `STAGING_BRANCH` in the config file (`feat/staging-railway`
+until its PR merges, then `main`), waiting for CI checks where the branch has them (`checkSuites`). A service redeploys only when its own
 code, a shared package, the schema or the Dockerfile changes.
 
 ## Secrets
@@ -40,7 +41,7 @@ environment name and a label, so anyone can compute it.
 Run from the repo root on the operator's machine (Railway CLI 5.x, linked with `railway link` to
 project `authentic-rebirth`, environment `staging`).
 
-1. **Merge to `main`** the PR that adds this file, so Railway builds the code it describes.
+1. **Push the branch** named by `STAGING_BRANCH`, so Railway can build the code this file describes.
 2. **Apply the infrastructure.** Review the plan first:
    ```bash
    railway config plan
