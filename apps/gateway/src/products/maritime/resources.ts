@@ -18,7 +18,7 @@ export const MARITIME_RESOURCES: readonly PricedResource[] = [
   {
     id: "maritime.vessels",
     path: "/:region/vessels",
-    summary: "Live vessel snapshot for a region (filterable)",
+    summary: "Current vessel snapshot for a region (filterable)",
     pricing: { kind: "fixed", priceUsd: "0.033", creditsGbpMicros: 25_000 },
     parameters: [
       region,

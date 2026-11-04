@@ -1,7 +1,9 @@
 import { CREDIT_PACKS } from "@mx/shared";
 import { Hono } from "hono";
+import { isMainnet } from "../config";
 import type { AppDeps, AppEnv } from "../context";
 import type { PricedResource, Product } from "../platform/product";
+import { renderSite, SITE_HEADERS, wantsHtml } from "./site";
 
 const priceOf = (r: PricedResource) => ({ price_usdc: r.pricing.priceUsd, price_credits_gbp: r.pricing.creditsGbpMicros / 1e6 });
 
@@ -15,8 +17,13 @@ export function publicRoutes(d: AppDeps) {
     resources: p.resources.map((res) => ({ id: res.id, path: `${base}/v1/${p.id}${res.path}`, description: res.summary, ...priceOf(res) })),
   });
 
-  r.get("/", (c) =>
-    c.json({
+  r.get("/", (c) => {
+    if (wantsHtml(c.req.header("accept"))) {
+      const noindex: Record<string, string> = isMainnet(d.cfg) ? {} : { "x-robots-tag": "noindex" };
+      return c.body(renderSite(d), 200, { ...SITE_HEADERS, ...noindex });
+    }
+    c.header("vary", "Accept");
+    return c.json({
       service: "x402 data gateway",
       docs: `${d.cfg.PUBLIC_BASE_URL}/openapi.json`,
       products: d.catalog.products.map((p) => ({ id: p.id, name: p.displayName, catalog: `${d.cfg.PUBLIC_BASE_URL}/v1/products/${p.id}` })),
@@ -26,8 +33,8 @@ export function publicRoutes(d: AppDeps) {
         // Buyers may declare their ERC-8004 agent; a verified identity raises their async allowance.
         buyer: d.identity ? { header: "X-Agent-Id", agent_registry: `${d.identity.policy.network}:${d.identity.policy.identityRegistry}` } : null,
       },
-    }),
-  );
+    });
+  });
 
   r.get("/healthz", (c) => c.json({ ok: true }));
 

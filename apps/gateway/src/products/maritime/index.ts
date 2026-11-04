@@ -21,7 +21,7 @@ export interface MaritimeOptions {
 export class MaritimeProduct implements Product<RegionSnapshot> {
   readonly id = "maritime";
   readonly displayName = "Maritime";
-  readonly description = "Live AIS vessel data and derived signals (density, anchorage queues, anomalies) for the Dover Strait, Port of Rotterdam and Panama Canal.";
+  readonly description = "AIS vessel data and derived signals (density, anchorage queues, anomalies) for the Dover Strait, Port of Rotterdam and Panama Canal.";
   readonly resources = MARITIME_RESOURCES;
   readonly engine: SnapshotEngine;
 

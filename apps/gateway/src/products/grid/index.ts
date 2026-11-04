@@ -40,7 +40,7 @@ export class GridProduct implements Product<GridState> {
   readonly id = "grid";
   readonly displayName = "Grid carbon";
   readonly description =
-    "GB grid carbon intensity signals for carbon-aware scheduling: now, a half-hourly forecast, and the cleanest window to run a job. Supported by National Energy SO Open Data.";
+    "GB grid carbon intensity signals for carbon-aware scheduling: now, a half-hourly forecast, and the cleanest window to run a job. Supported by National Energy SO Open Data. Not provided or endorsed by NESO.";
   readonly resources = GRID_RESOURCES;
 
   constructor(
