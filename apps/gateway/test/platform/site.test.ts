@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
+import { zeroAddress } from "viem";
 import { describe, expect, it } from "vitest";
+import { TierResolver } from "../../src/identity/tiers";
 import { wantsHtml } from "../../src/routes/site";
 import { BASE_URL, createTestEnv } from "../helpers";
 import { AcmeProduct } from "./fake-product";
@@ -115,6 +117,58 @@ describe("public site", () => {
       expect(Number(body.accepts[0].amount)).toBeGreaterThan(0);
     }
     expect(await env.store.listPayments({ limit: 10 })).toEqual([]);
+  });
+
+  describe("ERC-8004 section", () => {
+    const REG = "0x8004A818BFB912233c491871b3d84c89A494BD9e" as const;
+    const identity = (reviewers: `0x${string}`[]) =>
+      new TierResolver(
+        { agentWallet: async () => zeroAddress, reputation: async () => ({ count: 0, score: 0 }) },
+        {
+          network: "eip155:84532",
+          identityRegistry: REG,
+          reviewers,
+          tag: "",
+          minFeedback: 3,
+          minScore: 80,
+          timeoutMs: 50,
+          totalCapAtomic: 25_000_000n,
+          perPayerCapAtomic: { unknown: 1_000_000n, identified: 2_000_000n, trusted: 5_000_000n },
+        },
+      );
+    const render = async (opts: Parameters<typeof createTestEnv>[1]) => {
+      const env = await createTestEnv({}, opts);
+      return (await env.fetch(`${BASE_URL}/`, { headers: { accept: BROWSER } })).text();
+    };
+
+    it("is left out when identity is off", async () => {
+      const html = await render({});
+      expect(html).not.toContain("ERC-8004");
+      expect(html).not.toContain('href="#identity"');
+    });
+
+    it("shows the live caps and the header, and doesn't offer Trusted without reviewers", async () => {
+      const html = await render({ identity: identity([]) });
+      expect(html).toContain("Agent identity (ERC-8004)");
+      expect(html).toContain('href="#identity"');
+      expect(html).toContain(`X-Agent-Id: eip155:84532:${REG}:`);
+      expect(html).toContain(">$1<");
+      expect(html).toContain(">$2<");
+      expect(html).toContain("Not available yet");
+      expect(html).not.toContain(">$5<");
+    });
+
+    it("offers Trusted with its real thresholds once reviewers are set", async () => {
+      const html = await render({ identity: identity(["0x00000000000000000000000000000000000000f1"]) });
+      expect(html).toContain(">$5<");
+      expect(html).toContain("at least 3 reviews averaging 80 or more");
+      expect(html).not.toContain("Not available yet");
+    });
+
+    it("shows our seller identity when configured", async () => {
+      const html = await render({ identity: identity([]), sellerIdentity: { agentRegistry: `eip155:84532:${REG}`, agentId: "7" } });
+      expect(html).toContain(`eip155:84532:${REG}:7`);
+    });
   });
 
   it("doesn't expose the operator console or any secret", async () => {

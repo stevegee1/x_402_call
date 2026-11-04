@@ -52,7 +52,7 @@ th,td{padding:10px 16px 10px 0;border-top:1px solid var(--line);vertical-align:t
 code{font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
 pre{background:var(--code);border-radius:12px;padding:16px;overflow-x:auto;margin:0 0 24px}
 #try-out{min-height:96px;margin:16px 0 0;white-space:pre-wrap;overflow-wrap:anywhere}
-.guarantees{display:grid;gap:24px;grid-template-columns:repeat(auto-fit,minmax(210px,1fr))}.guarantees p{color:var(--muted);margin:6px 0 0}.guarantees h3{font-size:16px}
+.guarantees{display:grid;gap:24px;grid-template-columns:repeat(auto-fit,minmax(210px,1fr))}.guarantees p{color:var(--muted);margin:6px 0 0}.guarantees h3{font-size:16px}.identity-note{margin:24px 0 16px}
 @media (max-width:640px){.hero{padding:56px 0 48px}section{padding:48px 0}.card{padding:16px}table thead{display:none}table,tbody,tr,td{display:block}tr{border-top:1px solid var(--line);padding:12px 0}td{border:0;padding:2px 0}td code{white-space:normal;overflow-wrap:anywhere}td.num{display:inline-block;margin-right:16px;font-weight:500}td.num::before{content:attr(data-label) " ";font-weight:400;color:var(--muted)}}
 footer{border-top:1px solid var(--line);padding:32px 0 48px;font-size:14px;color:var(--muted)}footer nav{margin-bottom:12px}
 `;
@@ -154,6 +154,32 @@ const res = await fetch(url, {
   headers: x402.encodePaymentSignatureHeader(payment),
 });`;
 
+const usd = (atomic: bigint) => `$${Number(atomic) / 1e6}`;
+
+/** ERC-8004 buyer tiers, from the live policy. Omitted entirely when identity is switched off. */
+function identitySection(d: AppDeps): string {
+  const id = d.identity;
+  if (!id) return "";
+  const { perPayerCapAtomic: caps, reviewers, minFeedback, minScore, network, identityRegistry } = id.policy;
+  const trusted = reviewers.length > 0;
+  const row = (tier: string, when: string, cap: string) => `<tr><td>${esc(tier)}</td><td>${esc(when)}</td><td class="num" data-label="Allowance">${esc(cap)}</td></tr>`;
+  return `<section id="identity" aria-labelledby="identity-h">
+    <h2 id="identity-h">Agent identity (ERC-8004)</h2>
+    <p class="sub">Agents with an on-chain <a href="https://eips.ethereum.org/EIPS/eip-8004" rel="noopener">ERC-8004</a> identity can be served faster. Identity is optional, and it only ever adds to what an agent can do: without one, or if a check fails, an agent is served as Unknown.</p>
+    <div class="card"><div class="scroll"><table>
+      <thead><tr><th scope="col">Tier</th><th scope="col">How an agent qualifies</th><th scope="col" class="num">Allowance</th></tr></thead>
+      <tbody>
+        ${row("Unknown", "No identity declared, or it can't be verified", usd(caps.unknown))}
+        ${row("Identified", "The agent's verified wallet in the registry signed the payment", usd(caps.identified))}
+        ${row("Trusted", trusted ? `Identified, with at least ${minFeedback} reviews averaging ${minScore} or more from our trusted reviewers` : "Not available yet: no trusted reviewers are set", trusted ? usd(caps.trusted) : "n/a")}
+      </tbody>
+    </table></div></div>
+    <p class="sub identity-note">The allowance is how much unsettled spend one wallet can have while we still serve data before payment settles. Above it, each payment settles first, so responses are slower. Declare your agent with a header; the response's <code>X-Agent-Tier</code> shows the tier you got:</p>
+    <pre tabindex="0"><code>X-Agent-Id: ${esc(network)}:${esc(identityRegistry)}:&lt;your agent id&gt;</code></pre>
+    ${d.sellerIdentity ? `<p class="sub">This service's own identity: <code>${esc(d.sellerIdentity.agentRegistry)}:${esc(d.sellerIdentity.agentId)}</code></p>` : ""}
+  </section>`;
+}
+
 export function renderSite(d: AppDeps): string {
   const base = d.cfg.PUBLIC_BASE_URL;
   const mainnet = isMainnet(d.cfg);
@@ -181,7 +207,7 @@ ${mainnet ? "" : '<meta name="robots" content="noindex">\n'}<meta name="theme-co
 ${mainnet ? "" : `<div class="banner" role="note">Test environment. Payments use ${esc(network)} test USDC, so no real money moves.</div>`}
 <header><div class="wrap">
   <div class="brand">wearebase</div>
-  <nav aria-label="Main"><a href="#products">Products</a><a href="#how">How it works</a><a href="#try">Try it</a><a href="#connect">Connect</a><a href="/openapi.json">API spec</a></nav>
+  <nav aria-label="Main"><a href="#products">Products</a><a href="#how">How it works</a>${d.identity ? '<a href="#identity">Identity</a>' : ""}<a href="#try">Try it</a><a href="#connect">Connect</a><a href="/openapi.json">API spec</a></nav>
 </div></header>
 <main id="main"><div class="wrap">
   <div class="hero">
@@ -205,6 +231,8 @@ ${mainnet ? "" : `<div class="banner" role="note">Test environment. Payments use
       <li><h3>Receive</h3><p>The data comes back straight away, and the payment settles on chain.</p></li>
     </ol>
   </section>
+
+  ${identitySection(d)}
 
   <section id="try" aria-labelledby="try-h">
     <h2 id="try-h">Try it</h2>
