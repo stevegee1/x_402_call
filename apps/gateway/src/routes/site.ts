@@ -170,7 +170,7 @@ export function renderSite(d: AppDeps): string {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>x402 data gateway: data for AI agents, paid per request</title>
+<title>wearebase: data for AI agents, paid per request</title>
 <meta name="description" content="${esc(description)}">
 ${mainnet ? "" : '<meta name="robots" content="noindex">\n'}<meta name="theme-color" content="#0b57d0">
 <link rel="icon" href="${esc(FAVICON)}">
@@ -180,7 +180,7 @@ ${mainnet ? "" : '<meta name="robots" content="noindex">\n'}<meta name="theme-co
 <a class="skip" href="#main">Skip to content</a>
 ${mainnet ? "" : `<div class="banner" role="note">Test environment. Payments use ${esc(network)} test USDC, so no real money moves.</div>`}
 <header><div class="wrap">
-  <div class="brand">x402 data gateway</div>
+  <div class="brand">wearebase</div>
   <nav aria-label="Main"><a href="#products">Products</a><a href="#how">How it works</a><a href="#try">Try it</a><a href="#connect">Connect</a><a href="/openapi.json">API spec</a></nav>
 </div></header>
 <main id="main"><div class="wrap">
