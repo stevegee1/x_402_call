@@ -193,6 +193,8 @@ async function chargeX402(c: Context<AppEnv>, next: () => Promise<void>, resourc
     {
       wantAsync,
       caps: d.identity ? d.identity.capsFor(tier.tier) : d.exposureCaps,
+      failures: d.failurePolicy,
+      now: new Date(now),
       // Async: let the handler finish first. Sync: keep the worker away while we settle inline.
       asyncAttemptAt: new Date(now + ASYNC_SETTLE_DELAY_MS),
       syncAttemptAt: new Date(now + 120_000),
@@ -203,7 +205,8 @@ async function chargeX402(c: Context<AppEnv>, next: () => Promise<void>, resourc
     return paymentRequired(c, resource, d, "payment_already_used");
   }
   const sync = admission.mode === "sync";
-  if (wantAsync && sync) d.metrics.inc("x402_exposure_cap_hits_total", { tier: tier.tier });
+  if (admission.syncReason === "cap") d.metrics.inc("x402_exposure_cap_hits_total", { tier: tier.tier });
+  if (admission.syncReason === "demoted") d.metrics.inc("x402_async_demoted_total", { tier: tier.tier });
 
   if (sync) {
     const row = (await d.store.getPayment(id))!;

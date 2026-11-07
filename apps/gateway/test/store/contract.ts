@@ -197,9 +197,12 @@ export function describeStoreContract(name: string, make: () => Promise<StoreHar
     describe("admission and exposure (R4)", () => {
       const caps = { totalAtomic: 100_000n, perPayerAtomic: 66_000n };
       const at = { asyncAttemptAt: new Date(Date.now() + 2_000), syncAttemptAt: new Date(Date.now() + 120_000) };
-      const admit = (p: ReturnType<typeof newPayment>, wantAsync = true, c = caps) => {
+      const HOUR = 3_600_000;
+      const failures = { holdMs: 24 * HOUR, demoteMs: 30 * 24 * HOUR };
+      /** `later` moves the admission clock forward, to step past the hold or demotion window. */
+      const admit = (p: ReturnType<typeof newPayment>, wantAsync = true, c = caps, later = 0) => {
         const { nextAttemptAt: _, settleMode: __, ...rest } = p;
-        return s.admitPayment(rest, { wantAsync, caps: c, ...at });
+        return s.admitPayment(rest, { wantAsync, caps: c, failures, now: new Date(Date.now() + later), ...at });
       };
 
       it("admits async while within both caps, and records the mode and the matching next attempt", async () => {
@@ -216,7 +219,7 @@ export function describeStoreContract(name: string, make: () => Promise<StoreHar
         expect(await admit(newPayment({ payer }))).toMatchObject({ mode: "async" });
         expect(await admit(newPayment({ payer }))).toMatchObject({ mode: "async" }); // 66_000: exactly at the cap
         const third = newPayment({ payer: payer.toUpperCase().replace("0X", "0x") }); // same payer, other case
-        expect(await admit(third)).toEqual({ result: "inserted", mode: "sync" });
+        expect(await admit(third)).toEqual({ result: "inserted", mode: "sync", syncReason: "cap" });
         expect((await s.getPayment(third.id))!.nextAttemptAt.getTime()).toBe(at.syncAttemptAt.getTime());
         expect(await admit(newPayment())).toMatchObject({ mode: "async" });
         expect(await s.exposure()).toEqual({ totalAtomic: 99_000n, payers: 2 });
@@ -246,7 +249,7 @@ export function describeStoreContract(name: string, make: () => Promise<StoreHar
         expect((await s.exposure()).totalAtomic).toBe(33_000n);
       });
 
-      it("settling, failing for good and cancelling release exposure; a retryable failure does not", async () => {
+      it("settling, failing for good and cancelling leave open (unsettled) exposure; a retryable failure does not", async () => {
         const [a, b, c, d] = [newPayment(), newPayment(), newPayment(), newPayment()];
         for (const p of [a, b, c, d]) await admit(p, true, { totalAtomic: 1_000_000n, perPayerAtomic: 1_000_000n });
         expect((await s.exposure()).totalAtomic).toBe(132_000n);
@@ -255,6 +258,58 @@ export function describeStoreContract(name: string, make: () => Promise<StoreHar
         await s.cancelPayment(c.id, "handler_status_502");
         await s.failPayment(d.id, "indeterminate: timeout", false, new Date(Date.now() + 1_000));
         expect(await s.exposure()).toEqual({ totalAtomic: 33_000n, payers: 1 });
+      });
+
+      it("sync admission reports no reason when async was never wanted", async () => {
+        expect(await admit(newPayment(), false)).toEqual({ result: "inserted", mode: "sync" });
+      });
+
+      describe("served-early payments that fail for good", () => {
+        const failServed = async (over: Parameters<typeof newPayment>[0] = {}) => {
+          const p = newPayment(over);
+          expect(await admit(p)).toMatchObject({ mode: "async" });
+          await s.failPayment(p.id, "insufficient_funds", true);
+          return p;
+        };
+
+        it("keep counting against the global cap for the hold, so the cap can't be reused", async () => {
+          await failServed(); // 33_000 given away
+          expect(await admit(newPayment())).toMatchObject({ mode: "async" }); // 66_000
+          expect(await admit(newPayment())).toMatchObject({ mode: "async" }); // 99_000
+          expect(await admit(newPayment({ amountAtomic: 1_001n }))).toEqual({ result: "inserted", mode: "sync", syncReason: "cap" });
+          expect(await s.exposure()).toEqual({ totalAtomic: 66_000n, payers: 2 }); // open exposure only
+        });
+
+        it("stop counting once the hold has passed", async () => {
+          for (let i = 0; i < 3; i++) await failServed();
+          expect(await admit(newPayment({ amountAtomic: 1_001n }))).toMatchObject({ mode: "sync", syncReason: "cap" });
+          expect(await admit(newPayment({ amountAtomic: 1_001n }), true, caps, failures.holdMs + 1_000)).toMatchObject({ mode: "async" });
+        });
+
+        it("demote their payer to sync, in any letter case, until the demotion window passes", async () => {
+          const bad = await failServed();
+          const upper = bad.payer.toUpperCase().replace("0X", "0x");
+          expect(await admit(newPayment({ payer: upper }))).toEqual({ result: "inserted", mode: "sync", syncReason: "demoted" });
+          expect(await admit(newPayment({ payer: bad.payer }), true, caps, failures.holdMs + 1_000)).toMatchObject({ syncReason: "demoted" });
+          expect(await admit(newPayment({ payer: bad.payer }), true, caps, failures.demoteMs + 1_000)).toMatchObject({ mode: "async" });
+          expect(await admit(newPayment())).toMatchObject({ mode: "async" }); // other payers are unaffected
+        });
+
+        it("a demoted payer's replay is still a replay", async () => {
+          const bad = await failServed();
+          expect(await admit({ ...bad, id: randomUUID() })).toEqual({ result: "duplicate" });
+        });
+
+        it("do not include sync failures, cancellations or retryable failures (nothing was given away)", async () => {
+          const payer = newPayment().payer;
+          const sync = newPayment({ payer });
+          await admit(sync, false);
+          await s.failPayment(sync.id, "insufficient_funds", true); // refused before serving
+          const cancelled = newPayment({ payer });
+          await admit(cancelled);
+          await s.cancelPayment(cancelled.id, "handler_status_502"); // handler failed: nothing served
+          expect(await admit(newPayment({ payer, amountAtomic: 66_000n }))).toEqual({ result: "inserted", mode: "async" });
+        });
       });
 
       it("released exposure is available to the next admission", async () => {
