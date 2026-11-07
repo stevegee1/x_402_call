@@ -8,7 +8,7 @@
  * and our self-hosted facilitator is the fallback, reachable only on the private network.
  *
  * Secrets are never in this file. They appear as preserve() and are set out of band
- * (docs/staging.md): ADMIN_TOKEN on the gateway, FACILITATOR_PRIVATE_KEY and AUTH_TOKEN on the
+ * (docs/staging.md): ADMIN_TOKEN and SESSION_SECRET on the gateway, FACILITATOR_PRIVATE_KEY and AUTH_TOKEN on the
  * facilitator. Services that need a secret reference the owner's variable instead of copying it.
  * Do NOT use ctx.randomString for secrets: it is a deterministic hash of the environment and label.
  *
@@ -110,6 +110,13 @@ export default defineRailway((ctx) => {
       // Products. Maritime runs on simulated AIS (labelled "simulated"; never sold on mainnet).
       DATA_SOURCE: "simulator",
       GRID_ENABLED: "true",
+      // Grid is served from the version store that ingest-env writes (memory, point-in-time history),
+      // instead of polling NESO from the gateway.
+      GRID_SOURCE: "store",
+
+      // x402 sessions: pay once, read at memory speed; SSE push is paid from a session.
+      SESSIONS_ENABLED: "true",
+      SESSION_SECRET: preserve(),
 
       // ERC-8004 buyer tiers on the canonical Base Sepolia registries. No trusted reviewers yet,
       // so buyers can reach "identified" but not "trusted".

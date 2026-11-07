@@ -18,12 +18,13 @@ code, a shared package, the schema or the Dockerfile changes.
 
 ## Secrets
 
-The config file holds no secret values. Three secrets are set out of band; other services
+The config file holds no secret values. Four secrets are set out of band; other services
 reference them rather than copying them:
 
 | Variable | Service | Referenced by |
 |---|---|---|
 | `ADMIN_TOKEN` | `@mx/gateway` | `reconciler.ADMIN_TOKEN` |
+| `SESSION_SECRET` | `@mx/gateway` | (only the gateway; signs x402 session tokens) |
 | `AUTH_TOKEN` | `facilitator` | `@mx/gateway.FALLBACK_FACILITATOR_AUTH_TOKEN` |
 | `FACILITATOR_PRIVATE_KEY` | `facilitator` | (only the facilitator) |
 
@@ -51,11 +52,12 @@ project `authentic-rebirth`, environment `staging`).
 3. **Set the secrets.** Values are generated locally, piped over stdin, and never printed:
    ```bash
    openssl rand -hex 32 | railway variable set ADMIN_TOKEN --stdin -s @mx/gateway --skip-deploys
+   openssl rand -hex 32 | railway variable set SESSION_SECRET --stdin -s @mx/gateway --skip-deploys
    openssl rand -hex 32 | railway variable set AUTH_TOKEN --stdin -s facilitator --skip-deploys
    security find-generic-password -s x402-staging-facilitator -a x402 -w \
      | railway variable set FACILITATOR_PRIVATE_KEY --stdin -s facilitator --skip-deploys
    ```
-   Then **seal** all three in the Railway dashboard (Variables, then the ⋯ menu, then Seal): a sealed
+   Then **seal** all four in the Railway dashboard (Variables, then the ⋯ menu, then Seal): a sealed
    value can be used by deploys but never read back. To read the admin token later, rotate it instead.
 4. **Give the gateway a public domain:** `railway domain -s @mx/gateway`.
 5. **Fund the facilitator gas wallet** `0x9F03ad7f2C2c00D4668Dcead2CA3b03d1a0552f5` with a little
@@ -64,11 +66,28 @@ project `authentic-rebirth`, environment `staging`).
    settle, so the gateway uses the x402.org primary.
 6. **Redeploy:** `railway redeploy -s facilitator`, then `-s @mx/gateway`, then `-s reconciler`.
 
+## Turning on the hot path and sessions (once)
+
+The gateway refuses to start with `SESSIONS_ENABLED=true` and no `SESSION_SECRET`, so set the secret
+**before** the deploy that enables sessions (a failed healthcheck keeps the old deployment serving,
+but there is no reason to see one):
+
+```bash
+openssl rand -hex 32 | railway variable set SESSION_SECRET --stdin -s @mx/gateway --skip-deploys
+railway config plan    # gateway: + GRID_SOURCE, + SESSIONS_ENABLED (SESSION_SECRET preserved)
+railway config apply
+```
+
+Rotating `SESSION_SECRET` invalidates every session token in flight (their prepaid balances expire
+as breakage), so rotate only on suspected compromise.
+
 ## Checks
 
 ```bash
 curl https://<gateway-domain>/readyz       # {"ok":true,"db":true,"products":{"maritime":true,"grid":true},…}
 curl https://<gateway-domain>/v1/products  # maritime and grid
+curl https://<gateway-domain>/v1/sessions/sizes   # usd1, usd5, usd20 (sessions on)
+curl https://<gateway-domain>/v1/grid/countries   # endpoints include grid.history, grid.revisions, grid.stream
 railway logs -s reconciler                 # one JSON line per run: "ok":true
 railway logs -s ingest-env                 # "fetched" lines; changed > 0 after each NESO publish
 ```
