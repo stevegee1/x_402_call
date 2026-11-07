@@ -3,11 +3,11 @@
 | | |
 |---|---|
 | **Status** | Draft for discussion. Not approved. |
-| **Date** | 3 November 2026 |
+| **Date** | 3 November 2026 (§6 rewritten 7 November 2026) |
 | **Builds on** | [implementation.md](implementation.md) (plan), [MVP.md](MVP.md) (what exists today) |
 | **Approval needed on** | §7 decisions, §8 migration order |
 
-This document is for engineers and reviewers. It describes how the maritime MVP becomes a platform that carries several data or service products (maritime, a data-centre product for the Slough corridor, and later ones). All products share one payment path (x402 and fiat credits), one trust layer (sanctions and ERC-8004) and one ledger.
+This document is for engineers and reviewers. It describes how the maritime MVP becomes a platform that carries several data or service products (maritime, an environmental-data product for data-centre and trading buyers, and later ones). All products share one payment path (x402 and fiat credits), one trust layer (sanctions and ERC-8004) and one ledger.
 
 ---
 
@@ -20,7 +20,7 @@ The four things we have been discussing sit at different levels:
 | **x402** | Payment protocol | **Rail**: how a request is paid for |
 | **ERC-8004** | On-chain agent registries (identity, reputation, validation) | **Trust**: who the counterparty is, and how far to trust it |
 | **Maritime** | Vertical product | **Product**: AIS data and signals derived from it |
-| **Data centre (Slough)** | Vertical product (shape to be decided, §6) | **Product**: data-centre data or metered compute |
+| **Environmental data (data centre)** | Vertical product (§6) | **Product**: cleaned environmental time series with point-in-time history, served in milliseconds |
 
 **Target shape:** one platform kernel with horizontal layers (billing, settlement, ledger, trust, buyer policy), and vertical products that plug into it through one `Product` interface. Each product owns its ingest pipeline and its handlers. No product touches money or trust code directly.
 
@@ -52,17 +52,17 @@ The four things we have been discussing sit at different levels:
 │  │ Ops:      metrics · status · OpenAPI · console · agent card                     │   │
 │  └───────────────────────────────────▲─────────────────────────────────────────────┘   │
 │                                      │ Product interface (§3)                          │
-│  ┌─ Maritime ──────────────┐  ┌─ Data centre ───────────┐  ┌─ Next product ─────┐       │
-│  │ snapshot engine (250 ms)│  │ snapshot or job engine  │  │ …                  │       │
-│  │ derive: density, queue, │  │ (see §6)                │  │                    │       │
-│  │ anomalies               │  │                         │  │                    │       │
+│  ┌─ Maritime ──────────────┐  ┌─ Grid (environmental) ──┐  ┌─ Next product ─────┐       │
+│  │ snapshot engine (250 ms)│  │ latest version in memory│  │ …                  │       │
+│  │ derive: density, queue, │  │ as-of reads from store  │  │                    │       │
+│  │ anomalies               │  │ (see §6)                │  │                    │       │
 │  └───────────▲─────────────┘  └───────────▲─────────────┘  └────────────────────┘       │
 └──────────────┼────────────────────────────┼────────────────────────────────────────────┘
-               │ NATS  maritime.*           │ NATS  dc.*
+               │ NATS  maritime.*           │ NATS  env.*
         ┌──────┴──────┐              ┌──────┴──────┐
-        │ ingest-ais  │              │ ingest-dc   │        Postgres: per-product history tables,
-        │ (receivers, │              │ (BMS/DCIM,  │        shared payments, credits, ledger,
-        │ aisstream)  │              │ grid feeds) │        trust cache
+        │ ingest-ais  │              │ ingest-env  │        Postgres: per-product history tables,
+        │ (receivers, │              │ (NESO, every│        shared payments, credits, ledger,
+        │ aisstream)  │              │  version)   │        trust cache
         └─────────────┘              └─────────────┘
 
 External: x402 facilitator (CDP + self-hosted fallback) · Base (USDC → Safe) · Stripe ·
@@ -188,33 +188,69 @@ The tiers address R1 (async serving before settlement) without making every unkn
 
 ---
 
-## 6. Data-centre product
+## 6. Data-centre product: environmental data
 
-**Open decision D-DC1:** what the data-centre product sells. The platform supports two shapes. The second needs new billing work.
+**D-DC1 is decided (7 November 2026):** the data-centre product sells **cleaned environmental time series**, starting with NESO grid data. We publish no partner telemetry and no metered compute. Option B (GPU or batch jobs paid per request) is deferred. Its design notes are kept at the end of this section in case it comes back.
 
-### Option A: data-centre data (fits the platform as it is)
+### 6.1 Who buys it and what they need
 
-Examples: available power and capacity by site, grid connection constraints in the Slough corridor, cooling and PUE telemetry from partner operators.
+The target buyers are systematic trading firms and other model-driven buyers. One example is an algorithmic market maker that forecasts prices for tens of thousands of instruments, including power, gas and carbon. Data-centre operators who schedule workloads around grid carbon are a second, smaller group. Grid already serves them.
 
-- `ingest-dc` reads partner BMS/DCIM exports and grid operator feeds, then publishes to NATS `dc.*`.
-- The product reuses the snapshot pattern (immutable, pre-serialised, a slower cadence such as 5 s to 60 s).
-- `PricedResource.pricing.kind = "fixed"`. It needs no kernel changes beyond §3.
-- **Licensing risk is the same as for AIS:** operator telemetry is usually under NDA. We need resale rights from each source before `mode=live`.
+These buyers need three things, and the design follows from them:
 
-### Option B: metered compute or inference
+1. **History as it was known at the time.** A backtest has to see what the forecast said *then*, not what it says now. NESO overwrites each half-hour's row in place: the resource declares `datastore_unique_keys: ["datetime"]` with `datastore_append_or_update: true`, so upstream keeps no old versions. **Every published version we store becomes data that exists nowhere else.** Each day we don't ingest is a day of history we can't recover.
+2. **Fast delivery of each new version.** No one can get the data faster than NESO publishes it, which is every 30 to 60 minutes. What we control is the gap between NESO publishing and the buyer holding the data. We measure that gap (`ingested_at − published_at`, plus our serve time) and keep it small.
+3. **Fast, predictable reads** with a stable schema and quality flags. The target is p99 < 5 ms for a point or recent-range read, from inside the same region.
 
-Examples: GPU inference or batch jobs run on Slough capacity, paid per request by agents.
+### 6.2 Pipeline
 
-The cost varies and is only known when the request finishes, so the current `exact` scheme doesn't fit. It needs:
+```text
+NESO Data Portal ──resource_show every 30 s; full fetch when last_modified moves, else every 10 min──►
+  apps/ingest-env  (own service: an upstream fault never touches the gateway)
+     1. clean   UTC half-hours aligned to the period; values range-checked; every value tagged
+                ok / missing / rejected (the rejected raw value kept for audit); nothing interpolated
+     2. diff    against the latest stored version of each (dataset, region, period), under a
+                per-dataset advisory lock, so replicas never write a change twice
+     3. append  only what changed, stamped with ingested_at (our clock) and published_at (NESO's)
+     4. log     every fetch, failed ones included, in env_fetch: proof of when we were watching
+        │
+        ▼
+  Postgres env_observation  (append-only; a TimescaleDB hypertable on valid_from when the
+                             extension is available, a plain table otherwise; same queries)
+        │
+        ├── [PR 2] NATS env.<dataset> on each new version ──► gateway keeps the latest version and
+        │          recent history in memory, pre-serialised (the snapshot pattern); WebSocket/SSE push
+        ├── [PR 2] REST: latest and ?as_of=T point-in-time reads
+        └── [PR 5] nightly Parquet export of the full version history, for bulk backtests
+```
 
-- **x402 `upto` (or an equivalent) scheme:** the buyer authorises a maximum, and we settle the actual amount. Check how mature `upto` is in `@x402/core` before committing. If it isn't ready, use prepaid credits only for this product at first.
-- **A job engine in place of a snapshot:** submit, then poll or stream. Billing wraps job completion, not the HTTP response.
-- **New invariant I11:** the amount settled is never more than the amount authorised, and the job's usage record supports the amount (it is journalled with the usage).
-- **Policy SDK:** `maxPricePerRequestUsd` is checked against `maxUsd`, and budgets reserve `maxUsd` and release the difference after settlement.
+### 6.3 Storage model
 
-**Option C** (Slough as our hosting location) is a deployment choice. It belongs in Terraform (implementation.md §3.3), not in this document.
+`env_observation` has one row for each change to one value: `(dataset, region, valid_from, ingested_at)` → `value`, `unit`, `quality`, `raw_value`, `published_at`.
 
-**Recommendation:** start with Option A to prove the `Product` interface with a second vertical. Design the metered billing mode at the same time, because it is also what any future sub-cent product would need.
+- **Point-in-time reads use `ingested_at`, not `published_at`.** We certainly knew a value at `ingested_at`. NESO's `last_modified` can come before the data was actually readable, so filtering on it could let a backtest see data a little before anyone could have had it. `published_at` is kept to show where latency comes from.
+- **Rows are only appended, never changed.** Triggers block `UPDATE`, `DELETE` and `TRUNCATE`, as on the ledger. An as-of query for a given `T` therefore returns the same answer for ever.
+- **Only changes are written.** A period's first row is the moment we first saw it, so an as-of query never returns a period that hadn't been forecast yet at `T`. When data is absent from a fetch we treat that as no information, not as a deletion, because we only fetch the forward window.
+- **History starts at the first ingest.** Older NESO values carry no knowledge time, so we don't backfill them as point-in-time data.
+- **Settlement periods** (46 or 50 per day on clock-change days) come from `valid_from` when data is read. Storage stays in uniform UTC.
+
+### 6.4 Latency and billing
+
+- **Hot path in memory.** Reads of the latest version and recent history never touch Postgres. As-of reads over older history do, and use the primary key `(dataset, region, valid_from, ingested_at)`.
+- **Per-call x402 is too slow for this buyer.** Each x402 call is verified by an HTTP request to the facilitator, which costs tens to hundreds of milliseconds, and a trading firm won't sign a USDC authorisation per tick. The fast path is **prepaid credits or a subscription**, checked against an in-memory balance or entitlement and journalled asynchronously (PR 3). Agents keep x402 to discover data and pay for it.
+- **Hosting.** Network distance dominates. The London trading data centres cluster in Slough, so production for this product runs in London (eu-west-2). Railway stays the staging environment.
+
+### 6.5 Delivery, one PR each
+
+1. **`apps/ingest-env` + `packages/env` + `env_observation`:** store every version of NESO carbon intensity, and add the store's as-of read functions. *(This PR.)*
+2. **Hot path:** NATS `env.*`, the gateway reads versions from the store instead of its own NESO poll, REST `latest`/`as_of`, WebSocket/SSE push, and latency tests that fail the build over budget.
+3. **Low-latency billing:** credits or subscription entitlement checked in memory.
+4. **More datasets:** embedded wind and solar forecast, demand forecast, generation mix. Each is a new `DatasetSpec`, not a new pipeline.
+5. **Bulk history:** nightly Parquet export.
+
+### 6.6 Deferred: metered compute (former Option B)
+
+The cost of a GPU or batch job is only known when the job finishes, so the `exact` scheme doesn't fit. Metered compute would need x402 `upto` (or prepaid credits only), a job engine in place of a snapshot, a new invariant I11 (settled ≤ authorised, backed by a journalled usage record), and policy-SDK budgets that reserve `maxUsd` and release the difference after settlement.
 
 ---
 
@@ -226,7 +262,7 @@ The cost varies and is only known when the request finishes, so the current `exa
 | D-P2 | URL scheme | `/v1/{product}/{scope}/…`. Keep `/v1/{region}/…` as maritime aliases for one deprecation cycle. |
 | D-P3 | One ERC-8004 identity for the platform, or one per product | One platform identity. Products are services in its agent card. |
 | D-P4 | Credits spendable across all products | Yes. One balance, revenue split in the ledger. |
-| D-DC1 | Data-centre product shape | Option A first; design Option B in parallel |
+| D-DC1 | Data-centre product shape | **Decided 7 Nov 2026:** cleaned environmental time series from NESO (§6). Metered compute deferred. |
 | D-T1 | Trust tiers affect exposure caps | Yes, after R4 is fixed. Tiers only loosen limits (§5.3). |
 
 ## 8. Migration plan
@@ -239,7 +275,8 @@ Each step ships on its own and keeps all existing tests green.
 3. **Fix R4.** Move exposure counters to Postgres (or Redis) so caps are global. Add the Testcontainers Postgres job in CI (R5) at the same time.
 4. **Add `packages/identity`.** Seller agent card and registration, buyer policy rules (§5.2), then seller trust tiers (§5.3) behind a flag.
 5. **Data-centre product, Option A.** Add `apps/ingest-dc` and `products/dc`. This is the first real test of the interface. Change the interface here if needed, before a third product depends on it.
-6. **Metered billing** (if D-DC1 includes Option B): `upto` or credits-only, the job engine and I11.
+   *As built:* `products/grid` (`feat/grid-product`) proved the interface with NESO carbon intensity polled inside the gateway. §6 replaces the in-gateway poll with `apps/ingest-env`, `packages/env` and the version store. See §6.5 for the order.
+6. **Metered billing:** deferred with metered compute (§6.6). The low-latency credits or subscription path (§6.4) comes first.
 
 Split a product into its own service only when it needs a different scaling profile, release cadence or team. The kernel is a package, so splitting doesn't need a rewrite.
 
@@ -249,7 +286,7 @@ Split a product into its own service only when it needs a different scaling prof
 /apps
   gateway/            # host: loads products, mounts kernel
   ingest-ais/         # was apps/ingest
-  ingest-dc/          # new
+  ingest-env/         # environmental data versions (§6)
   mcp/                # tools generated from product resources
 /packages
   platform/           # Product interface, billing, settlement, exposure, facilitator
@@ -260,7 +297,7 @@ Split a product into its own service only when it needs a different scaling prof
   shared/             # money, geo, common types
 /products
   maritime/           # snapshot engine, derive, regions, routes (from gateway + packages/ais)
-  dc/                 # new
+  grid/               # environmental data product (§6); reads packages/env
 ```
 
 ---
@@ -270,5 +307,5 @@ Split a product into its own service only when it needs a different scaling prof
 1. Is `upto` (or batch settlement) in `@x402/core` ready for production use for Option B, or should metered products be credits-only at first?
 2. Which ERC-8004 reputation aggregator or scoring method do we trust for tiers? Raw feedback counts are too easy to game.
 3. Should we give buyers feedback authorisations after settlement (good for our reputation), and how do we stop that being used to build fake reputation?
-4. Does selling data-centre data (Option A) need anything beyond each operator's resale terms, such as critical-infrastructure sensitivity in the UK?
+4. Which subscription shape suits trading buyers (§6.4): a flat monthly entitlement per dataset, or prepaid credits drawn per read?
 5. VAT: does a second product change the place-of-supply analysis for anonymous x402 buyers (R9)? The accountant should review both products together.
