@@ -45,6 +45,34 @@ export interface FetchRecord {
 
 export const MAX_ROWS = 10_000;
 
+/** Postgres channel for "a dataset has new versions". Payload: JSON {"dataset": "<id>"}. */
+export const NOTIFY_CHANNEL = "env_version";
+
+/** A stored version plus its commit-ordered sequence number, for incremental readers. */
+export interface ChangeRow extends StoredObservation {
+  seq: number;
+}
+
+type ObservationRow = {
+  region: string;
+  valid_from: Date;
+  ingested_at: Date;
+  published_at: Date | null;
+  value: number | null;
+  quality: Quality;
+  raw_value: string | null;
+};
+
+const toStored = (row: ObservationRow): StoredObservation => ({
+  region: row.region,
+  validFrom: row.valid_from.getTime(),
+  value: row.value,
+  quality: row.quality,
+  rawValue: row.raw_value,
+  ingestedAt: row.ingested_at.getTime(),
+  publishedAt: row.published_at?.getTime() ?? null,
+});
+
 /** Errors from the database are often long; the fetch log keeps a readable prefix. */
 const clip = (s: string) => (s.length > 500 ? `${s.slice(0, 500)}…` : s);
 
@@ -58,7 +86,10 @@ const iso = (ms: number) => new Date(ms).toISOString();
 export class PgEnvStore {
   private readonly pool: pg.Pool;
 
-  constructor(databaseUrl: string, poolMax = 4) {
+  constructor(
+    private readonly databaseUrl: string,
+    poolMax = 4,
+  ) {
     this.pool = new pg.Pool({ connectionString: databaseUrl, max: poolMax });
   }
 
@@ -137,6 +168,8 @@ export class PgEnvStore {
         ],
       );
       const changed = res.rowCount ?? 0;
+      // Delivered to listeners only when this transaction commits, so they never see a version early.
+      if (changed > 0) await client.query("select pg_notify($1, $2)", [NOTIFY_CHANNEL, JSON.stringify({ dataset: w.dataset })]);
       await client.query(
         `insert into env_fetch (dataset, fetched_at, published_at, ok, rows_seen, rows_changed, rows_dropped)
          values ($1, $2, $3, true, $4, $5, $6)`,
@@ -168,15 +201,8 @@ export class PgEnvStore {
     if (!(q.from < q.to)) throw new RangeError("from must be before to");
     const limit = Math.min(q.limit ?? MAX_ROWS, MAX_ROWS);
     if (!Number.isInteger(limit) || limit < 1) throw new RangeError("limit must be a positive integer");
-    const r = await this.pool.query<{
-      valid_from: Date;
-      ingested_at: Date;
-      published_at: Date | null;
-      value: number | null;
-      quality: Quality;
-      raw_value: string | null;
-    }>(
-      `select distinct on (valid_from) valid_from, ingested_at, published_at, value, quality, raw_value
+    const r = await this.pool.query<ObservationRow>(
+      `select distinct on (valid_from) region, valid_from, ingested_at, published_at, value, quality, raw_value
        from env_observation
        where dataset = $1 and region = $2 and valid_from >= $3 and valid_from < $4
          and ($5::timestamptz is null or ingested_at <= $5)
@@ -184,15 +210,120 @@ export class PgEnvStore {
        limit $6`,
       [q.dataset, q.region, iso(q.from), iso(q.to), q.asOf === undefined ? null : iso(q.asOf), limit],
     );
-    return r.rows.map((row) => ({
-      region: q.region,
-      validFrom: row.valid_from.getTime(),
-      value: row.value,
-      quality: row.quality,
-      rawValue: row.raw_value,
-      ingestedAt: row.ingested_at.getTime(),
-      publishedAt: row.published_at?.getTime() ?? null,
-    }));
+    return r.rows.map(toStored);
+  }
+
+  /** Every version of one period, oldest first: how the source's view of it changed. */
+  async revisions(dataset: string, region: string, validFrom: number): Promise<StoredObservation[]> {
+    const r = await this.pool.query<ObservationRow>(
+      `select region, valid_from, ingested_at, published_at, value, quality, raw_value
+       from env_observation
+       where dataset = $1 and region = $2 and valid_from = $3
+       order by ingested_at`,
+      [dataset, region, iso(validFrom)],
+    );
+    return r.rows.map(toStored);
+  }
+
+  /**
+   * Versions appended after `afterSeq`, in commit order, for periods starting at or after
+   * `validFromMin`. Readers page with the last seq they received.
+   */
+  async changesSince(dataset: string, afterSeq: number, validFromMin: number, limit = MAX_ROWS): Promise<ChangeRow[]> {
+    const r = await this.pool.query<ObservationRow & { seq: string }>(
+      `select seq, region, valid_from, ingested_at, published_at, value, quality, raw_value
+       from env_observation
+       where dataset = $1 and seq > $2 and valid_from >= $3
+       order by seq
+       limit $4`,
+      [dataset, afterSeq, iso(validFromMin), Math.min(limit, MAX_ROWS)],
+    );
+    return r.rows.map((row) => ({ ...toStored(row), seq: Number(row.seq) }));
+  }
+
+  /**
+   * Every version of every period from `validFromMin` on, plus the highest seq, read from one
+   * consistent snapshot. A reader that loads this and then follows changesSince(seq) misses nothing
+   * and sees nothing twice. Per-region reads use the primary key, so cost tracks the window, not
+   * the dataset's whole history.
+   */
+  async snapshot(dataset: string, regions: readonly string[], validFromMin: number): Promise<{ rows: ChangeRow[]; maxSeq: number }> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin transaction isolation level repeatable read read only");
+      const max = await client.query<{ s: string | null }>("select max(seq)::text as s from env_observation where dataset = $1", [dataset]);
+      const rows: ChangeRow[] = [];
+      for (const region of regions) {
+        const r = await client.query<ObservationRow & { seq: string }>(
+          `select seq, region, valid_from, ingested_at, published_at, value, quality, raw_value
+           from env_observation
+           where dataset = $1 and region = $2 and valid_from >= $3
+           order by valid_from, ingested_at`,
+          [dataset, region, iso(validFromMin)],
+        );
+        for (const row of r.rows) rows.push({ ...toStored(row), seq: Number(row.seq) });
+      }
+      await client.query("commit");
+      return { rows, maxSeq: Number(max.rows[0]?.s ?? 0) };
+    } catch (e) {
+      await client.query("rollback").catch(() => {});
+      throw e;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Calls `onNotify(dataset)` whenever a write that changed values commits, on a dedicated
+   * connection. If the connection drops it reconnects with backoff and calls `onReconnect`, so the
+   * caller can catch up on anything sent while it was away. Returns a stop function.
+   */
+  listen(handlers: { onNotify: (dataset: string) => void; onReconnect: () => void; onError: (e: unknown) => void }): () => Promise<void> {
+    let stopped = false;
+    let client: pg.Client | undefined;
+    let attempt = 0;
+    let timer: NodeJS.Timeout | undefined;
+    const connect = async () => {
+      if (stopped) return;
+      const c = new pg.Client({ connectionString: this.databaseUrl });
+      client = c;
+      let failed = false;
+      c.on("notification", (m) => {
+        if (m.channel !== NOTIFY_CHANNEL || !m.payload) return;
+        try {
+          const ds = (JSON.parse(m.payload) as { dataset?: unknown }).dataset;
+          if (typeof ds === "string") handlers.onNotify(ds);
+        } catch (e) {
+          handlers.onError(e);
+        }
+      });
+      const retry = (e: unknown) => {
+        if (failed) return; // the error event and a failed connect can both report one failure
+        failed = true;
+        handlers.onError(e);
+        c.removeAllListeners("error");
+        c.on("error", () => {}); // a closing client may still emit
+        void c.end().catch(() => {});
+        if (stopped) return;
+        const delay = Math.min(30_000, 500 * 2 ** Math.min(attempt++, 6));
+        timer = setTimeout(() => void connect(), delay);
+      };
+      c.on("error", retry);
+      try {
+        await c.connect();
+        await c.query(`listen ${NOTIFY_CHANNEL}`);
+        if (attempt > 0) handlers.onReconnect();
+        attempt = 0;
+      } catch (e) {
+        retry(e);
+      }
+    };
+    void connect();
+    return async () => {
+      stopped = true;
+      clearTimeout(timer);
+      await client?.end().catch(() => {});
+    };
   }
 
   /** The newest successful fetch at or before `at` (or ever): how fresh our knowledge was then. */

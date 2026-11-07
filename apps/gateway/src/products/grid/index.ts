@@ -1,9 +1,10 @@
 import type { Metrics } from "../../metrics";
-import type { Precheck, Product, ProductContext, ProductRoutes, ProductStatus, Resolution } from "../../platform/product";
+import type { Precheck, PricedResource, Product, ProductContext, ProductRoutes, ProductStatus, Resolution } from "../../platform/product";
 import type { GridFeed } from "./feed";
-import { GRID_RESOURCES } from "./resources";
+import type { GridHistory } from "./history";
+import { GRID_HISTORY_RESOURCES, GRID_RESOURCES } from "./resources";
 import { cleanestWindow, current, iso, series } from "./signals";
-import { COUNTRIES, isCountry, SOURCE, type Country, type HalfHour } from "./source";
+import { COUNTRIES, isCountry, PERIOD_MS, SOURCE, type Country, type HalfHour } from "./source";
 
 export interface GridState {
   country: Country;
@@ -30,6 +31,57 @@ function windowParams(c: ProductContext): { durationH: number; withinH: number }
   return { durationH: d, withinH: w };
 }
 
+/** ISO 8601 with an explicit zone, so a time is never read in the server's local time. */
+const ISO_ZONED = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2})$/;
+function instant(v: string | undefined): number | null {
+  if (v === undefined || !ISO_ZONED.test(v)) return null;
+  const t = Date.parse(v);
+  return Number.isFinite(t) ? t : null;
+}
+
+const MAX_HISTORY_SPAN_MS = 7 * 24 * 3_600_000;
+
+type HistoryParams = { from: number; to: number; asOf: number | undefined };
+/** Parsed before charging; an error string means refuse with 400. `now` bounds as_of. */
+function historyParams(c: ProductContext, now: number): HistoryParams | string {
+  const from = instant(c.req.query("from"));
+  if (from === null) return "from is required: ISO 8601 with a zone, e.g. 2026-11-07T00:00:00Z";
+  const rawTo = c.req.query("to");
+  const to = rawTo === undefined ? from + 24 * 3_600_000 : instant(rawTo);
+  if (to === null) return "to must be ISO 8601 with a zone";
+  if (!(to > from)) return "to must be after from";
+  if (to - from > MAX_HISTORY_SPAN_MS) return "the range can be at most 7 days";
+  const rawAsOf = c.req.query("as_of");
+  if (rawAsOf === undefined) return { from, to, asOf: undefined };
+  const asOf = instant(rawAsOf);
+  if (asOf === null) return "as_of must be ISO 8601 with a zone";
+  if (asOf > now) return "as_of cannot be in the future";
+  return { from, to, asOf };
+}
+
+function revisionPeriod(c: ProductContext): number | string {
+  const t = instant(c.req.query("period"));
+  if (t === null) return "period is required: ISO 8601 with a zone, e.g. 2026-11-07T13:00:00Z";
+  if (t % PERIOD_MS !== 0) return "period must start on :00 or :30";
+  return t;
+}
+
+type VersionFields = { value: number | null; quality: string; ingestedAt: number; publishedAt: number | null };
+/** One stored version as served: known_at is when we first held it (the as-of key). */
+const versionBody = (o: VersionFields) => ({
+  intensity: o.value,
+  quality: o.quality,
+  known_at: iso(o.ingestedAt),
+  published_at: o.publishedAt === null ? null : iso(o.publishedAt),
+});
+const periodVersion = (o: VersionFields & { validFrom: number }) => ({ from: iso(o.validFrom), ...versionBody(o) });
+
+/** History older than the memory window lives in Postgres; if that read fails, say so and refund. */
+function unavailable(c: ProductContext) {
+  c.header("Retry-After", "15");
+  return c.json({ error: "history_unavailable", detail: "history is temporarily unavailable; you have not been charged" }, 503);
+}
+
 const bad = (c: ProductContext, detail: string) => c.json({ error: "invalid_parameters", detail: `${detail}; you have not been charged` }, 400);
 
 /**
@@ -41,12 +93,19 @@ export class GridProduct implements Product<GridState> {
   readonly displayName = "Grid carbon";
   readonly description =
     "GB grid carbon intensity signals for carbon-aware scheduling: now, a half-hourly forecast, and the cleanest window to run a job. Supported by National Energy SO Open Data.";
-  readonly resources = GRID_RESOURCES;
+  readonly resources: readonly PricedResource[];
 
+  /**
+   * @param history point-in-time reads from the version store (GRID_SOURCE=store). Without it the
+   * history resources are not offered at all.
+   */
   constructor(
     private readonly feed: GridFeed,
     private readonly now: () => number = Date.now,
-  ) {}
+    private readonly history?: GridHistory,
+  ) {
+    this.resources = history ? [...GRID_RESOURCES, ...GRID_HISTORY_RESOURCES] : GRID_RESOURCES;
+  }
 
   resolve(c: ProductContext): Resolution<GridState> | Response {
     const country = c.req.param("country") ?? "";
@@ -132,6 +191,52 @@ export class GridProduct implements Product<GridState> {
         },
       },
     );
+
+    if (this.history) this.historyRoutes(r, this.history);
+  }
+
+  private historyRoutes(r: ProductRoutes<GridState>, history: GridHistory) {
+    r.paid(
+      "grid.history",
+      async (c, s) => {
+        const p = historyParams(c, s.now) as HistoryParams; // validated in the precheck
+        const read = await history.history(s.country, p.from, p.to, p.asOf).catch(() => null);
+        if (!read) return unavailable(c); // after charge: billing refunds or cancels (I5)
+        const { rows } = read;
+        return c.json(
+          this.envelope(s, {
+            from: iso(p.from),
+            to: iso(p.to),
+            as_of: p.asOf === undefined ? null : iso(p.asOf),
+            count: rows.length,
+            data: rows.map(periodVersion),
+          }),
+        );
+      },
+      {
+        precheck: (c, s) => {
+          const p = historyParams(c, s.now);
+          return typeof p === "string" ? bad(c, p) : null;
+        },
+      },
+    );
+
+    r.paid(
+      "grid.revisions",
+      async (c, s) => {
+        const period = revisionPeriod(c) as number;
+        const read = await history.revisions(s.country, period).catch(() => null);
+        if (!read) return unavailable(c);
+        const { rows } = read;
+        return c.json(this.envelope(s, { period: iso(period), count: rows.length, revisions: rows.map(versionBody) }));
+      },
+      {
+        precheck: (c) => {
+          const p = revisionPeriod(c);
+          return typeof p === "string" ? bad(c, p) : null;
+        },
+      },
+    );
   }
 
   status(): ProductStatus {
@@ -142,7 +247,7 @@ export class GridProduct implements Product<GridState> {
         const s = this.feed.state(id);
         return { scope: id, fresh: s.fresh, mode: "live" as const, sourceTs: s.advancedAt, reason: s.reason, forecast_until: s.horizonEnd ? iso(s.horizonEnd) : null };
       }),
-      detail: { source: SOURCE.name, ...this.feed.health() },
+      detail: { source: SOURCE.name, ...this.feed.health(), ...(this.history ? { history: this.history.status() } : {}) },
     };
   }
 
@@ -153,5 +258,10 @@ export class GridProduct implements Product<GridState> {
       m.set("grid_horizon_hours", s.horizonEnd ? Math.max(0, (s.horizonEnd - this.now()) / 3_600_000) : 0, { country: id });
     }
     m.set("grid_source_consecutive_failures", this.feed.health().consecutive_failures);
+    if (this.history) {
+      const h = this.history.status();
+      m.set("grid_history_cache_versions", h.cached_versions);
+      for (const path of ["memory", "store"] as const) m.set("grid_history_reads", this.history.reads[path], { path });
+    }
   }
 }

@@ -218,9 +218,11 @@ NESO Data Portal ──resource_show every 30 s; full fetch when last_modified m
   Postgres env_observation  (append-only; a TimescaleDB hypertable on valid_from when the
                              extension is available, a plain table otherwise; same queries)
         │
-        ├── [PR 2] NATS env.<dataset> on each new version ──► gateway keeps the latest version and
-        │          recent history in memory, pre-serialised (the snapshot pattern); WebSocket/SSE push
-        ├── [PR 2] REST: latest and ?as_of=T point-in-time reads
+        ├── pg_notify('env_version') on commit ──► gateway EnvCache: every version of the recent
+        │          window in memory (7 days by default), followed by seq; 15 s fallback poll
+        ├── REST: live endpoints, /history?from&to&as_of and /revisions?period, from memory
+        │          (older history from Postgres, same answers)
+        ├── [PR 2b] SSE push of each new version, paid with an x402 session
         └── [PR 5] nightly Parquet export of the full version history, for bulk backtests
 ```
 
@@ -237,14 +239,20 @@ NESO Data Portal ──resource_show every 30 s; full fetch when last_modified m
 ### 6.4 Latency and billing
 
 - **Hot path in memory.** Reads of the latest version and recent history never touch Postgres. As-of reads over older history do, and use the primary key `(dataset, region, valid_from, ingested_at)`.
-- **Per-call x402 is too slow for this buyer.** Each x402 call is verified by an HTTP request to the facilitator, which costs tens to hundreds of milliseconds, and a trading firm won't sign a USDC authorisation per tick. The fast path is **prepaid credits or a subscription**, checked against an in-memory balance or entitlement and journalled asynchronously (PR 3). Agents keep x402 to discover data and pay for it.
+- **Change delivery uses Postgres `LISTEN/NOTIFY`, not NATS.** The notification is sent inside ingest's write transaction, so it arrives only after commit and never before the data can be read. It needs no new infrastructure. A notification only says "look". The cache then reads by `seq` (migration 005), which writers assign under the per-dataset lock, so commit order is seq order and nothing is skipped. Missed notifications cost at most the 15 s fallback poll. NATS is worth adding when many consumers outside the gateway need the stream.
+- **Measured (PR 2a).** In-process through the whole gateway (routing, credits billing, handler, JSON), p99 is 0.3–1.7 ms. Over real HTTP on one machine, a paid read is ~3.5–3.9 ms at p50, of which ~1 ms is the client and connection and most of the rest is the per-call credits debit in Postgres. **Billing, not data, is now the cost.**
+- **Making the billing fast while keeping x402.** Each x402 call is verified by an HTTP request to the facilitator, which costs tens to hundreds of milliseconds, and a trading firm won't sign an authorisation per tick. So:
+  1. **Sessions (PR 2b).** One payment (an x402 payment, or a credits debit) buys a short-lived session token tied to the payer and worth an amount or a stream. Each read checks an HMAC and debits an in-memory balance. Usage is journalled in batches. No facilitator call, no chain and no database on the read path.
+  2. **Push (PR 2b).** An SSE stream, paid with a session, sends each new version as soon as it commits.
+  3. **Optimistic per-call x402 (PR 3).** The gateway verifies the EIP-3009 signature itself and settles in the background. Each replica admits within its own share of the exposure caps in memory, with an in-memory nonce guard. It gets its own review because it changes the risk model.
 - **Hosting.** Network distance dominates. The London trading data centres cluster in Slough, so production for this product runs in London (eu-west-2). Railway stays the staging environment.
 
 ### 6.5 Delivery, one PR each
 
-1. **`apps/ingest-env` + `packages/env` + `env_observation`:** store every version of NESO carbon intensity, and add the store's as-of read functions. *(This PR.)*
-2. **Hot path:** NATS `env.*`, the gateway reads versions from the store instead of its own NESO poll, REST `latest`/`as_of`, WebSocket/SSE push, and latency tests that fail the build over budget.
-3. **Low-latency billing:** credits or subscription entitlement checked in memory.
+1. **`apps/ingest-env` + `packages/env` + `env_observation`:** store every version of NESO carbon intensity, and add the store's as-of read functions. *(Done: `feat/env-history`.)*
+2. **2a, hot path:** the gateway follows the store in memory (`GRID_SOURCE=store`), adds `grid.history` and `grid.revisions`, and runs latency budgets in CI. *(Done: `feat/env-hot-path`.)*
+   **2b, sessions and push:** x402 or credits buys a session; reads are in-memory debits; SSE push.
+3. **Optimistic per-call x402:** local EIP-3009 verification, in-memory admission per replica.
 4. **More datasets:** embedded wind and solar forecast, demand forecast, generation mix. Each is a new `DatasetSpec`, not a new pipeline.
 5. **Bulk history:** nightly Parquet export.
 

@@ -121,6 +121,19 @@ values that changed to `env_observation`, stamped with `ingested_at` (the as-of 
 - **Replicas.** Writes take a per-dataset transaction lock, so several replicas never append a change twice.
 - **TimescaleDB.** The migration makes `env_observation` a hypertable when the extension is available,
   and leaves a plain table otherwise. `/status` reports which.
+- **Serving it.** With `GRID_SOURCE=store` (needs `DATABASE_URL`), the gateway follows the store in
+  memory instead of polling NESO: Postgres `LISTEN/NOTIFY` on commit, with a 15 s fallback poll. It
+  keeps every version of the last `GRID_HISTORY_MEMORY_DAYS` (default 7) days in memory and adds:
+
+  | Endpoint | x402 | Credits | Returns |
+  |---|---|---|---|
+  | `GET /v1/grid/{country}/history?from=&to=&as_of=` | $0.05 | £0.04 | Each half-hour in `[from, to)` (up to 7 days) as known at `as_of` (default now), with `known_at` and `published_at` |
+  | `GET /v1/grid/{country}/revisions?period=` | $0.02 | £0.015 | Every version of one half-hour, oldest first |
+
+  Times are ISO 8601 with a zone. Older history comes from Postgres, with the same answers. Grid goes
+  stale (503, never charged) if the store stops refreshing for 2 min or ingest hasn't fetched for 20 min.
+- **Latency budgets.** `pnpm test:latency` runs the hot path through the whole gateway in-process and
+  fails above 5 ms p99. It runs alone in CI so other tests don't compete for the CPU.
 - **Run it.** The gateway owns migrations, so run `pnpm db:migrate` first, then `pnpm dev:ingest-env`
   (`DATABASE_URL` required). Health is on `:8091`: `/healthz`, `/readyz`, `/status` and `/metrics`.
   A NESO outage never fails `/healthz`.

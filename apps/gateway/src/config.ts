@@ -41,6 +41,13 @@ const schema = z
     GRID_ENABLED: bool.default("false"),
     GRID_SOURCE_URL: z.string().url().default("https://api.neso.energy"),
     GRID_POLL_MS: z.coerce.number().int().min(60_000).default(600_000),
+    /**
+     * Where Grid reads from. "neso": polls NESO itself (no history). "store": the version store
+     * that ingest-env fills, followed in memory, which adds point-in-time history (architecture.md §6).
+     */
+    GRID_SOURCE: z.enum(["neso", "store"]).default("neso"),
+    /** How much version history Grid keeps in memory (days); older history reads go to Postgres. */
+    GRID_HISTORY_MEMORY_DAYS: z.coerce.number().int().min(1).max(31).default(7),
 
     // Persistence (unset => in-memory store, dev only)
     DATABASE_URL: z.string().optional(),
@@ -89,6 +96,8 @@ const schema = z
     if (c.FACILITATOR === "url" && !c.FACILITATOR_URL) ctx.addIssue({ code: "custom", path: ["FACILITATOR_URL"], message: "required when FACILITATOR=url" });
     if (c.FACILITATOR === "cdp" && !(c.CDP_API_KEY_ID && c.CDP_API_KEY_SECRET))
       ctx.addIssue({ code: "custom", path: ["CDP_API_KEY_ID"], message: "CDP credentials required when FACILITATOR=cdp" });
+    if (c.GRID_ENABLED && c.GRID_SOURCE === "store" && !c.DATABASE_URL)
+      ctx.addIssue({ code: "custom", path: ["GRID_SOURCE"], message: "store needs DATABASE_URL (the version store is in Postgres)" });
     if (c.X402_NETWORK === "eip155:8453" && c.FACILITATOR === "x402org")
       ctx.addIssue({ code: "custom", path: ["FACILITATOR"], message: "x402.org facilitator is testnet-only; use cdp for Base mainnet" });
     if (c.NODE_ENV === "production") {

@@ -1,4 +1,5 @@
 import { serve } from "@hono/node-server";
+import { CARBON_INTENSITY, EnvCache, EnvFollower, PgEnvStore } from "@mx/env";
 import { createApp } from "./app";
 import { loadConfig, isMainnet } from "./config";
 import type { AppDeps } from "./context";
@@ -23,6 +24,8 @@ import { Catalog } from "./platform/catalog";
 import type { Product } from "./platform/product";
 import { natsFeed, simulatorFeed } from "./products/maritime/feed";
 import { GridFeed } from "./products/grid/feed";
+import { GridHistory } from "./products/grid/history";
+import { StoreGridSource } from "./products/grid/store-source";
 import { GridProduct } from "./products/grid";
 import { NesoGridSource } from "./products/grid/source";
 import { MaritimeProduct } from "./products/maritime";
@@ -58,7 +61,27 @@ await maritime.load();
 engine.start();
 const products: Product[] = [maritime];
 let gridFeed: GridFeed | undefined;
-if (cfg.GRID_ENABLED) {
+let envStore: PgEnvStore | undefined;
+let envFollower: EnvFollower | undefined;
+if (cfg.GRID_ENABLED && cfg.GRID_SOURCE === "store") {
+  // Versions written by ingest-env, followed in memory: the live view updates the moment a new
+  // version commits (LISTEN/NOTIFY), and history reads for the recent window never touch Postgres.
+  envStore = new PgEnvStore(cfg.DATABASE_URL!);
+  if (!(await envStore.schemaReady())) throw new Error("env tables missing after migrations");
+  const cache = new EnvCache(envStore, { dataset: CARBON_INTENSITY.id, regions: CARBON_INTENSITY.regions, windowMs: cfg.GRID_HISTORY_MEMORY_DAYS * 86_400_000 });
+  envFollower = new EnvFollower(envStore, cache, log);
+  await envFollower.start();
+  const follower = envFollower;
+  gridFeed = new GridFeed(new StoreGridSource(cache, { lastRefreshAt: () => cache.lastRefreshAt, ingestLastSuccessAt: () => follower.ingestLastSuccessAt }), log, cfg.GRID_POLL_MS);
+  const feedRef = gridFeed;
+  // After every follower step: a new version reaches the live endpoints at once, and so does
+  // ingest recovering (which changes freshness without changing values).
+  envFollower.onUpdate(() => void feedRef.poll());
+  await gridFeed.poll();
+  gridFeed.start();
+  products.push(new GridProduct(gridFeed, Date.now, new GridHistory(cache, envStore)));
+  log.info({ versions: cache.size, windowDays: cfg.GRID_HISTORY_MEMORY_DAYS }, "grid reading from the version store");
+} else if (cfg.GRID_ENABLED) {
   gridFeed = new GridFeed(new NesoGridSource(cfg.GRID_SOURCE_URL), log, cfg.GRID_POLL_MS);
   await gridFeed.poll(); // serve with data from the first request, or report stale (never charge)
   gridFeed.start();
@@ -157,11 +180,13 @@ async function shutdown(signal: string) {
   server.close();
   engine.stop();
   gridFeed?.stop();
+  await envFollower?.stop();
   settler.stop();
   // Give in-flight settlements a moment; anything unfinished is re-claimed after its lease expires.
   await new Promise((r) => setTimeout(r, 1_000));
   await feed.close();
   await store.close();
+  await envStore?.close();
   process.exit(0);
 }
 process.on("SIGTERM", () => void shutdown("SIGTERM"));
