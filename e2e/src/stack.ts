@@ -116,6 +116,10 @@ export async function startStack(opts: StackOptions = {}): Promise<{ info: Stack
       ERC8004_TRUSTED_MIN_FEEDBACK: "3",
       ERC8004_TRUSTED_MIN_SCORE: "80",
       ERC8004_REPUTATION_TAG: "quality",
+      // x402 sessions, shared by every replica (same secret), reporting usage every 200 ms.
+      SESSIONS_ENABLED: "true",
+      SESSION_SECRET: "e2e-session-secret-0123456789abcdef0123456789",
+      SESSION_FLUSH_MS: "200",
       ...over,
     });
     const specs: Record<GatewayName, Record<string, string>> = {

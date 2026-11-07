@@ -1,7 +1,19 @@
 import { randomUUID } from "node:crypto";
 import pg from "pg";
-import { assertBalanced, computeHash, GENESIS_HASH, normalizeJournal, type JournalEntry, type JournalInput } from "../ledger/journal";
-import type { AdmitOptions, Admission, CreditAccount, NewAccount, NewPayment, PaymentRow, PaymentStatus, SettleMode, Store } from "./types";
+import {
+  assertBalanced,
+  computeHash,
+  GENESIS_HASH,
+  isSessionPurchase,
+  normalizeJournal,
+  sessionBreakageJournal,
+  sessionRelease,
+  sessionUsageJournal,
+  x402Gbp,
+  type JournalEntry,
+  type JournalInput,
+} from "../ledger/journal";
+import type { AdmitOptions, Admission, CreditAccount, NewAccount, NewPayment, PaymentRow, PaymentStatus, ReserveResult, SessionRow, SessionUsage, SettleMode, Store } from "./types";
 
 // bigint columns (balances, micros) fit in JS safe integers for our ranges; parse them as numbers.
 pg.types.setTypeParser(20, (v) => Number(v));
@@ -36,6 +48,21 @@ function rowToPayment(r: Record<string, any>): PaymentRow {
     error: r.error,
     createdAt: r.created_at,
     settledAt: r.settled_at,
+  };
+}
+
+function rowToSession(r: Record<string, any>): SessionRow {
+  return {
+    paymentId: r.payment_id,
+    payer: r.payer,
+    amountAtomic: BigInt(r.amount_atomic),
+    reservedAtomic: BigInt(r.reserved_atomic),
+    spentAtomic: BigInt(r.spent_atomic),
+    netGbpMicros: Number(r.net_gbp_micros),
+    releasedGbpMicros: Number(r.released_gbp_micros),
+    createdAt: r.created_at,
+    expiresAt: r.expires_at,
+    closedAt: r.closed_at,
   };
 }
 
@@ -283,6 +310,83 @@ export class PgStore implements Store {
       [accountId, limit],
     );
     return r.rows.map((x) => ({ endpoint: x.endpoint, micros: Number(x.micros), at: x.created_at }));
+  }
+
+  async reserveSession(paymentId: string, chunkAtomic: bigint, now: Date, ttlMs: number): Promise<ReserveResult> {
+    return this.tx(async (c) => {
+      let row = (await c.query("select * from x402_sessions where payment_id = $1 for update", [paymentId])).rows[0];
+      if (!row) {
+        // First use: open it from the settled payment. Locking the payment serialises two replicas
+        // opening the same session; on conflict the other one won and we read its row.
+        const p = (await c.query("select id, payer, endpoint, status, amount_atomic, fx_usdc_gbp, settled_at from x402_payments where id = $1 for update", [paymentId])).rows[0];
+        if (!p) return { ok: false, reason: "unknown" } as const;
+        if (!isSessionPurchase(p.endpoint)) return { ok: false, reason: "not_a_session" } as const;
+        if (p.status !== "settled" || !p.settled_at) return { ok: false, reason: "not_settled" } as const;
+        const amount = BigInt(p.amount_atomic);
+        await c.query(
+          `insert into x402_sessions (payment_id, payer, amount_atomic, net_gbp_micros, created_at, expires_at)
+           values ($1, $2, $3, $4, $5, $6) on conflict do nothing`,
+          [paymentId, p.payer, amount.toString(), x402Gbp(amount, Number(p.fx_usdc_gbp)).netMicros, now, new Date((p.settled_at as Date).getTime() + ttlMs)],
+        );
+        row = (await c.query("select * from x402_sessions where payment_id = $1 for update", [paymentId])).rows[0];
+      }
+      const sess = rowToSession(row);
+      if (sess.closedAt) return { ok: false, reason: "closed" } as const;
+      if (sess.expiresAt <= now) return { ok: false, reason: "expired" } as const;
+      const free = sess.amountAtomic - sess.reservedAtomic;
+      if (free <= 0n) return { ok: false, reason: "exhausted" } as const;
+      const granted = chunkAtomic < free ? chunkAtomic : free;
+      const updated = (await c.query("update x402_sessions set reserved_atomic = reserved_atomic + $2 where payment_id = $1 returning *", [paymentId, granted.toString()])).rows[0];
+      return { ok: true, grantedAtomic: granted, session: rowToSession(updated) } as const;
+    });
+  }
+
+  async recordSessionUsage(paymentId: string, usage: SessionUsage, occurredAt: Date): Promise<void> {
+    await this.tx(async (c) => {
+      const row = (await c.query("select * from x402_sessions where payment_id = $1 for update", [paymentId])).rows[0];
+      if (!row) throw new Error(`unknown session ${paymentId}`);
+      const sess = rowToSession(row);
+      let spent = 0n;
+      for (const v of usage.byResource.values()) spent += v;
+      if (spent + usage.returnedAtomic > sess.reservedAtomic - sess.spentAtomic) throw new Error(`session ${paymentId}: usage exceeds outstanding leases`);
+      const release = sess.closedAt
+        ? { releasedAfterMicros: sess.releasedGbpMicros, lines: [] }
+        : sessionRelease({ netGbpMicros: sess.netGbpMicros, amountAtomic: sess.amountAtomic, spentBeforeAtomic: sess.spentAtomic, releasedBeforeMicros: sess.releasedGbpMicros, byResource: usage.byResource });
+      await c.query(
+        "update x402_sessions set spent_atomic = spent_atomic + $2, reserved_atomic = reserved_atomic - $3, released_gbp_micros = $4 where payment_id = $1",
+        [paymentId, spent.toString(), usage.returnedAtomic.toString(), release.releasedAfterMicros],
+      );
+      if (release.lines.length) {
+        const byResource = Object.fromEntries([...usage.byResource].map(([k, v]) => [k, v.toString()]));
+        await this.appendJournal(c, sessionUsageJournal({ sessionId: paymentId, lines: release.lines, spentAtomic: byResource, occurredAt: occurredAt.toISOString() }));
+      }
+    });
+  }
+
+  async closeExpiredSessions(now: Date, graceMs: number): Promise<number> {
+    const due = await this.pool.query<{ payment_id: string }>(
+      "select payment_id from x402_sessions where closed_at is null and expires_at + make_interval(secs => $2::double precision / 1000) <= $1 limit 500",
+      [now, graceMs],
+    );
+    let n = 0;
+    for (const { payment_id } of due.rows) {
+      const closed = await this.tx(async (c) => {
+        const row = (await c.query("select * from x402_sessions where payment_id = $1 and closed_at is null for update", [payment_id])).rows[0];
+        if (!row) return false; // another replica closed it
+        const sess = rowToSession(row);
+        const rest = sess.netGbpMicros - sess.releasedGbpMicros;
+        await c.query("update x402_sessions set closed_at = $2, released_gbp_micros = net_gbp_micros where payment_id = $1", [payment_id, now]);
+        if (rest > 0) await this.appendJournal(c, sessionBreakageJournal({ sessionId: payment_id, micros: rest, unusedAtomic: (sess.amountAtomic - sess.spentAtomic).toString(), occurredAt: now.toISOString() }));
+        return true;
+      });
+      if (closed) n++;
+    }
+    return n;
+  }
+
+  async getSession(paymentId: string): Promise<SessionRow | null> {
+    const r = await this.pool.query("select * from x402_sessions where payment_id = $1", [paymentId]);
+    return r.rows[0] ? rowToSession(r.rows[0]) : null;
   }
 
   async journal(range?: { from?: Date; to?: Date }) {

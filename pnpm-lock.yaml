@@ -72,6 +72,9 @@ importers:
       '@mx/ais':
         specifier: workspace:*
         version: link:../../packages/ais
+      '@mx/env':
+        specifier: workspace:*
+        version: link:../../packages/env
       '@mx/shared':
         specifier: workspace:*
         version: link:../../packages/shared

@@ -17,6 +17,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm test
+      # Hot-path latency budgets, alone so other tests don't compete for the CPU (architecture.md §6.4).
+      - run: pnpm test:latency
 
   integration:
     # Real Postgres 16 via Testcontainers (Docker is available on ubuntu-latest runners).

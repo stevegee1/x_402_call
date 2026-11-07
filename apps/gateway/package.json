@@ -9,12 +9,14 @@
     "migrate": "tsx --env-file-if-exists=../../.env src/store/migrate.ts",
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run",
-    "test:integration": "vitest run --config vitest.integration.config.ts"
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "test:latency": "vitest run --config vitest.latency.config.ts"
   },
   "dependencies": {
     "@coinbase/x402": "2.1.0",
     "@hono/node-server": "2.1.5",
     "@mx/ais": "workspace:*",
+    "@mx/env": "workspace:*",
     "@mx/shared": "workspace:*",
     "@x402/core": "2.28.0",
     "@x402/evm": "2.28.0",

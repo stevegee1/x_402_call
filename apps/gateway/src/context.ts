@@ -9,6 +9,7 @@ import type { ExposureCaps } from "./store/types";
 import type { FailoverFacilitator } from "./payments/facilitator";
 import type { SanctionsScreen } from "./payments/sanctions";
 import type { Settler } from "./payments/settlement";
+import type { SessionManager } from "./sessions/manager";
 import type { RequirementsCache } from "./payments/x402";
 import type { Catalog } from "./platform/catalog";
 import type { Resolution } from "./platform/product";
@@ -34,6 +35,8 @@ export interface AppDeps {
   sellerIdentity?: { agentRegistry: string; agentId: string };
   sanctions: SanctionsScreen;
   fx: FxService;
+  /** x402 sessions; undefined when SESSIONS_ENABLED=false. */
+  sessions?: SessionManager;
   startedAt: number;
 }
 
@@ -43,5 +46,7 @@ export type AppEnv = {
     /** Set by billing after the product resolved the request: scope + product-owned state. */
     resolution: Resolution<unknown>;
     account: CreditAccount;
+    /** Set by billing for x402 payments, before the handler runs. */
+    payment: { id: string; payer: string };
   };
 };

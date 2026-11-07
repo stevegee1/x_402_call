@@ -5,7 +5,8 @@ import type { AppDeps, AppEnv } from "../context";
 import type { PricedResource, Product } from "../platform/product";
 import { renderSite, SITE_HEADERS, wantsHtml } from "./site";
 
-const priceOf = (r: PricedResource) => ({ price_usdc: r.pricing.priceUsd, price_credits_gbp: r.pricing.creditsGbpMicros / 1e6 });
+const creditsOk = (r: PricedResource) => !r.rails || r.rails.includes("credits");
+const priceOf = (r: PricedResource) => ({ price_usdc: r.pricing.priceUsd, price_credits_gbp: creditsOk(r) ? r.pricing.creditsGbpMicros / 1e6 : null, ...(r.rails ? { rails: r.rails } : {}) });
 
 export function publicRoutes(d: AppDeps) {
   const r = new Hono<AppEnv>();
@@ -105,7 +106,7 @@ function openapi(d: AppDeps) {
         deprecated: deprecated || undefined,
         parameters: (e.parameters ?? []).map((p) => ({ ...p, required: p.in === "path" ? true : (p.required ?? false) })),
         "x-x402": { price_usdc: e.pricing.priceUsd, network: d.cfg.X402_NETWORK, pay_to: d.cfg.PAY_TO },
-        "x-credits": { price_gbp: e.pricing.creditsGbpMicros / 1e6 },
+        ...(creditsOk(e) ? { "x-credits": { price_gbp: e.pricing.creditsGbpMicros / 1e6 } } : {}),
         security: [{}, { credits: [] }],
         responses: {
           "200": { description: "Data envelope: {mode, snapshot_ts, source_ts, degraded, data, …}" },

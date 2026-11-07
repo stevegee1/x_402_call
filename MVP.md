@@ -96,6 +96,7 @@ An AI agent or business can buy **live maritime data with no account** (x402, US
 | I9 | Credits balance never goes negative | Conditional `UPDATE … WHERE balance >= $price` + CHECK constraint | credits test |
 | I10 | The buyer signs exactly the requirement its policy approved | SDK passes only the approved `accepts` entry to the signer | policy tests |
 | I12 | ERC-8004 identity only ever loosens limits: every failure (no or malformed id, wallet mismatch, transferred agent, registry error or timeout, weak reputation) is the no-identity behaviour, and no tier raises the global cap | `TierResolver` (strict `getAgentWallet` == payer binding), config check `unknown <= identified <= trusted <= global` | `test/identity/*`; e2e `ERC-8004 buyer tiers (loosen-only)` |
+| I13 | An x402 session never spends more than was paid, and exists only once its payment has settled on chain | Session purchases settle sync (`settlement: "sync"`); balances are leased under a row lock, never past the amount; spend is checked again after every await before it is taken | `never leases more than the amount when replicas reserve at the same moment`, `two replicas sharing one session can never spend more than was paid`, `buying settles on chain before the token is issued` |
 
 ---
 

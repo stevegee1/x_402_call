@@ -1,11 +1,18 @@
 import { usdToUsdcAtomic } from "@mx/shared";
-import type { Handler, PaidHandler, Precheck, PricedResource, Product, ProductRoutes } from "./product";
+import type { Handler, PaidHandler, Precheck, PricedResource, Product, ProductRoutes, StreamOpen } from "./product";
 
 /** Top-level /v1 segments owned by the platform; a product id may not take them. */
 export const RESERVED_PRODUCT_IDS = new Set(["admin", "credits", "payments", "policy", "products", "stripe", "status", "openapi", "health", "metrics"]);
 
 const PRODUCT_ID = /^[a-z][a-z0-9-]{1,31}$/;
 const RESOURCE_NAME = /^[a-z][a-z0-9_-]{0,63}$/;
+
+export interface StreamRoute {
+  product: Product;
+  resource: PricedResource;
+  path: string;
+  open: StreamOpen<unknown>;
+}
 
 export interface PaidRoute {
   product: Product;
@@ -52,6 +59,7 @@ const pathParams = (pattern: string) => [...pattern.matchAll(/:(\w+)/g)].map((m)
 export class Catalog {
   readonly products: readonly Product[];
   readonly paid: readonly PaidRoute[];
+  readonly streams: readonly StreamRoute[];
   readonly free: readonly FreeRoute[];
   readonly admin: readonly AdminRoute[];
   private readonly byResource = new Map<string, PricedResource>();
@@ -60,6 +68,7 @@ export class Catalog {
   constructor(products: Product[]) {
     if (products.length === 0) throw new CatalogError("at least one product is required");
     const paid: PaidRoute[] = [];
+    const streams: StreamRoute[] = [];
     const free: FreeRoute[] = [];
     const admin: AdminRoute[] = [];
     const routeKeys = new Set<string>();
@@ -76,16 +85,30 @@ export class Catalog {
 
       for (const r of p.resources) this.validateResource(p, r);
 
-      const registered = new Map<string, PaidRoute>();
+      const registered = new Map<string, PaidRoute | StreamRoute>();
+      const declared = (resourceId: string) => {
+        const resource = p.resources.find((r) => r.id === resourceId);
+        if (!resource) throw new CatalogError(`${p.id}: handler for undeclared resource ${resourceId}`);
+        if (registered.has(resourceId)) throw new CatalogError(`${p.id}: resource ${resourceId} has two handlers`);
+        return resource;
+      };
       const routes: ProductRoutes<unknown> = {
         paid: (resourceId, handler, opts) => {
-          const resource = p.resources.find((r) => r.id === resourceId);
-          if (!resource) throw new CatalogError(`${p.id}: handler for undeclared resource ${resourceId}`);
-          if (registered.has(resourceId)) throw new CatalogError(`${p.id}: resource ${resourceId} has two handlers`);
+          const resource = declared(resourceId);
           const route: PaidRoute = { product: p, resource, path: `/v1/${p.id}${resource.path}`, handler, precheck: opts?.precheck };
           claim(`GET ${route.path}`);
           for (const l of resource.legacyPaths ?? []) claim(`GET ${l}`);
           registered.set(resourceId, route);
+        },
+        stream: (resourceId, open) => {
+          const resource = declared(resourceId);
+          // Events can only be paid from a session: per-event x402 or credits would cost a round trip each.
+          if (resource.rails?.length !== 1 || resource.rails[0] !== "session") throw new CatalogError(`${resourceId}: a stream resource must take rails ["session"]`);
+          if (resource.legacyPaths?.length) throw new CatalogError(`${resourceId}: a stream resource has no legacy paths`);
+          const route: StreamRoute = { product: p, resource, path: `/v1/${p.id}${resource.path}`, open };
+          claim(`GET ${route.path}`);
+          registered.set(resourceId, route);
+          streams.push(route);
         },
         free: (path, handler, opts) => {
           if (!path.startsWith("/")) throw new CatalogError(`${p.id}: free path must start with /`);
@@ -105,11 +128,12 @@ export class Catalog {
 
       const missing = p.resources.filter((r) => !registered.has(r.id)).map((r) => r.id);
       if (missing.length) throw new CatalogError(`${p.id}: no handler for ${missing.join(", ")}`);
-      paid.push(...registered.values());
+      for (const r of registered.values()) if ("handler" in r) paid.push(r);
     }
 
     this.products = products;
     this.paid = paid;
+    this.streams = streams;
     this.free = free;
     this.admin = admin;
   }
@@ -139,7 +163,13 @@ export class Catalog {
       throw new CatalogError(`${r.id}: priceUsd ${r.pricing.priceUsd} is not a USD amount with ≤ 6 decimals`);
     }
     if (atomic <= 0n) throw new CatalogError(`${r.id}: priceUsd must be positive`);
-    if (!Number.isSafeInteger(r.pricing.creditsGbpMicros) || r.pricing.creditsGbpMicros <= 0) throw new CatalogError(`${r.id}: creditsGbpMicros must be a positive integer`);
+    if (r.rails !== undefined) {
+      if (r.rails.length === 0) throw new CatalogError(`${r.id}: rails must not be empty`);
+      for (const rail of r.rails) if (!["x402", "credits", "session"].includes(rail)) throw new CatalogError(`${r.id}: unknown rail ${rail}`);
+    }
+    const creditsAccepted = !r.rails || r.rails.includes("credits");
+    if (creditsAccepted && (!Number.isSafeInteger(r.pricing.creditsGbpMicros) || r.pricing.creditsGbpMicros <= 0)) throw new CatalogError(`${r.id}: creditsGbpMicros must be a positive integer`);
+    if (r.settlement !== undefined && r.settlement !== "sync") throw new CatalogError(`${r.id}: unknown settlement ${String(r.settlement)}`);
     const declared = new Set((r.parameters ?? []).filter((x) => x.in === "path").map((x) => x.name));
     const inPath = pathParams(r.path);
     for (const name of inPath) if (!declared.has(name)) throw new CatalogError(`${r.id}: path parameter :${name} is not declared`);

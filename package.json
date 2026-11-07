@@ -10,6 +10,7 @@
     "typecheck": "tsc -p tsconfig.json && pnpm -r typecheck",
     "test": "pnpm -r test",
     "test:integration": "pnpm --filter @mx/gateway --filter @mx/env test:integration",
+    "test:latency": "pnpm --workspace-concurrency=1 --filter @mx/env --filter @mx/gateway test:latency",
     "dev:infra": "docker compose up -d postgres nats",
     "dev:ingest": "pnpm --filter @mx/ingest dev",
     "dev:ingest-env": "pnpm --filter @mx/ingest-env dev",

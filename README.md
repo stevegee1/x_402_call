@@ -124,9 +124,42 @@ values that changed to `env_observation`, stamped with `ingested_at` (the as-of 
 - **Replicas.** Writes take a per-dataset transaction lock, so several replicas never append a change twice.
 - **TimescaleDB.** The migration makes `env_observation` a hypertable when the extension is available,
   and leaves a plain table otherwise. `/status` reports which.
+- **Serving it.** With `GRID_SOURCE=store` (needs `DATABASE_URL`), the gateway follows the store in
+  memory instead of polling NESO: Postgres `LISTEN/NOTIFY` on commit, with a 15 s fallback poll. It
+  keeps every version of the last `GRID_HISTORY_MEMORY_DAYS` (default 7) days in memory and adds:
+
+  | Endpoint | x402 | Credits | Returns |
+  |---|---|---|---|
+  | `GET /v1/grid/{country}/history?from=&to=&as_of=` | $0.05 | £0.04 | Each half-hour in `[from, to)` (up to 7 days) as known at `as_of` (default now), with `known_at` and `published_at` |
+  | `GET /v1/grid/{country}/revisions?period=` | $0.02 | £0.015 | Every version of one half-hour, oldest first |
+
+  Times are ISO 8601 with a zone. Older history comes from Postgres, with the same answers. Grid goes
+  stale (503, never charged) if the store stops refreshing for 2 min or ingest hasn't fetched for 20 min.
+- **Latency budgets.** `pnpm test:latency` runs the hot path through the whole gateway in-process and
+  fails above 5 ms p99. It runs alone in CI so other tests don't compete for the CPU.
 - **Run it.** The gateway owns migrations, so run `pnpm db:migrate` first, then `pnpm dev:ingest-env`
   (`DATABASE_URL` required). Health is on `:8091`: `/healthz`, `/readyz`, `/status` and `/metrics`.
   A NESO outage never fails `/healthz`.
+
+### x402 sessions: prepay once, read at memory speed
+
+With `SESSIONS_ENABLED=true` (and `SESSION_SECRET`, at least 32 chars and the same on every replica),
+a buyer pays once with x402 and then reads any product with `Authorization: Session <token>`:
+
+| Endpoint | x402 | Returns |
+|---|---|---|
+| `GET /v1/sessions/sizes` | free | Session sizes and how to use them |
+| `GET /v1/sessions/usd1` · `usd5` · `usd20` | $1 · $5 · $20 | `201 {session_token, session_id, expires_at, …}`, issued only after the payment settles on chain |
+| `GET /v1/grid/{country}/stream` | $0.01 per event, session only | SSE: the forecast on connect, then each new version (`GRID_SOURCE=store`) |
+
+- **Reads:** each one spends the product's x402 price from the session. A read is an HMAC check and an
+  in-memory debit, with no facilitator, chain or database. Responses carry
+  `X-Session-Charged-Usdc-Atomic` and `X-Session-Remaining-Usdc-Atomic`. A failed handler is refunded.
+  An empty session gets a 402 `session_exhausted`, and an expired one a 401 `session_expired`.
+- **Rails:** only x402 can buy a session. GBP credits and sessions get a 400 `rail_not_accepted`, uncharged.
+- **Replicas:** each lease is `SESSION_LEASE_USD` (default $0.25). Spend is reported every `SESSION_FLUSH_MS`
+  (default 1 s). Sessions last `SESSION_TTL_MINUTES` (default 60) from settlement. Unused balance becomes
+  breakage `SESSION_CLOSE_GRACE_MS` after expiry. Accounting is in architecture.md §6.4.
 
 ### ERC-8004 identity (buyer tiers)
 

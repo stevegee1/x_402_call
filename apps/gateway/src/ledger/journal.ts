@@ -11,6 +11,10 @@ export const ACCOUNTS = {
   stripeClearing: "asset:stripe_clearing",
   bankTransfer: "asset:bank_transfer",
   creditsLiability: "liability:customer_credits",
+  /** x402 sessions: paid for, not yet used. Released to product revenue as reads spend it. */
+  sessionPrepaid: "liability:session_prepaid",
+  /** Session balances that expired unused (breakage). Accountant sign-off needed before mainnet. */
+  sessionBreakage: "revenue:session_breakage",
   vatOutput: "liability:vat_output",
 } as const;
 
@@ -21,7 +25,11 @@ export function revenueAccount(resourceId: string): string {
   return `${REVENUE_PREFIX}${productOfResource(resourceId)}`;
 }
 
-export type JournalKind = "x402_settlement" | "credits_topup" | "credits_usage" | "credits_refund";
+export type JournalKind = "x402_settlement" | "credits_topup" | "credits_usage" | "credits_refund" | "session_usage" | "session_breakage";
+
+/** Resources whose x402 payment buys a session (a prepayment), not data. */
+export const SESSION_RESOURCE_PREFIX = "sessions.";
+export const isSessionPurchase = (resourceId: string) => resourceId.startsWith(SESSION_RESOURCE_PREFIX);
 
 export interface JournalLine {
   account: string;
@@ -109,10 +117,10 @@ export function x402SettlementJournal(p: {
   endpoint: string;
   occurredAt: string;
 }): JournalInput {
-  const revenue = revenueAccount(p.endpoint);
-  // USDC atomic (6dp) is numerically USD micros; convert to GBP micros at the quote used at verify time.
-  const grossMicros = Math.round(Number(p.amountAtomic) * p.fxRate);
-  const { netMicros, vatMicros } = splitInclusive(grossMicros);
+  // A session purchase is a prepayment: VAT is due now (the tax point is the payment), and the net
+  // is a liability until reads spend it. Anything else is revenue for the product sold.
+  const revenue = isSessionPurchase(p.endpoint) ? ACCOUNTS.sessionPrepaid : revenueAccount(p.endpoint);
+  const { netMicros, vatMicros, grossMicros } = x402Gbp(p.amountAtomic, p.fxRate);
   return {
     id: randomUUID(),
     kind: "x402_settlement",
@@ -129,6 +137,63 @@ export function x402SettlementJournal(p: {
       endpoint: p.endpoint,
       vat_treatment: "uk_standard_inclusive",
     },
+  };
+}
+
+/** USDC atomic (6 dp) is numerically USD micros; GBP micros at the quote used at verify time, VAT-inclusive. */
+export function x402Gbp(amountAtomic: bigint, fxRate: number): { grossMicros: number; netMicros: number; vatMicros: number } {
+  const grossMicros = Math.round(Number(amountAtomic) * fxRate);
+  return { grossMicros, ...splitInclusive(grossMicros) };
+}
+
+/**
+ * Releases the net GBP liability of a session in proportion to what was spent: after a report, the
+ * total released is floor(net × spent / amount), so rounding never drifts over many reports. This
+ * report's share is split across the resources that spent it.
+ */
+export function sessionRelease(p: {
+  netGbpMicros: number;
+  amountAtomic: bigint;
+  spentBeforeAtomic: bigint;
+  releasedBeforeMicros: number;
+  byResource: ReadonlyMap<string, bigint>;
+}): { releasedAfterMicros: number; lines: Array<{ resourceId: string; micros: number }> } {
+  let batch = 0n;
+  for (const v of p.byResource.values()) batch += v;
+  const spentAfter = p.spentBeforeAtomic + batch;
+  const target = Number((BigInt(p.netGbpMicros) * spentAfter) / p.amountAtomic);
+  const delta = Math.max(0, target - p.releasedBeforeMicros);
+  if (batch === 0n || delta === 0) return { releasedAfterMicros: p.releasedBeforeMicros + delta, lines: [] };
+  const entries = [...p.byResource.entries()].filter(([, v]) => v > 0n).sort(([a], [b]) => a.localeCompare(b));
+  const lines = entries.map(([resourceId, v]) => ({ resourceId, micros: Number((BigInt(delta) * v) / batch) }));
+  // Integer division leaves a remainder; give it to the largest spender so the lines sum exactly.
+  const rest = delta - lines.reduce((n, l) => n + l.micros, 0);
+  let largest = 0;
+  for (let i = 1; i < entries.length; i++) if (entries[i]![1] > entries[largest]![1]) largest = i;
+  lines[largest]!.micros += rest;
+  return { releasedAfterMicros: p.releasedBeforeMicros + delta, lines: lines.filter((l) => l.micros > 0) };
+}
+
+export function sessionUsageJournal(p: { sessionId: string; lines: Array<{ resourceId: string; micros: number }>; spentAtomic: Record<string, string>; occurredAt: string }): JournalInput {
+  const total = p.lines.reduce((n, l) => n + l.micros, 0);
+  return {
+    id: randomUUID(),
+    kind: "session_usage",
+    ref: p.sessionId,
+    occurredAt: p.occurredAt,
+    lines: [L(ACCOUNTS.sessionPrepaid, total, 0), ...p.lines.map((l) => L(revenueAccount(l.resourceId), 0, l.micros))],
+    memo: { session_id: p.sessionId, usdc_atomic_by_resource: p.spentAtomic },
+  };
+}
+
+export function sessionBreakageJournal(p: { sessionId: string; micros: number; unusedAtomic: string; occurredAt: string }): JournalInput {
+  return {
+    id: randomUUID(),
+    kind: "session_breakage",
+    ref: p.sessionId,
+    occurredAt: p.occurredAt,
+    lines: [L(ACCOUNTS.sessionPrepaid, p.micros, 0), L(ACCOUNTS.sessionBreakage, 0, p.micros)],
+    memo: { session_id: p.sessionId, unused_usdc_atomic: p.unusedAtomic },
   };
 }
 

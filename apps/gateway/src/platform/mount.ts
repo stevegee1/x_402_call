@@ -1,6 +1,7 @@
 import { Hono, type MiddlewareHandler } from "hono";
 import type { AppDeps, AppEnv } from "../context";
 import { paid } from "../payments/billing";
+import { sessionStream } from "../payments/stream";
 
 /**
  * Marks a response from a pre-platform alias path as deprecated and points at the canonical URL
@@ -26,6 +27,8 @@ export function productRoutes(d: AppDeps) {
     const bill = paid(route.product, route.resource, d, route.precheck);
     app.get(route.path, bill, (c) => route.handler(c, c.get("resolution").state));
   }
+
+  for (const route of d.catalog.streams) app.get(route.path, sessionStream(route, d));
 
   // Aliases after all canonical routes, so a canonical path always wins a match.
   for (const route of d.catalog.free) {
