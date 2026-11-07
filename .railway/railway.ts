@@ -26,6 +26,7 @@ const BASE_SEPOLIA_RPC = "https://sepolia.base.org";
 const GATEWAY_PORT = "8080";
 const FACILITATOR_PORT = "8090";
 const RECONCILER_PORT = "8095";
+const INGEST_ENV_PORT = "8091";
 
 /** One image for every service (Dockerfile); each service redeploys only when its inputs change. */
 const build = (app: string) => ({
@@ -134,8 +135,32 @@ export default defineRailway((ctx) => {
     },
   });
 
+  // Every published NESO version, for point-in-time history (architecture.md §6). History only
+  // exists from the moment this runs, so it runs on staging ahead of the hot path. It exits until
+  // the gateway has run migration 004; ON_FAILURE restarts cover that on a first deploy.
+  const ingestEnv = service("ingest-env", {
+    source,
+    build: build("apps/ingest-env"),
+    // /healthz never fails on NESO or database trouble, so an upstream outage can't restart-loop it.
+    // /readyz (database) and /status are on the private network.
+    deploy: deploy("pnpm --filter @mx/ingest-env start", "/healthz"),
+    // One replica is enough for staging. Writes are safe with more: a per-dataset lock means a
+    // change is appended once.
+    replicas: { sfo: 1 },
+    networking: { privateNetworkEndpoint: "ingest-env" },
+    env: {
+      NODE_ENV: "production",
+      LOG_LEVEL: "info",
+      DATABASE_URL: db.env.DATABASE_URL,
+      // Railway health-checks the port in PORT; the service listens on ENV_HEALTH_PORT.
+      PORT: INGEST_ENV_PORT,
+      ENV_HEALTH_PORT: INGEST_ENV_PORT,
+      NESO_BASE_URL: "https://api.neso.energy",
+    },
+  });
+
   return project("authentic-rebirth", {
     variables: { managed: true },
-    resources: [db, facilitator, gateway, reconciler],
+    resources: [db, facilitator, gateway, reconciler, ingestEnv],
   });
 });

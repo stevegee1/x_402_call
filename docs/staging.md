@@ -9,6 +9,7 @@ any environment other than `staging`.
 | `@mx/gateway` | API: billing, settlement, ledger, products (maritime simulated, grid live) | public domain + private `mxgateway.railway.internal:8080` | `/readyz` |
 | `facilitator` | Self-hosted x402 facilitator, the gateway's **fallback** (primary: x402.org) | private only, `facilitator.railway.internal:8090` | `/healthz` |
 | `reconciler` | Ledger against chain every 15 min; alerts on persistent mismatches | private only | `/healthz` |
+| `ingest-env` | Stores every published NESO version (point-in-time history); exits until the gateway has migrated | private only, `ingest-env.railway.internal:8091` | `/healthz` |
 | `postgres` | Railway-managed Postgres | private | (managed) |
 
 Deploys come from the branch named by `STAGING_BRANCH` in the config file (`feat/staging-railway`
@@ -69,6 +70,7 @@ project `authentic-rebirth`, environment `staging`).
 curl https://<gateway-domain>/readyz       # {"ok":true,"db":true,"products":{"maritime":true,"grid":true},…}
 curl https://<gateway-domain>/v1/products  # maritime and grid
 railway logs -s reconciler                 # one JSON line per run: "ok":true
+railway logs -s ingest-env                 # "fetched" lines; changed > 0 after each NESO publish
 ```
 
 Pay end to end with test USDC from https://faucet.circle.com (Base Sepolia):
