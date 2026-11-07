@@ -11,7 +11,7 @@ import { CreditsService } from "../src/credits/service";
 import { FixedFx } from "../src/ledger/fx";
 import { createLogger } from "../src/logger";
 import { Metrics } from "../src/metrics";
-import { exposureCaps } from "../src/payments/exposure";
+import { exposureCaps, failurePolicy } from "../src/payments/exposure";
 import { FailoverFacilitator } from "../src/payments/facilitator";
 import { SanctionsService } from "../src/payments/sanctions";
 import { Settler } from "../src/payments/settlement";
@@ -159,6 +159,7 @@ export async function createTestEnv(overrides: Partial<Record<keyof Config, stri
     facilitator: failover,
     settler,
     exposureCaps: exposureCaps(cfg),
+    failurePolicy: failurePolicy(cfg),
     identity: opts.identity,
     sellerIdentity: opts.sellerIdentity,
     sanctions,

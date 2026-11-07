@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { assertBalanced, computeHash, GENESIS_HASH, normalizeJournal, type JournalEntry, type JournalInput } from "../ledger/journal";
-import type { AdmitOptions, Admission, CreditAccount, NewAccount, NewPayment, PaymentRow, PaymentStatus, PolicyEventRow, Store, UsageRow } from "./types";
+import type { AdmitOptions, Admission, CreditAccount, NewAccount, NewPayment, PaymentRow, PaymentStatus, PolicyEventRow, Store, SyncReason, UsageRow } from "./types";
 
 /**
  * In-memory Store for tests and zero-dependency local runs. Not durable: never used when
@@ -80,12 +80,15 @@ export class MemoryStore implements Store {
       .slice(0, opts.limit);
   }
 
-  private exposureOf(payer?: string) {
+  /** Unsettled async exposure, plus (with a hold) async payments that failed for good since `heldSince`. */
+  private exposureOf(payer?: string, heldSince?: Date) {
     let total = 0n;
     let mine = 0n;
     const payers = new Set<string>();
     for (const p of this.payments.values()) {
-      if (p.status !== "verified" || p.settleMode !== "async") continue;
+      if (p.settleMode !== "async") continue;
+      const counts = p.status === "verified" || (heldSince !== undefined && p.status === "failed" && p.createdAt > heldSince);
+      if (!counts) continue;
       total += p.amountAtomic;
       payers.add(p.payer);
       if (payer && p.payer === payer.toLowerCase()) mine += p.amountAtomic;
@@ -93,15 +96,27 @@ export class MemoryStore implements Store {
     return { total, mine, payers: payers.size };
   }
 
+  private demoted(payer: string, since: Date) {
+    const who = payer.toLowerCase();
+    for (const p of this.payments.values()) if (p.payer === who && p.settleMode === "async" && p.status === "failed" && p.createdAt > since) return true;
+    return false;
+  }
+
   // Single-threaded: check and insert happen with no await between them, so admission is atomic.
   async admitPayment(p: Omit<NewPayment, "nextAttemptAt" | "settleMode">, o: AdmitOptions): Promise<Admission> {
     let mode: "async" | "sync" = "sync";
+    let syncReason: SyncReason | undefined;
     if (o.wantAsync) {
-      const e = this.exposureOf(p.payer);
-      if (e.total + p.amountAtomic <= o.caps.totalAtomic && e.mine + p.amountAtomic <= o.caps.perPayerAtomic) mode = "async";
+      if (this.demoted(p.payer, new Date(o.now.getTime() - o.failures.demoteMs))) syncReason = "demoted";
+      else {
+        const e = this.exposureOf(p.payer, new Date(o.now.getTime() - o.failures.holdMs));
+        if (e.total + p.amountAtomic <= o.caps.totalAtomic && e.mine + p.amountAtomic <= o.caps.perPayerAtomic) mode = "async";
+        else syncReason = "cap";
+      }
     }
     const r = await this.insertPayment({ ...p, settleMode: mode, nextAttemptAt: mode === "async" ? o.asyncAttemptAt : o.syncAttemptAt });
-    return r === "duplicate" ? { result: "duplicate" } : { result: "inserted", mode };
+    if (r === "duplicate") return { result: "duplicate" };
+    return syncReason ? { result: "inserted", mode, syncReason } : { result: "inserted", mode };
   }
 
   async exposure() {

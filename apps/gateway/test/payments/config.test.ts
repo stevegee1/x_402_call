@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadConfig } from "../../src/config";
+import { failurePolicy } from "../../src/payments/exposure";
 import { bearerAuth, createFacilitatorClients } from "../../src/payments/facilitator-clients";
 
 const PAY_TO = "0x00000000000000000000000000000000000000aa";
@@ -25,6 +26,19 @@ describe("self-hosted facilitator config", () => {
 
   it("rejects a short token", () => {
     expect(() => loadConfig({ ...base, FACILITATOR: "url", FACILITATOR_URL: "http://f:8090", FACILITATOR_AUTH_TOKEN: "short" })).toThrow(/FACILITATOR_AUTH_TOKEN/);
+  });
+});
+
+describe("served-early failure policy", () => {
+  it("defaults to a 24 h hold and a 30 day demotion", () => {
+    expect(failurePolicy(loadConfig(base))).toEqual({ holdMs: 86_400_000, demoteMs: 30 * 86_400_000 });
+  });
+
+  it("refuses a zero or negative window, and a demotion shorter than the hold", () => {
+    expect(() => loadConfig({ ...base, EXPOSURE_FAILED_HOLD_HOURS: "0" })).toThrow(/EXPOSURE_FAILED_HOLD_HOURS/);
+    expect(() => loadConfig({ ...base, ASYNC_DEMOTE_AFTER_FAILURE_DAYS: "-1" })).toThrow(/ASYNC_DEMOTE_AFTER_FAILURE_DAYS/);
+    expect(() => loadConfig({ ...base, EXPOSURE_FAILED_HOLD_HOURS: "48", ASYNC_DEMOTE_AFTER_FAILURE_DAYS: "1" })).toThrow(/at least EXPOSURE_FAILED_HOLD_HOURS/);
+    expect(failurePolicy(loadConfig({ ...base, EXPOSURE_FAILED_HOLD_HOURS: "48", ASYNC_DEMOTE_AFTER_FAILURE_DAYS: "2" }))).toEqual({ holdMs: 172_800_000, demoteMs: 172_800_000 });
   });
 });
 
