@@ -9,9 +9,10 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json && pnpm -r typecheck",
     "test": "pnpm -r test",
-    "test:integration": "pnpm --filter @mx/gateway test:integration",
+    "test:integration": "pnpm --filter @mx/gateway --filter @mx/env test:integration",
     "dev:infra": "docker compose up -d postgres nats",
     "dev:ingest": "pnpm --filter @mx/ingest dev",
+    "dev:ingest-env": "pnpm --filter @mx/ingest-env dev",
     "dev:gateway": "pnpm --filter @mx/gateway dev",
     "db:migrate": "pnpm --filter @mx/gateway migrate",
     "demo:agent": "tsx scripts/demo-agent.ts",

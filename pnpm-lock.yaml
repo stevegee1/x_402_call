@@ -147,6 +147,21 @@ importers:
         specifier: 8.18.2
         version: 8.18.2
 
+  apps/ingest-env:
+    dependencies:
+      '@mx/env':
+        specifier: workspace:*
+        version: link:../../packages/env
+      '@mx/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
+      pino:
+        specifier: 10.4.0
+        version: 10.4.0
+      zod:
+        specifier: 3.25.76
+        version: 3.25.76
+
   apps/mcp:
     dependencies:
       '@modelcontextprotocol/sdk':
@@ -195,6 +210,22 @@ importers:
       '@mx/shared':
         specifier: workspace:*
         version: link:../shared
+
+  packages/env:
+    dependencies:
+      pg:
+        specifier: 8.23.1
+        version: 8.23.1
+    devDependencies:
+      '@testcontainers/postgresql':
+        specifier: 12.2.1
+        version: 12.2.1
+      '@types/pg':
+        specifier: 8.23.1
+        version: 8.23.1
+      testcontainers:
+        specifier: 12.2.1
+        version: 12.2.1
 
   packages/policy-sdk:
     dependencies:

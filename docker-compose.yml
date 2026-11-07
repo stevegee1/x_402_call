@@ -32,6 +32,16 @@ services:
       nats: { condition: service_started }
       gateway: { condition: service_started } # gateway runs migrations first
 
+  ingest-env:
+    build: .
+    command: ["pnpm", "--filter", "@mx/ingest-env", "start"]
+    environment:
+      DATABASE_URL: postgres://mx:mx@postgres:5432/mx
+    ports: ["8091:8091"]
+    restart: on-failure # exits until the gateway has run migrations
+    depends_on:
+      gateway: { condition: service_started } # gateway runs migrations first
+
   gateway:
     build: .
     command: ["pnpm", "--filter", "@mx/gateway", "start"]
