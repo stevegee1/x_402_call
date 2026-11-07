@@ -22,6 +22,8 @@ import { MaritimeProduct } from "../src/products/maritime";
 import { SnapshotEngine } from "../src/products/maritime/snapshot/engine";
 import { WorldState } from "../src/products/maritime/snapshot/state";
 import { MemoryStore } from "../src/store/memory";
+import { SessionManager, type SessionOptions } from "../src/sessions/manager";
+import { SessionsProduct } from "../src/sessions/product";
 
 export const BASE_URL = "http://gw.test";
 export const PAY_TO = "0x1111111111111111111111111111111111111111";
@@ -115,7 +117,11 @@ export interface TestEnvOptions {
   /** ERC-8004 tier resolver (identity tests). */
   identity?: AppDeps["identity"];
   sellerIdentity?: AppDeps["sellerIdentity"];
+  /** x402 sessions: true for defaults, or options to override. Timers are not started (tests flush explicitly). */
+  sessions?: boolean | Partial<SessionOptions>;
 }
+
+export const SESSION_SECRET = "test-session-secret-0123456789abcdef0123";
 
 export async function createTestEnv(overrides: Partial<Record<keyof Config, string>> = {}, opts: TestEnvOptions = {}): Promise<TestEnv> {
   const cfg = loadConfig({
@@ -137,7 +143,15 @@ export async function createTestEnv(overrides: Partial<Record<keyof Config, stri
   for (let i = 0; i < 60; i++) for (const e of sim.step(1_000)) world.apply(e);
   const engine = new SnapshotEngine(world, cfg.SNAPSHOT_INTERVAL_MS);
   const maritime = new MaritimeProduct({ engine, store, feedConnected: opts.feedConnected ?? (() => true), snapshotIntervalMs: cfg.SNAPSHOT_INTERVAL_MS });
-  const catalog = new Catalog([maritime, ...(opts.products ?? [])]);
+  const sessions = opts.sessions
+    ? new SessionManager(
+        store,
+        { secret: SESSION_SECRET, ttlMs: 3_600_000, leaseAtomic: 250_000n, flushMs: 1_000, graceMs: 120_000, ...(opts.sessions === true ? {} : opts.sessions) },
+        log,
+        metrics,
+      )
+    : undefined;
+  const catalog = new Catalog([maritime, ...(opts.products ?? []), ...(sessions ? [new SessionsProduct(sessions, store)] : [])]);
 
   const facilitator = new FakeFacilitator([cfg.X402_NETWORK]);
   const failover = new FailoverFacilitator(facilitator, undefined, undefined, { windowMs: 30_000, minCalls: 3, failureRate: 0.5, slowCallMs: 5_000, openMs: 60_000 });
@@ -163,6 +177,7 @@ export async function createTestEnv(overrides: Partial<Record<keyof Config, stri
     sellerIdentity: opts.sellerIdentity,
     sanctions,
     fx: new FixedFx(0.8),
+    sessions,
     startedAt: Date.now(),
   };
   const app = createApp(deps);

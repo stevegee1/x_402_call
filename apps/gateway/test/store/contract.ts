@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { verifyChain } from "../../src/ledger/journal";
+import { ACCOUNTS, verifyChain, x402SettlementJournal } from "../../src/ledger/journal";
 import type { Store } from "../../src/store/types";
 import { keyHash, newAccount, newPayment, settlementJournal, topUpJournal, unbalancedJournal, usageJournal } from "./fixtures";
 
@@ -435,5 +435,121 @@ export function describeStoreContract(name: string, make: () => Promise<StoreHar
       });
     });
 
+
+    describe("x402 sessions", () => {
+      const TTL = 3_600_000;
+      /** A settled $5 session purchase at 0.8 GBP/USDC: £4.00 gross, £3.333333 net, £0.666667 VAT. */
+      const boughtSession = async (amountAtomic = 5_000_000n, endpoint = "sessions.usd5") => {
+        const p = newPayment({ endpoint, amountAtomic, fxRate: 0.8 });
+        await s.insertPayment(p);
+        await s.settlePayment(
+          p.id,
+          "0xtx",
+          x402SettlementJournal({ paymentId: p.id, amountAtomic, fxRate: 0.8, fxSource: "fixed:test", transaction: "0xtx", payer: p.payer, network: p.network, endpoint, occurredAt: new Date().toISOString() }),
+        );
+        return p;
+      };
+      const balances = async () => {
+        const b = new Map<string, number>();
+        for (const j of await s.journal()) for (const l of j.lines) b.set(l.account, (b.get(l.account) ?? 0) + l.credit - l.debit);
+        return b;
+      };
+      const use = (entries: Array<[string, bigint]>, returnedAtomic = 0n) => ({ byResource: new Map(entries), returnedAtomic });
+
+      it("books a session purchase as a prepayment liability plus VAT, not revenue", async () => {
+        await boughtSession();
+        const b = await balances();
+        expect(b.get(ACCOUNTS.sessionPrepaid)).toBe(3_333_333);
+        expect(b.get(ACCOUNTS.vatOutput)).toBe(666_667);
+        expect([...b.keys()].filter((k) => k.startsWith("revenue:"))).toEqual([]);
+      });
+
+      it("opens on first reserve from the settled payment, and leases at most what is left", async () => {
+        const p = await boughtSession();
+        const now = new Date();
+        const r1 = await s.reserveSession(p.id, 3_000_000n, now, TTL);
+        expect(r1).toMatchObject({ ok: true, grantedAtomic: 3_000_000n });
+        const r2 = await s.reserveSession(p.id, 3_000_000n, now, TTL);
+        expect(r2).toMatchObject({ ok: true, grantedAtomic: 2_000_000n });
+        expect(await s.reserveSession(p.id, 1n, now, TTL)).toEqual({ ok: false, reason: "exhausted" });
+        const sess = (await s.getSession(p.id))!;
+        expect(sess).toMatchObject({ payer: p.payer.toLowerCase(), amountAtomic: 5_000_000n, reservedAtomic: 5_000_000n, spentAtomic: 0n, netGbpMicros: 3_333_333, releasedGbpMicros: 0, closedAt: null });
+        const settledAt = (await s.getPayment(p.id))!.settledAt!;
+        expect(sess.expiresAt.getTime()).toBe(settledAt.getTime() + TTL);
+      });
+
+      it("refuses unknown, unsettled, non-session and expired payments", async () => {
+        const now = new Date();
+        expect(await s.reserveSession(randomUUID(), 1n, now, TTL)).toEqual({ ok: false, reason: "unknown" });
+        const pending = newPayment({ endpoint: "sessions.usd5", amountAtomic: 5_000_000n });
+        await s.insertPayment(pending);
+        expect(await s.reserveSession(pending.id, 1n, now, TTL)).toEqual({ ok: false, reason: "not_settled" });
+        const data = newPayment();
+        await s.insertPayment(data);
+        await s.settlePayment(data.id, "0x1", settlementJournal(data.id));
+        expect(await s.reserveSession(data.id, 1n, now, TTL)).toEqual({ ok: false, reason: "not_a_session" });
+        const p = await boughtSession();
+        expect(await s.reserveSession(p.id, 1n, new Date(Date.now() + TTL + 1_000), TTL)).toEqual({ ok: false, reason: "expired" });
+      });
+
+      it("never leases more than the amount when replicas reserve at the same moment", async () => {
+        const p = await boughtSession(1_000_000n, "sessions.usd1");
+        const now = new Date();
+        const grants = await Promise.all(Array.from({ length: 12 }, () => s.reserveSession(p.id, 100_000n, now, TTL)));
+        const granted = grants.reduce((n, g) => n + (g.ok ? g.grantedAtomic : 0n), 0n);
+        expect(granted).toBe(1_000_000n);
+        expect(grants.filter((g) => !g.ok)).toHaveLength(2);
+      });
+
+      it("moves the liability into each product's revenue as usage is reported, without rounding drift", async () => {
+        const p = await boughtSession();
+        const now = new Date();
+        await s.reserveSession(p.id, 5_000_000n, now, TTL);
+        // 1 001 reports of $0.001 and $0.002 reads across two products, then the remainder handed back.
+        for (let i = 0; i < 1_001; i++) await s.recordSessionUsage(p.id, use([["grid.intensity", 1_000n], ["maritime.vessels", 2_000n]]), now);
+        await s.recordSessionUsage(p.id, use([], 5_000_000n - 3_003_000n), now);
+        const sess = (await s.getSession(p.id))!;
+        expect(sess).toMatchObject({ spentAtomic: 3_003_000n, reservedAtomic: 3_003_000n });
+        // floor(3 333 333 × 3 003 000 / 5 000 000) = 2 001 999, released over 1 001 journals.
+        expect(sess.releasedGbpMicros).toBe(2_001_999);
+        const b = await balances();
+        expect((b.get("revenue:grid") ?? 0) + (b.get("revenue:maritime") ?? 0)).toBe(2_001_999);
+        expect(b.get("revenue:maritime")! / b.get("revenue:grid")!).toBeCloseTo(2, 2);
+        expect(b.get(ACCOUNTS.sessionPrepaid)).toBe(3_333_333 - 2_001_999);
+        expect(verifyChain(await s.journal())).toEqual({ ok: true });
+      }, 60_000);
+
+      it("refuses usage beyond the outstanding leases and writes nothing", async () => {
+        const p = await boughtSession();
+        await s.reserveSession(p.id, 1_000n, new Date(), TTL);
+        const before = (await s.journal()).length;
+        await expect(s.recordSessionUsage(p.id, use([["grid.intensity", 1_001n]]), new Date())).rejects.toThrow(/exceeds outstanding/);
+        await expect(s.recordSessionUsage(p.id, use([["grid.intensity", 600n]], 500n), new Date())).rejects.toThrow(/exceeds outstanding/);
+        expect((await s.journal()).length).toBe(before);
+        expect((await s.getSession(p.id))!.spentAtomic).toBe(0n);
+        await expect(s.recordSessionUsage(randomUUID(), use([]), new Date())).rejects.toThrow(/unknown session/);
+      });
+
+      it("closes expired sessions after the grace period and books the unused liability as breakage", async () => {
+        const p = await boughtSession();
+        const t0 = new Date();
+        await s.reserveSession(p.id, 5_000_000n, t0, TTL);
+        await s.recordSessionUsage(p.id, use([["grid.intensity", 1_000_000n]], 4_000_000n), t0);
+        const expiry = (await s.getSession(p.id))!.expiresAt.getTime();
+        expect(await s.closeExpiredSessions(new Date(expiry + 60_000), 120_000)).toBe(0); // still in grace
+        expect(await s.closeExpiredSessions(new Date(expiry + 120_000), 120_000)).toBe(1);
+        expect(await s.closeExpiredSessions(new Date(expiry + 999_000), 120_000)).toBe(0); // once
+        const b = await balances();
+        expect(b.get(ACCOUNTS.sessionPrepaid)).toBe(0);
+        expect(b.get("revenue:grid")).toBe(666_666); // floor(3 333 333 / 5)
+        expect(b.get(ACCOUNTS.sessionBreakage)).toBe(3_333_333 - 666_666);
+        expect((await s.getSession(p.id))!.closedAt).not.toBeNull();
+        expect(await s.reserveSession(p.id, 1n, new Date(expiry + 999_000), TTL)).toEqual({ ok: false, reason: "closed" });
+        // A late report from a replica records the spend but books nothing: the remainder is gone.
+        const n = (await s.journal()).length;
+        await s.recordSessionUsage(p.id, use([], 0n), new Date());
+        expect((await s.journal()).length).toBe(n);
+      });
+    });
   });
 }

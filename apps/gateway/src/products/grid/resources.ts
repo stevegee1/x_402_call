@@ -67,3 +67,15 @@ export const GRID_HISTORY_RESOURCES: readonly PricedResource[] = [
     ],
   },
 ];
+
+/** Push (GRID_SOURCE=store with sessions enabled): each new version, paid per event from an x402 session. */
+export const GRID_STREAM_RESOURCES: readonly PricedResource[] = [
+  {
+    id: "grid.stream",
+    path: "/:country/stream",
+    summary: "Server-sent events: the current forecast on connect, then each new version as it lands. Charged per event from an x402 session",
+    pricing: { kind: "fixed", priceUsd: "0.01", creditsGbpMicros: 8_000 },
+    parameters: [country],
+    rails: ["session"],
+  },
+];

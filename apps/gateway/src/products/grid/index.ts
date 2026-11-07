@@ -2,7 +2,8 @@ import type { Metrics } from "../../metrics";
 import type { Precheck, PricedResource, Product, ProductContext, ProductRoutes, ProductStatus, Resolution } from "../../platform/product";
 import type { GridFeed } from "./feed";
 import type { GridHistory } from "./history";
-import { GRID_HISTORY_RESOURCES, GRID_RESOURCES } from "./resources";
+import { GRID_HISTORY_RESOURCES, GRID_RESOURCES, GRID_STREAM_RESOURCES } from "./resources";
+import type { GridUpdates } from "./updates";
 import { cleanestWindow, current, iso, series } from "./signals";
 import { COUNTRIES, isCountry, PERIOD_MS, SOURCE, type Country, type HalfHour } from "./source";
 
@@ -98,13 +99,15 @@ export class GridProduct implements Product<GridState> {
   /**
    * @param history point-in-time reads from the version store (GRID_SOURCE=store). Without it the
    * history resources are not offered at all.
+   * @param updates new-version notifications; with it (and sessions enabled) Grid offers push.
    */
   constructor(
     private readonly feed: GridFeed,
     private readonly now: () => number = Date.now,
     private readonly history?: GridHistory,
+    private readonly updates?: GridUpdates,
   ) {
-    this.resources = history ? [...GRID_RESOURCES, ...GRID_HISTORY_RESOURCES] : GRID_RESOURCES;
+    this.resources = [...GRID_RESOURCES, ...(history ? GRID_HISTORY_RESOURCES : []), ...(updates ? GRID_STREAM_RESOURCES : [])];
   }
 
   resolve(c: ProductContext): Resolution<GridState> | Response {
@@ -193,6 +196,26 @@ export class GridProduct implements Product<GridState> {
     );
 
     if (this.history) this.historyRoutes(r, this.history);
+    if (this.updates) this.streamRoutes(r, this.updates);
+  }
+
+  /** The country's live view as one event: now, and the forecast ahead. */
+  private snapshot(country: Country) {
+    const t = this.now();
+    const s: GridState = { country, periods: this.feed.data(), now: t };
+    const pts = series(s.periods, country, t, 48);
+    return this.envelope(s, { current: current(s.periods, country, t), forecast: pts.map((p) => ({ from: iso(p.start), intensity: p.intensity })) });
+  }
+
+  private streamRoutes(r: ProductRoutes<GridState>, updates: GridUpdates) {
+    r.stream("grid.stream", (_c, s, emit) => {
+      const send = () => {
+        // A stale feed sends nothing (and charges nothing) until it recovers (I1).
+        if (this.feed.state(s.country).fresh) void emit("forecast", this.snapshot(s.country));
+      };
+      send();
+      return updates.subscribe(send);
+    });
   }
 
   private historyRoutes(r: ProductRoutes<GridState>, history: GridHistory) {

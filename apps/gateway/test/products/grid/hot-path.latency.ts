@@ -7,6 +7,8 @@ import { StoreGridSource } from "../../../src/products/grid/store-source";
 import { ADMIN_TOKEN, BASE_URL, createTestEnv, type TestEnv } from "../../helpers";
 import { CUR, T0 } from "./fixtures";
 import { FakeStore, storeRows } from "./store-fixtures";
+import { x402SettlementJournal } from "../../../src/ledger/journal";
+import { newPayment } from "../../store/fixtures";
 
 /**
  * Latency budgets for the environmental hot path (architecture.md §6.4), measured through the whole
@@ -26,9 +28,10 @@ function p(xs: number[], q: number): number {
   return s[Math.min(s.length - 1, Math.floor(s.length * q))]!;
 }
 
-describe("hot-path latency budgets (in-process, credits rail)", () => {
+describe("hot-path latency budgets (in-process, credits and session rails)", () => {
   let env: TestEnv;
   let key: string;
+  let sessionToken: string;
   let store: FakeStore;
 
   beforeAll(async () => {
@@ -38,15 +41,20 @@ describe("hot-path latency budgets (in-process, credits rail)", () => {
     await cache.refresh();
     const feed = new GridFeed(new StoreGridSource(cache, { lastRefreshAt: () => cache.lastRefreshAt, ingestLastSuccessAt: () => T0 }), { warn: () => {}, info: () => {} });
     await feed.poll();
-    env = await createTestEnv({}, { products: [new GridProduct(feed, Date.now, new GridHistory(cache, store))] });
+    env = await createTestEnv({}, { products: [new GridProduct(feed, Date.now, new GridHistory(cache, store))], sessions: { leaseAtomic: 5_000_000n } });
     const signup = await (await env.fetch(`${BASE_URL}/v1/credits/accounts`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ company: "Quant Ltd", email: "q@b.test", country: "GB" }) })).json();
     await env.fetch(`${BASE_URL}/admin/credits/${signup.account_id}/topup`, { method: "POST", headers: { authorization: `Bearer ${ADMIN_TOKEN}`, "content-type": "application/json" }, body: JSON.stringify({ net_gbp: 500, reference: "t" }) });
     key = signup.api_key;
+    // A large settled session ($1 000), straight into the store: the purchase path is tested elsewhere.
+    const p = newPayment({ endpoint: "sessions.usd20", amountAtomic: 1_000_000_000n, fxRate: 0.8 });
+    await env.store.insertPayment(p);
+    await env.store.settlePayment(p.id, "0xtx", x402SettlementJournal({ paymentId: p.id, amountAtomic: p.amountAtomic, fxRate: 0.8, fxSource: "fixed:test", transaction: "0xtx", payer: p.payer, network: p.network, endpoint: p.endpoint, occurredAt: new Date().toISOString() }));
+    sessionToken = env.deps.sessions!.tokens.issue(p.id);
   });
   afterAll(() => vi.useRealTimers());
 
-  async function measure(path: string): Promise<{ p50: number; p99: number }> {
-    const headers = { authorization: `Bearer ${key}` };
+  async function measure(path: string, rail: "credits" | "session" = "credits"): Promise<{ p50: number; p99: number }> {
+    const headers = { authorization: rail === "credits" ? `Bearer ${key}` : `Session ${sessionToken}` };
     for (let i = 0; i < 50; i++) expect((await env.fetch(`${G}${path}`, { headers })).status).toBe(200); // warm up the JIT
     const t: number[] = [];
     for (let i = 0; i < N; i++) {
@@ -73,6 +81,17 @@ describe("hot-path latency budgets (in-process, credits rail)", () => {
     const r = rounds.reduce((a, b) => (b.p99 < a.p99 ? b : a));
     if (process.env.LATENCY_REPORT) console.log(`${name}: p50 ${r.p50.toFixed(3)} ms, p99 ${r.p99.toFixed(3)} ms`);
     expect(store.calls.length).toBe(calls); // memory only
+    expect(r.p99).toBeLessThan(BUDGET_P99_MS);
+  });
+
+  it.each([
+    ["session: intensity now", "/england/intensity"],
+    ["session: history as of 90 min ago, 50 h", `/england/history?from=${iso(CUR - 2 * 3_600_000)}&to=${iso(CUR + 48 * 3_600_000)}&as_of=${iso(T0 - 90 * 60_000)}`],
+  ])(`%s: p99 under ${BUDGET_P99_MS} ms with no store, chain or facilitator on the path`, async (name, path) => {
+    const rounds = [await measure(path, "session"), await measure(path, "session"), await measure(path, "session")];
+    const r = rounds.reduce((a, b) => (b.p99 < a.p99 ? b : a));
+    if (process.env.LATENCY_REPORT) console.log(`${name}: p50 ${r.p50.toFixed(3)} ms, p99 ${r.p99.toFixed(3)} ms`);
+    expect(await env.store.listPayments({ limit: 5 })).toHaveLength(1); // only the session purchase
     expect(r.p99).toBeLessThan(BUDGET_P99_MS);
   });
 });

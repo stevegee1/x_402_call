@@ -241,6 +241,17 @@ NESO Data Portal ──resource_show every 30 s; full fetch when last_modified m
 - **Hot path in memory.** Reads of the latest version and recent history never touch Postgres. As-of reads over older history do, and use the primary key `(dataset, region, valid_from, ingested_at)`.
 - **Change delivery uses Postgres `LISTEN/NOTIFY`, not NATS.** The notification is sent inside ingest's write transaction, so it arrives only after commit and never before the data can be read. It needs no new infrastructure. A notification only says "look". The cache then reads by `seq` (migration 005), which writers assign under the per-dataset lock, so commit order is seq order and nothing is skipped. Missed notifications cost at most the 15 s fallback poll. NATS is worth adding when many consumers outside the gateway need the stream.
 - **Measured (PR 2a).** In-process through the whole gateway (routing, credits billing, handler, JSON), p99 is 0.3–1.7 ms. Over real HTTP on one machine, a paid read is ~3.5–3.9 ms at p50, of which ~1 ms is the client and connection and most of the rest is the per-call credits debit in Postgres. **Billing, not data, is now the cost.**
+- **Measured (PR 2b).** On the session rail, in-process p99 is 0.37 ms for the intensity read and 1.5 ms for a 50 h as-of history read. No database, chain or facilitator is on the path.
+- **Session accounting** (accountant sign-off needed before mainnet, like the other VAT rules):
+
+  | Event | Booking |
+  |---|---|
+  | Purchase (settled) | Dr USDC wallet, Cr `liability:session_prepaid` (net), Cr VAT output |
+  | Each usage report | Dr the liability, Cr `revenue:<product>`. The total released is always floor(net × spent / amount), so rounding can't drift |
+  | Expiry plus 2 min grace | the rest of the liability goes to `revenue:session_breakage` |
+
+  The session is derived from its payment, so a buyer holding a token always has the balance.
+- **Session failure bounds.** If a replica crashes, it loses its unreported spend: that revenue lands in breakage instead, so the total is the same. It also strands at most one lease (`SESSION_LEASE_USD`, default $0.25) per session until expiry. Neither failure can let a buyer spend more than they paid (I13).
 - **Making the billing fast while keeping x402.** Each x402 call is verified by an HTTP request to the facilitator, which costs tens to hundreds of milliseconds, and a trading firm won't sign an authorisation per tick. So:
   1. **Sessions (PR 2b).** One payment (an x402 payment, or a credits debit) buys a short-lived session token tied to the payer and worth an amount or a stream. Each read checks an HMAC and debits an in-memory balance. Usage is journalled in batches. No facilitator call, no chain and no database on the read path.
   2. **Push (PR 2b).** An SSE stream, paid with a session, sends each new version as soon as it commits.
@@ -251,7 +262,7 @@ NESO Data Portal ──resource_show every 30 s; full fetch when last_modified m
 
 1. **`apps/ingest-env` + `packages/env` + `env_observation`:** store every version of NESO carbon intensity, and add the store's as-of read functions. *(Done: `feat/env-history`.)*
 2. **2a, hot path:** the gateway follows the store in memory (`GRID_SOURCE=store`), adds `grid.history` and `grid.revisions`, and runs latency budgets in CI. *(Done: `feat/env-hot-path`.)*
-   **2b, sessions and push:** x402 or credits buys a session; reads are in-memory debits; SSE push.
+   **2b, sessions and push:** x402 buys a session (sync settlement, liability until spent); reads are in-memory debits on leased balance; SSE push paid per event. *(Done: `feat/x402-sessions`.)* Funding a session with GBP credits is a follow-up.
 3. **Optimistic per-call x402:** local EIP-3009 verification, in-memory admission per replica.
 4. **More datasets:** embedded wind and solar forecast, demand forecast, generation mix. Each is a new `DatasetSpec`, not a new pipeline.
 5. **Bulk history:** nightly Parquet export.

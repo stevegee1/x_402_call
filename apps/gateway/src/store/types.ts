@@ -91,6 +91,35 @@ export interface PolicyEventRow {
   receivedAt: Date;
 }
 
+/** A prepaid x402 session (migration 006). Amounts in USDC atomic units; GBP in micros. */
+export interface SessionRow {
+  /** The settled payment that bought it: also the session id. */
+  paymentId: string;
+  payer: string;
+  amountAtomic: bigint;
+  /** Handed out to replicas as leases, net of what they returned. Never more than amountAtomic. */
+  reservedAtomic: bigint;
+  /** Reported as spent. Never more than reservedAtomic. */
+  spentAtomic: bigint;
+  /** The liability booked at purchase. */
+  netGbpMicros: number;
+  releasedGbpMicros: number;
+  createdAt: Date;
+  expiresAt: Date;
+  closedAt: Date | null;
+}
+
+export type ReserveResult =
+  | { ok: true; grantedAtomic: bigint; session: SessionRow }
+  | { ok: false; reason: "unknown" | "not_a_session" | "not_settled" | "expired" | "closed" | "exhausted" };
+
+export interface SessionUsage {
+  /** Spent since the last report, by resource id. */
+  byResource: ReadonlyMap<string, bigint>;
+  /** Leased but unspent, handed back (on drain or expiry). */
+  returnedAtomic: bigint;
+}
+
 export interface Store {
   ping(): Promise<boolean>;
   close(): Promise<void>;
@@ -128,6 +157,23 @@ export interface Store {
   /** Idempotent on ref (Stripe checkout session id / bank reference). */
   applyTopUp(t: { ref: string; accountId: string; netMicros: number; vatMicros: number }, journal: JournalInput): Promise<"applied" | "duplicate">;
   usage(accountId: string, limit: number): Promise<UsageRow[]>;
+
+  // x402 sessions
+  /**
+   * Leases up to `chunkAtomic` of a session's unreserved balance to the caller, atomically across
+   * replicas. Opens the session on first use from its settled payment (expiring ttlMs after
+   * settlement). Never grants past the amount or after expiry.
+   */
+  reserveSession(paymentId: string, chunkAtomic: bigint, now: Date, ttlMs: number): Promise<ReserveResult>;
+  /**
+   * Records spending and returned leases, and in the same transaction moves the matching share of
+   * the GBP liability into each resource's product revenue. A closed session still records the
+   * spend but books nothing (its remainder already went to breakage).
+   */
+  recordSessionUsage(paymentId: string, usage: SessionUsage, occurredAt: Date): Promise<void>;
+  /** Closes sessions expired more than graceMs ago and books their unreleased liability as breakage. */
+  closeExpiredSessions(now: Date, graceMs: number): Promise<number>;
+  getSession(paymentId: string): Promise<SessionRow | null>;
 
   // Ledger
   journal(range?: { from?: Date; to?: Date }): Promise<JournalEntry[]>;

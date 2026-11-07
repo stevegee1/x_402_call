@@ -40,7 +40,14 @@ export interface PricedResource {
   parameters?: ResourceParameter[];
   /** Absolute pre-platform paths still served as deprecated aliases (e.g. `/v1/:region/vessels`). */
   legacyPaths?: string[];
+  /** "sync": always settle on chain before the handler runs (e.g. buying a session). Default: SETTLEMENT_MODE. */
+  settlement?: "sync";
+  /** Rails that may pay for this resource. Default: all. */
+  rails?: readonly Rail[];
 }
+
+/** x402: per-call USDC. credits: GBP prepaid account. session: a prepaid x402 session token. */
+export type Rail = "x402" | "credits" | "session";
 
 /** What a request will read, as far as the money path cares. */
 export interface ResolvedScope {
@@ -78,9 +85,23 @@ export type PaidHandler<S> = (c: ProductContext, state: S) => Response | Promise
 /** Cheap validation run BEFORE charging (invariant I5): return a Response to refuse without charge. */
 export type Precheck<S> = (c: ProductContext, state: S) => Response | null;
 
+/**
+ * Sends one event to a stream subscriber. The kernel charges the resource's price from the
+ * subscriber's session first; false means the stream has ended (balance spent, session expired,
+ * or the client left) and the product should stop sending.
+ */
+export type StreamEmit = (event: string, data: unknown) => Promise<boolean>;
+/** Called once per subscriber with an emitter; returns the function that unsubscribes it. */
+export type StreamOpen<S> = (c: ProductContext, state: S, emit: StreamEmit) => () => void;
+
 export interface ProductRoutes<S> {
   /** Registers the handler for a declared resource. Every declared resource must get exactly one. */
   paid(resourceId: string, handler: PaidHandler<S>, opts?: { precheck?: Precheck<S> }): void;
+  /**
+   * Server-sent events for a declared resource. Paid per event, only from an x402 session (the
+   * resource must take rails ["session"]); the product's `open` sends events through `emit`.
+   */
+  stream(resourceId: string, open: StreamOpen<S>): void;
   /** Free GET route under `/v1/<productId>`. */
   free(path: string, handler: Handler, opts?: { legacyPaths?: string[] }): void;
   /** Operator route under `/admin/<productId>`, behind admin auth. */

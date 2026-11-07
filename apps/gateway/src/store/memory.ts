@@ -1,6 +1,18 @@
 import { randomUUID } from "node:crypto";
-import { assertBalanced, computeHash, GENESIS_HASH, normalizeJournal, type JournalEntry, type JournalInput } from "../ledger/journal";
-import type { AdmitOptions, Admission, CreditAccount, NewAccount, NewPayment, PaymentRow, PaymentStatus, PolicyEventRow, Store, UsageRow } from "./types";
+import {
+  assertBalanced,
+  computeHash,
+  GENESIS_HASH,
+  isSessionPurchase,
+  normalizeJournal,
+  sessionBreakageJournal,
+  sessionRelease,
+  sessionUsageJournal,
+  x402Gbp,
+  type JournalEntry,
+  type JournalInput,
+} from "../ledger/journal";
+import type { AdmitOptions, Admission, CreditAccount, NewAccount, NewPayment, PaymentRow, PaymentStatus, PolicyEventRow, ReserveResult, SessionRow, SessionUsage, Store, UsageRow } from "./types";
 
 /**
  * In-memory Store for tests and zero-dependency local runs. Not durable: never used when
@@ -16,6 +28,7 @@ export class MemoryStore implements Store {
   private entries: JournalEntry[] = [];
   private events: PolicyEventRow[] = [];
   private conditions = new Map<string, { value: unknown; source: string; updatedAt: Date }>();
+  private sessions = new Map<string, SessionRow>();
 
   async ping() {
     return true;
@@ -159,6 +172,72 @@ export class MemoryStore implements Store {
 
   async usage(accountId: string, limit: number) {
     return (this.usageRows.get(accountId) ?? []).slice(-limit).reverse();
+  }
+
+  async reserveSession(paymentId: string, chunkAtomic: bigint, now: Date, ttlMs: number): Promise<ReserveResult> {
+    let sess = this.sessions.get(paymentId);
+    if (!sess) {
+      const p = this.payments.get(paymentId);
+      if (!p) return { ok: false, reason: "unknown" };
+      if (!isSessionPurchase(p.endpoint)) return { ok: false, reason: "not_a_session" };
+      if (p.status !== "settled" || !p.settledAt) return { ok: false, reason: "not_settled" };
+      sess = {
+        paymentId,
+        payer: p.payer,
+        amountAtomic: p.amountAtomic,
+        reservedAtomic: 0n,
+        spentAtomic: 0n,
+        netGbpMicros: x402Gbp(p.amountAtomic, p.fxRate).netMicros,
+        releasedGbpMicros: 0,
+        createdAt: now,
+        expiresAt: new Date(p.settledAt.getTime() + ttlMs),
+        closedAt: null,
+      };
+      this.sessions.set(paymentId, sess);
+    }
+    if (sess.closedAt) return { ok: false, reason: "closed" };
+    if (sess.expiresAt <= now) return { ok: false, reason: "expired" };
+    const free = sess.amountAtomic - sess.reservedAtomic;
+    if (free <= 0n) return { ok: false, reason: "exhausted" };
+    const granted = chunkAtomic < free ? chunkAtomic : free;
+    sess.reservedAtomic += granted;
+    return { ok: true, grantedAtomic: granted, session: { ...sess } };
+  }
+
+  async recordSessionUsage(paymentId: string, usage: SessionUsage, occurredAt: Date): Promise<void> {
+    const sess = this.sessions.get(paymentId);
+    if (!sess) throw new Error(`unknown session ${paymentId}`);
+    let spent = 0n;
+    for (const v of usage.byResource.values()) spent += v;
+    if (spent + usage.returnedAtomic > sess.reservedAtomic - sess.spentAtomic) throw new Error(`session ${paymentId}: usage exceeds outstanding leases`);
+    const release = sess.closedAt
+      ? { releasedAfterMicros: sess.releasedGbpMicros, lines: [] }
+      : sessionRelease({ netGbpMicros: sess.netGbpMicros, amountAtomic: sess.amountAtomic, spentBeforeAtomic: sess.spentAtomic, releasedBeforeMicros: sess.releasedGbpMicros, byResource: usage.byResource });
+    if (release.lines.length) {
+      const byResource = Object.fromEntries([...usage.byResource].map(([k, v]) => [k, v.toString()]));
+      this.append(sessionUsageJournal({ sessionId: paymentId, lines: release.lines, spentAtomic: byResource, occurredAt: occurredAt.toISOString() }));
+    }
+    sess.spentAtomic += spent;
+    sess.reservedAtomic -= usage.returnedAtomic;
+    sess.releasedGbpMicros = release.releasedAfterMicros;
+  }
+
+  async closeExpiredSessions(now: Date, graceMs: number): Promise<number> {
+    let n = 0;
+    for (const sess of this.sessions.values()) {
+      if (sess.closedAt || sess.expiresAt.getTime() + graceMs > now.getTime()) continue;
+      const rest = sess.netGbpMicros - sess.releasedGbpMicros;
+      if (rest > 0) this.append(sessionBreakageJournal({ sessionId: sess.paymentId, micros: rest, unusedAtomic: (sess.amountAtomic - sess.spentAtomic).toString(), occurredAt: now.toISOString() }));
+      sess.releasedGbpMicros = sess.netGbpMicros;
+      sess.closedAt = now;
+      n++;
+    }
+    return n;
+  }
+
+  async getSession(paymentId: string): Promise<SessionRow | null> {
+    const s = this.sessions.get(paymentId);
+    return s ? { ...s } : null;
   }
 
   async journal(range?: { from?: Date; to?: Date }) {

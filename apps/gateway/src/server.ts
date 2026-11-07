@@ -25,6 +25,7 @@ import type { Product } from "./platform/product";
 import { natsFeed, simulatorFeed } from "./products/maritime/feed";
 import { GridFeed } from "./products/grid/feed";
 import { GridHistory } from "./products/grid/history";
+import { GridUpdates } from "./products/grid/updates";
 import { StoreGridSource } from "./products/grid/store-source";
 import { GridProduct } from "./products/grid";
 import { NesoGridSource } from "./products/grid/source";
@@ -33,6 +34,9 @@ import { SnapshotEngine } from "./products/maritime/snapshot/engine";
 import { WorldState } from "./products/maritime/snapshot/state";
 import { migrate } from "./store/migrate";
 import { MemoryStore } from "./store/memory";
+import { SessionManager } from "./sessions/manager";
+import { SessionsProduct } from "./sessions/product";
+import { usdToUsdcAtomic } from "@mx/shared";
 import { PgStore } from "./store/pg";
 import type { Store } from "./store/types";
 
@@ -76,16 +80,45 @@ if (cfg.GRID_ENABLED && cfg.GRID_SOURCE === "store") {
   const feedRef = gridFeed;
   // After every follower step: a new version reaches the live endpoints at once, and so does
   // ingest recovering (which changes freshness without changing values).
-  envFollower.onUpdate(() => void feedRef.poll());
+  // Push needs sessions (streams are paid per event from one). Subscribers hear about a version
+  // only after the feed has taken it in.
+  const updates = cfg.SESSIONS_ENABLED ? new GridUpdates() : undefined;
+  let streamedPosition = cache.position;
+  envFollower.onUpdate(() => {
+    void feedRef.poll().then(() => {
+      if (updates && cache.position !== streamedPosition) {
+        streamedPosition = cache.position;
+        updates.publish();
+      }
+    });
+  });
   await gridFeed.poll();
   gridFeed.start();
-  products.push(new GridProduct(gridFeed, Date.now, new GridHistory(cache, envStore)));
+  products.push(new GridProduct(gridFeed, Date.now, new GridHistory(cache, envStore), updates));
   log.info({ versions: cache.size, windowDays: cfg.GRID_HISTORY_MEMORY_DAYS }, "grid reading from the version store");
 } else if (cfg.GRID_ENABLED) {
   gridFeed = new GridFeed(new NesoGridSource(cfg.GRID_SOURCE_URL), log, cfg.GRID_POLL_MS);
   await gridFeed.poll(); // serve with data from the first request, or report stale (never charge)
   gridFeed.start();
   products.push(new GridProduct(gridFeed));
+}
+// x402 sessions: a platform product (buy) plus a billing rail (spend from memory).
+let sessions: SessionManager | undefined;
+if (cfg.SESSIONS_ENABLED) {
+  sessions = new SessionManager(
+    store,
+    {
+      secret: cfg.SESSION_SECRET!,
+      ttlMs: cfg.SESSION_TTL_MINUTES * 60_000,
+      leaseAtomic: usdToUsdcAtomic(cfg.SESSION_LEASE_USD.toFixed(6)),
+      flushMs: cfg.SESSION_FLUSH_MS,
+      graceMs: cfg.SESSION_CLOSE_GRACE_MS,
+    },
+    log,
+    metrics,
+  );
+  sessions.start();
+  products.push(new SessionsProduct(sessions, store));
 }
 const catalog = new Catalog(products);
 
@@ -168,6 +201,7 @@ const deps: AppDeps = {
   sellerIdentity,
   sanctions,
   fx: cfg.FX_PROVIDER === "fixed" ? new FixedFx(cfg.FX_FALLBACK_USDC_GBP) : new CoinbaseFx(cfg.FX_FALLBACK_USDC_GBP),
+  sessions,
   startedAt: Date.now(),
 };
 
@@ -182,6 +216,7 @@ async function shutdown(signal: string) {
   gridFeed?.stop();
   await envFollower?.stop();
   settler.stop();
+  await sessions?.stop(); // report spend and hand leases back before the store closes
   // Give in-flight settlements a moment; anything unfinished is re-claimed after its lease expires.
   await new Promise((r) => setTimeout(r, 1_000));
   await feed.close();

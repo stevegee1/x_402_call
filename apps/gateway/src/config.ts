@@ -49,6 +49,16 @@ const schema = z
     /** How much version history Grid keeps in memory (days); older history reads go to Postgres. */
     GRID_HISTORY_MEMORY_DAYS: z.coerce.number().int().min(1).max(31).default(7),
 
+    // x402 sessions (architecture.md §6.4): prepay once, then read from memory. Off unless enabled.
+    SESSIONS_ENABLED: bool.default("false"),
+    /** HMAC key for session tokens; identical on every replica. Rotating it invalidates live sessions. */
+    SESSION_SECRET: z.string().min(32, "SESSION_SECRET must be at least 32 chars").optional(),
+    SESSION_TTL_MINUTES: z.coerce.number().int().min(5).max(24 * 60).default(60),
+    /** Balance one replica leases at a time: bounds what a crash strands until expiry. */
+    SESSION_LEASE_USD: z.coerce.number().positive().max(5).default(0.25),
+    SESSION_FLUSH_MS: z.coerce.number().int().min(100).max(60_000).default(1_000),
+    SESSION_CLOSE_GRACE_MS: z.coerce.number().int().min(10_000).default(120_000),
+
     // Persistence (unset => in-memory store, dev only)
     DATABASE_URL: z.string().optional(),
 
@@ -98,6 +108,7 @@ const schema = z
       ctx.addIssue({ code: "custom", path: ["CDP_API_KEY_ID"], message: "CDP credentials required when FACILITATOR=cdp" });
     if (c.GRID_ENABLED && c.GRID_SOURCE === "store" && !c.DATABASE_URL)
       ctx.addIssue({ code: "custom", path: ["GRID_SOURCE"], message: "store needs DATABASE_URL (the version store is in Postgres)" });
+    if (c.SESSIONS_ENABLED && !c.SESSION_SECRET) ctx.addIssue({ code: "custom", path: ["SESSION_SECRET"], message: "required when SESSIONS_ENABLED=true" });
     if (c.X402_NETWORK === "eip155:8453" && c.FACILITATOR === "x402org")
       ctx.addIssue({ code: "custom", path: ["FACILITATOR"], message: "x402.org facilitator is testnet-only; use cdp for Base mainnet" });
     if (c.NODE_ENV === "production") {

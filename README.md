@@ -138,6 +138,26 @@ values that changed to `env_observation`, stamped with `ingested_at` (the as-of 
   (`DATABASE_URL` required). Health is on `:8091`: `/healthz`, `/readyz`, `/status` and `/metrics`.
   A NESO outage never fails `/healthz`.
 
+### x402 sessions: prepay once, read at memory speed
+
+With `SESSIONS_ENABLED=true` (and `SESSION_SECRET`, at least 32 chars and the same on every replica),
+a buyer pays once with x402 and then reads any product with `Authorization: Session <token>`:
+
+| Endpoint | x402 | Returns |
+|---|---|---|
+| `GET /v1/sessions/sizes` | free | Session sizes and how to use them |
+| `GET /v1/sessions/usd1` · `usd5` · `usd20` | $1 · $5 · $20 | `201 {session_token, session_id, expires_at, …}`, issued only after the payment settles on chain |
+| `GET /v1/grid/{country}/stream` | $0.01 per event, session only | SSE: the forecast on connect, then each new version (`GRID_SOURCE=store`) |
+
+- **Reads:** each one spends the product's x402 price from the session. A read is an HMAC check and an
+  in-memory debit, with no facilitator, chain or database. Responses carry
+  `X-Session-Charged-Usdc-Atomic` and `X-Session-Remaining-Usdc-Atomic`. A failed handler is refunded.
+  An empty session gets a 402 `session_exhausted`, and an expired one a 401 `session_expired`.
+- **Rails:** only x402 can buy a session. GBP credits and sessions get a 400 `rail_not_accepted`, uncharged.
+- **Replicas:** each lease is `SESSION_LEASE_USD` (default $0.25). Spend is reported every `SESSION_FLUSH_MS`
+  (default 1 s). Sessions last `SESSION_TTL_MINUTES` (default 60) from settlement. Unused balance becomes
+  breakage `SESSION_CLOSE_GRACE_MS` after expiry. Accounting is in architecture.md §6.4.
+
 ### ERC-8004 identity (buyer tiers)
 
 With `ERC8004_ENABLED=true`, a buyer can declare its ERC-8004 agent with `X-Agent-Id: 42` (or the

@@ -62,7 +62,7 @@ describe("stack", () => {
   it("every gateway replica is ready and serving maritime", async () => {
     for (const url of Object.values(gw)) {
       const r = await (await fetch(`${url}/readyz`)).json();
-      expect(r).toEqual({ ok: true, db: true, products: { maritime: true, grid: true }, facilitator_breaker: "closed" });
+      expect(r).toEqual({ ok: true, db: true, products: { maritime: true, grid: true, sessions: true }, facilitator_breaker: "closed" });
     }
   });
 
@@ -388,6 +388,50 @@ describe("grid product (second product on the kernel)", () => {
     const summary = await (await fetch(`${gw.async}/admin/summary`, { headers: { authorization: `Bearer ${stack.adminToken}` } })).json();
     expect(summary.ledger_balances_gbp["revenue:grid"]).toBeLessThan(0); // credit balance: 0.05 USD * 0.8, ex VAT
     expect(summary.ledger_balances_gbp["revenue:grid"]).toBeCloseTo(-(0.05 * 0.8) / 1.2, 6);
+  });
+});
+
+describe("x402 sessions (prepay once, then read from memory on any replica)", () => {
+  it("buying settles on chain before the token is issued, even on an async replica", async () => {
+    const buyer = await newBuyer(stack.rpcUrl, 2_000_000n);
+    const { res, nonce } = await pay(buyer, `${gw.async}/v1/sessions/usd1`);
+    expect(res.status).toBe(201);
+    expect(res.headers.get("X-Settlement")).toBe("settled");
+    const settle = decodePaymentResponseHeader(res.headers.get("PAYMENT-RESPONSE")!);
+    await expectOnChainSettlement(settle.transaction, buyer.address, nonce, 1_000_000n);
+    countSettled(1, 1_000_000n);
+    const s = await res.json();
+    expect(s.session_token).toMatch(/^ses_/);
+
+    // Reads round-robin across all four replicas, which lease from the same session in Postgres.
+    const payToBefore = await usdcBalance(stack.rpcUrl, stack.payTo);
+    const urls = Object.values(gw);
+    for (let i = 0; i < 24; i++) {
+      const r = await fetch(`${urls[i % urls.length]}${VESSELS}`, { headers: { authorization: `Session ${s.session_token}` } });
+      expect(r.status).toBe(200);
+      expect(r.headers.get("X-Session-Charged-Usdc-Atomic")).toBe(String(PRICE));
+    }
+    expect(await usdcBalance(stack.rpcUrl, stack.payTo)).toBe(payToBefore); // reads move no money on chain
+    expect(await usdcBalance(stack.rpcUrl, buyer.address)).toBe(1_000_000n); // paid exactly once
+
+    // Every replica reports within its flush interval; the ledger then shows the spend as revenue.
+    const deadline = Date.now() + 10_000;
+    let summary: { ledger_balances_gbp: Record<string, number> };
+    for (;;) {
+      summary = await (await fetch(`${gw.async}/admin/summary`, { headers: { authorization: `Bearer ${stack.adminToken}` } })).json();
+      const left = summary.ledger_balances_gbp["liability:session_prepaid"] ?? 0;
+      // net = 1 USDC x 0.8 / 1.2; after 24 reads, (1 - 24 x 0.033) of it remains as liability
+      if (Math.abs(left - -((1 - 24 * 0.033) * 0.8) / 1.2) < 1e-5) break;
+      if (Date.now() > deadline) throw new Error(`session usage not reported: liability ${left}`);
+      await new Promise((r) => setTimeout(r, 200));
+    }
+  });
+
+  it("a forged token is refused on every replica", async () => {
+    for (const url of Object.values(gw)) {
+      const r = await fetch(`${url}${VESSELS}`, { headers: { authorization: "Session ses_00000000-0000-4000-8000-000000000000.AAAA" } });
+      expect(r.status).toBe(401);
+    }
   });
 });
 
