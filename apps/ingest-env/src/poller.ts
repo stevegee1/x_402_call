@@ -23,9 +23,15 @@ export interface PollerOptions {
   maxFetchIntervalMs: number;
   /** Ceiling for the backoff after consecutive failures. */
   maxBackoffMs: number;
+  /**
+   * After the publish time moves, keep re-reading on every check until the values change, for at
+   * most this long. NESO moves last_modified before the new records are readable: on 2026-11-07 a
+   * read 17 s after last_modified still returned the old horizon.
+   */
+  publishSettleMs: number;
 }
 
-export const DEFAULT_POLLER_OPTIONS: PollerOptions = { checkMs: 30_000, maxFetchIntervalMs: 10 * 60_000, maxBackoffMs: 5 * 60_000 };
+export const DEFAULT_POLLER_OPTIONS: PollerOptions = { checkMs: 30_000, maxFetchIntervalMs: 10 * 60_000, maxBackoffMs: 5 * 60_000, publishSettleMs: 5 * 60_000 };
 
 export type TickResult = "fetched" | "unchanged" | "failed";
 
@@ -45,8 +51,8 @@ const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
  * Polls one dataset. Each tick asks the source when it last published. It reads the records only
  * when that time moved, when the source doesn't say, or when the last read is older than
  * `maxFetchIntervalMs`. The store appends only what changed, so a read that finds nothing new
- * costs one fetch-log row. A failure never advances what we think we've seen, so the next tick
- * retries it.
+ * costs one fetch-log row. A publish is only counted as seen once its values have arrived (or
+ * `publishSettleMs` has passed), and a failure never counts it, so the next tick retries.
  */
 export class Poller {
   private seenModified: number | null = null;
@@ -101,8 +107,10 @@ export class Poller {
 
       // Latency is only ours when we saw the publish time move while watching. On the first fetch
       // after boot, the data may have been published long before we started.
-      const sawPublish = modified !== null && this.seenModified !== null && modified !== this.seenModified;
-      this.seenModified = modified;
+      const moved = modified !== null && modified !== this.seenModified;
+      const sawPublish = moved && this.seenModified !== null;
+      const settling = moved && changed === 0 && ingestedAt - modified! < this.opts.publishSettleMs;
+      if (!settling) this.seenModified = modified;
       this.lastFetchAt = ingestedAt;
       this.status.lastSuccessAt = ingestedAt;
       this.status.lastPublishedAt = modified;
@@ -116,14 +124,14 @@ export class Poller {
         this.metrics.set("env_rows_flagged", n, { ...labels, quality: q });
       }
       this.metrics.set("env_last_success_timestamp_seconds", Math.floor(ingestedAt / 1000), labels);
-      if (sawPublish && modified !== null) {
+      if (sawPublish && changed > 0) {
         // From the source's publish time to our durable copy: our share of delivery latency.
-        this.metrics.set("env_publish_to_ingest_seconds", Math.max(0, (ingestedAt - modified) / 1000), labels);
+        this.metrics.set("env_publish_to_ingest_seconds", Math.max(0, (ingestedAt - modified!) / 1000), labels);
       }
       if (cleaned.dropped > 0 || cleaned.duplicates > 0 || cleaned.observations.length === 0) {
         this.log.warn({ dataset: this.spec.id, dropped: cleaned.dropped, duplicates: cleaned.duplicates, seen: cleaned.observations.length }, "source rows needed cleaning");
       }
-      this.log.info({ dataset: this.spec.id, changed, seen: cleaned.observations.length, publishedAt: modified }, "fetched");
+      this.log.info({ dataset: this.spec.id, changed, seen: cleaned.observations.length, publishedAt: modified, settling }, "fetched");
       this.succeeded();
       return "fetched";
     } catch (e) {

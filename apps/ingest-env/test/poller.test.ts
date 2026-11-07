@@ -3,7 +3,7 @@ import { Metrics } from "@mx/shared";
 import { describe, expect, it } from "vitest";
 import { Poller, type PollerOptions, type PollerSource, type PollerStore } from "../src/poller";
 
-const OPTS: PollerOptions = { checkMs: 30_000, maxFetchIntervalMs: 600_000, maxBackoffMs: 300_000 };
+const OPTS: PollerOptions = { checkMs: 30_000, maxFetchIntervalMs: 600_000, maxBackoffMs: 300_000, publishSettleMs: 300_000 };
 const T0 = Date.parse("2026-11-07T14:10:00Z");
 const PUB = Date.parse("2026-11-07T14:09:40Z");
 const ROWS = [{ datetime: "2026-11-07T14:00:00", England: 200, Scotland: 30, Wales: 300 }];
@@ -100,6 +100,36 @@ describe("Poller", () => {
     h.advance(30_000);
     expect(await h.poller.tick()).toBe("fetched");
     expect(h.writes.map((w) => w.publishedAt)).toEqual([PUB, PUB + 1_800_000]);
+  });
+
+  it("keeps re-reading after a publish until the new values are readable", async () => {
+    // As seen live: last_modified moves, but the first read still returns the old rows.
+    const NEW = PUB + 3_600_000;
+    const h = harness({ modified: [PUB, NEW], write: [3, 0, 0, 6, 0] });
+    await h.poller.tick(); // boot: stores the current version
+    h.advance(NEW + 17_000 - T0); // 17 s after the new publish time
+    expect(await h.poller.tick()).toBe("fetched"); // changed 0: not readable yet
+    h.advance(30_000);
+    expect(await h.poller.tick()).toBe("fetched"); // still 0: keep trying
+    h.advance(30_000);
+    expect(await h.poller.tick()).toBe("fetched"); // 6 rows: the publish has landed
+    expect(h.metrics.get("env_publish_to_ingest_seconds", L)).toBe(77);
+    h.advance(30_000);
+    expect(await h.poller.tick()).toBe("unchanged"); // seen now: back to metadata-only checks
+    expect(h.calls.records).toBe(4);
+  });
+
+  it("stops re-reading once the settle window has passed with no change", async () => {
+    const NEW = PUB + 3_600_000;
+    const h = harness({ modified: [PUB, NEW], write: [3, 0] });
+    await h.poller.tick();
+    h.advance(NEW + 290_000 - T0); // 4 min 50 s after the publish time
+    expect(await h.poller.tick()).toBe("fetched");
+    h.advance(30_000); // now past 5 min
+    expect(await h.poller.tick()).toBe("fetched");
+    h.advance(30_000);
+    expect(await h.poller.tick()).toBe("unchanged");
+    expect(h.metrics.get("env_publish_to_ingest_seconds", L)).toBe(0); // nothing landed, nothing reported
   });
 
   it("fetches anyway once the last fetch is older than the maximum interval", async () => {

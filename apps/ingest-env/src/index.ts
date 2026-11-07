@@ -37,6 +37,7 @@ const pollers = [CARBON_INTENSITY].map(
       checkMs: cfg.ENV_CHECK_INTERVAL_MS,
       maxFetchIntervalMs: cfg.ENV_MAX_FETCH_INTERVAL_MS,
       maxBackoffMs: cfg.ENV_MAX_BACKOFF_MS,
+      publishSettleMs: cfg.ENV_PUBLISH_SETTLE_MS,
     }),
 );
 

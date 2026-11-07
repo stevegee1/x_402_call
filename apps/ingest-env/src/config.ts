@@ -12,6 +12,7 @@ export const configSchema = z
     ENV_MAX_FETCH_INTERVAL_MS: ms(10 * 60_000, 60_000),
     ENV_MAX_BACKOFF_MS: ms(5 * 60_000, 5_000),
     ENV_HTTP_TIMEOUT_MS: ms(10_000, 1_000),
+    ENV_PUBLISH_SETTLE_MS: ms(5 * 60_000, 0),
     ENV_HEALTH_PORT: z.coerce.number().int().min(1).max(65_535).default(8091),
     LOG_LEVEL: z.string().default("info"),
   })

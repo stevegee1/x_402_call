@@ -11,6 +11,7 @@ describe("loadConfig", () => {
       ENV_MAX_FETCH_INTERVAL_MS: 600_000,
       ENV_MAX_BACKOFF_MS: 300_000,
       ENV_HTTP_TIMEOUT_MS: 10_000,
+      ENV_PUBLISH_SETTLE_MS: 300_000,
       ENV_HEALTH_PORT: 8091,
     });
   });
