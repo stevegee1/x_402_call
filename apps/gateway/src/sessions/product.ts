@@ -19,6 +19,7 @@ export const SESSION_SIZES = [
 export class SessionsProduct implements Product<null> {
   readonly id = "sessions";
   readonly displayName = "x402 sessions";
+  readonly kind = "access";
   readonly description =
     "Prepay once with x402, then read any product at memory speed with Authorization: Session <token>. Each read spends the product's x402 price from the balance.";
   readonly resources: readonly PricedResource[];
