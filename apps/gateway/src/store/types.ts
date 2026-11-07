@@ -44,16 +44,31 @@ export interface ExposureCaps {
   perPayerAtomic: bigint;
 }
 
+/**
+ * What a served-but-unpaid payment costs its payer (async, then failed for good). It keeps counting
+ * against the caps for holdMs, so a failure can't free the cap for the next try, and its payer is
+ * admitted only as sync for demoteMs. Both are measured from the payment's created_at.
+ */
+export interface FailurePolicy {
+  holdMs: number;
+  demoteMs: number;
+}
+
 export interface AdmitOptions {
   /** The caller would settle asynchronously if the caps allow it. false: always admit as sync. */
   wantAsync: boolean;
   caps: ExposureCaps;
+  failures: FailurePolicy;
+  /** Admission time; the hold and demotion windows end relative to it. */
+  now: Date;
   /** next_attempt_at for each outcome: async waits for the handler; sync keeps the worker away while settling inline. */
   asyncAttemptAt: Date;
   syncAttemptAt: Date;
 }
 
-export type Admission = { result: "duplicate" } | { result: "inserted"; mode: SettleMode };
+/** Why a payment that could have been async was admitted as sync. */
+export type SyncReason = "cap" | "demoted";
+export type Admission = { result: "duplicate" } | { result: "inserted"; mode: SettleMode; syncReason?: SyncReason };
 
 export interface ExposureSnapshot {
   totalAtomic: bigint;

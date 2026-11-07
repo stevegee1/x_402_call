@@ -13,7 +13,7 @@ import {
   type JournalEntry,
   type JournalInput,
 } from "../ledger/journal";
-import type { AdmitOptions, Admission, CreditAccount, NewAccount, NewPayment, PaymentRow, PaymentStatus, ReserveResult, SessionRow, SessionUsage, SettleMode, Store } from "./types";
+import type { AdmitOptions, Admission, CreditAccount, NewAccount, NewPayment, PaymentRow, PaymentStatus, ReserveResult, SessionRow, SessionUsage, SettleMode, Store, SyncReason } from "./types";
 
 // bigint columns (balances, micros) fit in JS safe integers for our ranges; parse them as numbers.
 pg.types.setTypeParser(20, (v) => Number(v));
@@ -142,30 +142,45 @@ export class PgStore implements Store {
   }
 
   async admitPayment(p: Omit<NewPayment, "nextAttemptAt" | "settleMode">, o: AdmitOptions): Promise<Admission> {
-    const insert = async (q: Q, mode: SettleMode): Promise<Admission> =>
-      (await this.insertRow(q, { ...p, settleMode: mode, nextAttemptAt: mode === "async" ? o.asyncAttemptAt : o.syncAttemptAt }))
-        ? { result: "inserted", mode }
-        : { result: "duplicate" };
+    const insert = async (q: Q, mode: SettleMode, syncReason?: SyncReason): Promise<Admission> => {
+      const inserted = await this.insertRow(q, { ...p, settleMode: mode, nextAttemptAt: mode === "async" ? o.asyncAttemptAt : o.syncAttemptAt });
+      if (!inserted) return { result: "duplicate" };
+      return syncReason ? { result: "inserted", mode, syncReason } : { result: "inserted", mode };
+    };
     if (!o.wantAsync) return insert(this.pool, "sync");
+
+    // A payer whose served-early payment failed for good is settled first for a while. A per-payer
+    // index lookup, outside the global lock: a failure recorded meanwhile is caught next time.
+    const demoted = await this.pool.query(
+      `select 1 from x402_payments
+       where status = 'failed' and settle_mode = 'async' and payer = lower($1) and created_at > $2 limit 1`,
+      [p.payer, new Date(o.now.getTime() - o.failures.demoteMs)],
+    );
+    if (demoted.rowCount) return insert(this.pool, "sync", "demoted");
 
     try {
       return await this.tx(async (c) => {
         await c.query(`set local lock_timeout = '${EXPOSURE_LOCK_TIMEOUT}'`);
         await c.query("select pg_advisory_xact_lock($1)", [EXPOSURE_LOCK]);
+        // Exposure = unsettled async payments + async payments that failed for good within the hold.
         const r = await c.query<{ total: string; payer: string }>(
           `select coalesce(sum(amount_atomic), 0)::text as total,
                   coalesce(sum(amount_atomic) filter (where payer = lower($1)), 0)::text as payer
-           from x402_payments where status = 'verified' and settle_mode = 'async'`,
-          [p.payer],
+           from (
+             select payer, amount_atomic from x402_payments where status = 'verified' and settle_mode = 'async'
+             union all
+             select payer, amount_atomic from x402_payments where status = 'failed' and settle_mode = 'async' and created_at > $2
+           ) e`,
+          [p.payer, new Date(o.now.getTime() - o.failures.holdMs)],
         );
         const total = BigInt(r.rows[0]!.total);
         const payer = BigInt(r.rows[0]!.payer);
         const fits = total + p.amountAtomic <= o.caps.totalAtomic && payer + p.amountAtomic <= o.caps.perPayerAtomic;
-        return insert(c, fits ? "async" : "sync");
+        return fits ? insert(c, "async") : insert(c, "sync", "cap");
       });
     } catch (e) {
       // Contended lock: settle this one inline. Safe (no exposure), just slower for the buyer.
-      if ((e as { code?: string }).code === "55P03") return insert(this.pool, "sync");
+      if ((e as { code?: string }).code === "55P03") return insert(this.pool, "sync", "cap");
       throw e;
     }
   }

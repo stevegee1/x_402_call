@@ -155,7 +155,7 @@ describe("PgStore: Postgres-specific guarantees", () => {
       const at = () => ({ asyncAttemptAt: new Date(Date.now() + 2_000), syncAttemptAt: new Date(Date.now() + 120_000) });
       const admitOn = (store: PgStore, p: ReturnType<typeof newPayment>, caps: { totalAtomic: bigint; perPayerAtomic: bigint }) => {
         const { nextAttemptAt: _, settleMode: __, ...rest } = p;
-        return store.admitPayment(rest, { wantAsync: true, caps, ...at() });
+        return store.admitPayment(rest, { wantAsync: true, caps, failures: { holdMs: 86_400_000, demoteMs: 30 * 86_400_000 }, now: new Date(), ...at() });
       };
 
       it("concurrent admissions on two replicas never exceed the global cap", async () => {
@@ -184,7 +184,7 @@ describe("PgStore: Postgres-specific guarantees", () => {
         const r = await admitOn(a, newPayment(), { totalAtomic: 1_000_000n, perPayerAtomic: 1_000_000n });
         const waited = Date.now() - t0;
         await sql.query("rollback");
-        expect(r).toEqual({ result: "inserted", mode: "sync" });
+        expect(r).toEqual({ result: "inserted", mode: "sync", syncReason: "cap" });
         expect(waited).toBeGreaterThanOrEqual(1_900);
         expect(waited).toBeLessThan(5_000);
         expect((await a.exposure()).totalAtomic).toBe(0n);

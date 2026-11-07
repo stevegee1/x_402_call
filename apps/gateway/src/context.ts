@@ -5,7 +5,7 @@ import type { FxService } from "./ledger/fx";
 import type { Logger } from "./logger";
 import type { Metrics } from "./metrics";
 import type { TierResolver } from "./identity/tiers";
-import type { ExposureCaps } from "./store/types";
+import type { ExposureCaps, FailurePolicy } from "./store/types";
 import type { FailoverFacilitator } from "./payments/facilitator";
 import type { SanctionsScreen } from "./payments/sanctions";
 import type { Settler } from "./payments/settlement";
@@ -29,6 +29,8 @@ export interface AppDeps {
   settler: Settler;
   /** Global caps on served-but-unsettled value; enforced by Store.admitPayment. */
   exposureCaps: ExposureCaps;
+  /** What a served-early payment that fails for good costs its payer; see payments/exposure.ts. */
+  failurePolicy: FailurePolicy;
   /** ERC-8004 buyer tiers; undefined when ERC8004_ENABLED=false (every payer is "unknown"). */
   identity?: TierResolver;
   /** Our ERC-8004 seller identity, advertised to buyers. */

@@ -13,7 +13,7 @@ import { base, baseSepolia } from "viem/chains";
 import { createAgentRegistry } from "./identity/erc8004";
 import { agentRegistryId, ERC8004_REGISTRIES } from "./identity/registries";
 import { TierResolver } from "./identity/tiers";
-import { exposureCaps, usdToAtomic } from "./payments/exposure";
+import { exposureCaps, failurePolicy, usdToAtomic } from "./payments/exposure";
 import { FailoverFacilitator } from "./payments/facilitator";
 import { createFacilitatorClients } from "./payments/facilitator-clients";
 import { createAuthorizationChecker } from "./payments/onchain";
@@ -197,6 +197,7 @@ const deps: AppDeps = {
   facilitator,
   settler,
   exposureCaps: exposureCaps(cfg),
+  failurePolicy: failurePolicy(cfg),
   identity,
   sellerIdentity,
   sanctions,

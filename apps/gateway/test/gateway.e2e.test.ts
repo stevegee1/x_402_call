@@ -146,6 +146,31 @@ describe("x402 rail", () => {
     expect((await env.store.exposure()).totalAtomic).toBe(0n);
   });
 
+  it("a payer whose served-early payment fails can't repeat it: settled first, and the cap stays used", async () => {
+    // The attack: get served before settlement, then move the funds (or cancel the authorisation)
+    // so settlement fails, and go again. Settlement failing must not hand the cap back.
+    env = await createTestEnv({ EXPOSURE_CAP_USD: "0.066", EXPOSURE_CAP_PER_PAYER_USD: "0.066", EXPOSURE_CAP_PER_PAYER_IDENTIFIED_USD: "0.066", EXPOSURE_CAP_PER_PAYER_TRUSTED_USD: "0.066" });
+    const cheat = createPolicyClient({ policy: policy(), signer: privateKeyToAccount(generatePrivateKey()), fetch: env.fetch });
+    const first = await cheat.fetch(`${BASE_URL}/v1/maritime/dover/vessels`);
+    expect(first.status).toBe(200);
+    expect(first.headers.get("X-Settlement")).toBe("pending"); // served before settling
+    env.facilitator.settleFails = "insufficient_funds"; // the funds are gone by settlement time
+    await settleAll(env);
+    expect((await env.store.getPayment(first.headers.get("X-Payment-Id")!))?.status).toBe("failed");
+
+    // Again: now settled before serving, so the failed settlement refuses the data.
+    const again = await cheat.fetch(`${BASE_URL}/v1/maritime/dover/vessels`);
+    expect(again.status).toBe(402);
+    expect(decodePaymentRequiredHeader(again.headers.get("PAYMENT-REQUIRED")!).error).toMatch(/settlement_failed/);
+    expect(env.deps.metrics.render()).toMatch(/x402_async_demoted_total\{tier="unknown"\} 1/);
+
+    // An honest buyer still gets one served-early read: the failed $0.033 holds half the $0.066 cap.
+    env.facilitator.settleFails = undefined;
+    const honest = createPolicyClient({ policy: policy(), signer: account, fetch: env.fetch });
+    expect((await honest.fetch(`${BASE_URL}/v1/maritime/dover/vessels`)).headers.get("X-Settlement")).toBe("pending");
+    expect((await honest.fetch(`${BASE_URL}/v1/maritime/dover/vessels`)).headers.get("X-Settlement")).toBe("settled");
+  });
+
   it("refuses tampered payments", async () => {
     const seen: Request[] = [];
     const spy = ((i: RequestInfo | URL, init?: RequestInit) => {

@@ -29,6 +29,10 @@ const schema = z
     SETTLEMENT_MODE: z.enum(["async", "sync"]).default("async"),
     EXPOSURE_CAP_USD: z.coerce.number().default(25),
     EXPOSURE_CAP_PER_PAYER_USD: z.coerce.number().default(1),
+    /** How long a served-early payment that failed for good keeps counting against the caps. */
+    EXPOSURE_FAILED_HOLD_HOURS: z.coerce.number().positive().default(24),
+    /** How long its payer is settled before being served. At least the hold. */
+    ASYNC_DEMOTE_AFTER_FAILURE_DAYS: z.coerce.number().positive().default(30),
     MAX_TIMEOUT_SECONDS: z.coerce.number().int().default(120),
     BASE_RPC_URL: z.string().url().optional(),
 
@@ -102,6 +106,8 @@ const schema = z
         path: ["EXPOSURE_CAP_PER_PAYER_IDENTIFIED_USD"],
         message: "per-payer caps must satisfy unknown <= identified <= trusted <= EXPOSURE_CAP_USD (tiers only loosen)",
       });
+    if (c.ASYNC_DEMOTE_AFTER_FAILURE_DAYS * 24 < c.EXPOSURE_FAILED_HOLD_HOURS)
+      ctx.addIssue({ code: "custom", path: ["ASYNC_DEMOTE_AFTER_FAILURE_DAYS"], message: "must be at least EXPOSURE_FAILED_HOLD_HOURS" });
     if (c.ERC8004_ENABLED && !c.BASE_RPC_URL) ctx.addIssue({ code: "custom", path: ["BASE_RPC_URL"], message: "required when ERC8004_ENABLED=true" });
     if (c.FACILITATOR === "url" && !c.FACILITATOR_URL) ctx.addIssue({ code: "custom", path: ["FACILITATOR_URL"], message: "required when FACILITATOR=url" });
     if (c.FACILITATOR === "cdp" && !(c.CDP_API_KEY_ID && c.CDP_API_KEY_SECRET))
