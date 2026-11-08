@@ -98,6 +98,16 @@ Pay end to end with test USDC from https://faucet.circle.com (Base Sepolia):
 GATEWAY_URL=https://<gateway-domain> WALLET_PRIVATE_KEY=<a Base Sepolia test wallet> pnpm demo:agent
 ```
 
+Client IP header (per-IP rate limits trust exactly `CLIENT_IP_HEADER`). Prove the edge overwrites
+it: 21 failed sign-ins, each forging a different value, must end in 429. A 401 at the end means
+clients can pick their own bucket: stop and choose another header.
+
+```bash
+for i in $(seq 1 21); do curl -s -o /dev/null -w '%{http_code} ' -H "Origin: https://<gateway-domain>" \
+  -H "X-Real-IP: 10.9.$i.1" -d "email=probe-$i@example.com&password=wrong+password+here" \
+  https://<gateway-domain>/signin; done; echo   # ... 401 429
+```
+
 ## Operations
 
 - **Reconciliation alert.** The reconciler logs `"level":"error"` with `persistent` problems, which

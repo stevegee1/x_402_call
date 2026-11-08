@@ -3,13 +3,13 @@ import { Hono, type MiddlewareHandler } from "hono";
 import type { AppDeps, AppEnv } from "../context";
 import { looksLikeApiKey } from "../credits/keys";
 import { CreditsError } from "../credits/service";
-import { clientIp, WindowLimiter } from "./limits";
+import { clientIp, WindowLimiter, type ClientIpHeader } from "./limits";
 
-/** Per-IP limiter for unauthenticated account creation. Cloudflare rate limits sit in front. */
-function signupLimiter(max: number, windowMs: number): MiddlewareHandler<AppEnv> {
+/** Per-IP limiter for unauthenticated account creation. */
+function signupLimiter(source: ClientIpHeader, max: number, windowMs: number): MiddlewareHandler<AppEnv> {
   const limiter = new WindowLimiter(max, windowMs);
   return async (c, next) => {
-    if (!limiter.hit(clientIp(c))) return c.json({ error: "rate_limited" }, 429);
+    if (!limiter.hit(clientIp(c, source))) return c.json({ error: "rate_limited" }, 429);
     await next();
   };
 }
@@ -32,7 +32,7 @@ export function creditsRoutes(d: AppDeps) {
     throw err;
   });
 
-  r.post("/v1/credits/accounts", signupLimiter(10, 3_600_000), async (c) => {
+  r.post("/v1/credits/accounts", signupLimiter(d.cfg.CLIENT_IP_HEADER, 10, 3_600_000), async (c) => {
     const body = await c.req.json().catch(() => ({}));
     const { account, apiKey } = await d.credits.createAccount({ company: body.company, email: body.email, country: body.country, taxId: body.vat_number ?? body.tax_id ?? null });
     d.log.info({ accountId: account.id, country: account.country }, "credit account created");
