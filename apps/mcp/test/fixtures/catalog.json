@@ -1,0 +1,625 @@
+{
+ "data": [
+  {
+   "id": "maritime",
+   "name": "Maritime",
+   "description": "AIS vessel data and derived signals (density, anchorage queues, anomalies) for the Dover Strait, Port of Rotterdam and Panama Canal.",
+   "kind": "data",
+   "coverage": [
+    {
+     "id": "dover",
+     "name": "Dover Strait",
+     "mode": "live",
+     "fresh": true,
+     "data_age_s": 5,
+     "vessels": 36
+    },
+    {
+     "id": "rotterdam",
+     "name": "Port of Rotterdam approaches",
+     "mode": "live",
+     "fresh": true,
+     "data_age_s": 3,
+     "vessels": 826
+    },
+    {
+     "id": "panama",
+     "name": "Panama Canal approaches",
+     "mode": "live",
+     "fresh": false,
+     "data_age_s": 304,
+     "vessels": 4
+    }
+   ],
+   "endpoints": [
+    {
+     "id": "maritime.regions",
+     "kind": "free",
+     "path": "/v1/maritime/regions",
+     "summary": "Regions covered, with live status, anchorages and the paid endpoints for each",
+     "parameters": [],
+     "pay": {
+      "x402": null,
+      "credits": null,
+      "session": null
+     }
+    },
+    {
+     "id": "maritime.vessels",
+     "kind": "paid",
+     "path": "/v1/maritime/{region}/vessels",
+     "summary": "Current vessel snapshot for a region (filterable)",
+     "parameters": [
+      {
+       "name": "region",
+       "in": "path",
+       "required": true,
+       "description": "dover = Dover Strait, rotterdam = Port of Rotterdam approaches, panama = Panama Canal approaches",
+       "schema": {
+        "type": "string",
+        "enum": [
+         "dover",
+         "rotterdam",
+         "panama"
+        ]
+       }
+      },
+      {
+       "name": "category",
+       "in": "query",
+       "description": "Ship category, e.g. tanker, cargo, passenger",
+       "schema": {
+        "type": "string"
+       },
+       "required": false
+      },
+      {
+       "name": "min_speed_kn",
+       "in": "query",
+       "description": "Minimum speed over ground in knots",
+       "schema": {
+        "type": "number",
+        "minimum": 0
+       },
+       "required": false
+      },
+      {
+       "name": "bbox",
+       "in": "query",
+       "description": "minLon,minLat,maxLon,maxLat",
+       "schema": {
+        "type": "string"
+       },
+       "required": false
+      }
+     ],
+     "pay": {
+      "x402": {
+       "price_usdc": "0.033"
+      },
+      "credits": {
+       "price_gbp": 0.025
+      },
+      "session": {
+       "price_usdc": "0.033"
+      }
+     }
+    },
+    {
+     "id": "maritime.vessel",
+     "kind": "paid",
+     "path": "/v1/maritime/{region}/vessels/{mmsi}",
+     "summary": "Single vessel latest state and recent track",
+     "parameters": [
+      {
+       "name": "region",
+       "in": "path",
+       "required": true,
+       "description": "dover = Dover Strait, rotterdam = Port of Rotterdam approaches, panama = Panama Canal approaches",
+       "schema": {
+        "type": "string",
+        "enum": [
+         "dover",
+         "rotterdam",
+         "panama"
+        ]
+       }
+      },
+      {
+       "name": "mmsi",
+       "in": "path",
+       "required": true,
+       "description": "Maritime Mobile Service Identity",
+       "schema": {
+        "type": "integer"
+       }
+      }
+     ],
+     "pay": {
+      "x402": {
+       "price_usdc": "0.033"
+      },
+      "credits": {
+       "price_gbp": 0.025
+      },
+      "session": {
+       "price_usdc": "0.033"
+      }
+     }
+    },
+    {
+     "id": "maritime.density",
+     "kind": "paid",
+     "path": "/v1/maritime/{region}/density",
+     "summary": "H3-binned traffic density (moving vs anchored)",
+     "parameters": [
+      {
+       "name": "region",
+       "in": "path",
+       "required": true,
+       "description": "dover = Dover Strait, rotterdam = Port of Rotterdam approaches, panama = Panama Canal approaches",
+       "schema": {
+        "type": "string",
+        "enum": [
+         "dover",
+         "rotterdam",
+         "panama"
+        ]
+       }
+      }
+     ],
+     "pay": {
+      "x402": {
+       "price_usdc": "0.033"
+      },
+      "credits": {
+       "price_gbp": 0.025
+      },
+      "session": {
+       "price_usdc": "0.033"
+      }
+     }
+    },
+    {
+     "id": "maritime.queue",
+     "kind": "paid",
+     "path": "/v1/maritime/{region}/queue",
+     "summary": "Anchorage queue: vessels waiting, wait-time stats, draught constraints",
+     "parameters": [
+      {
+       "name": "region",
+       "in": "path",
+       "required": true,
+       "description": "dover = Dover Strait, rotterdam = Port of Rotterdam approaches, panama = Panama Canal approaches",
+       "schema": {
+        "type": "string",
+        "enum": [
+         "dover",
+         "rotterdam",
+         "panama"
+        ]
+       }
+      }
+     ],
+     "pay": {
+      "x402": {
+       "price_usdc": "0.066"
+      },
+      "credits": {
+       "price_gbp": 0.05
+      },
+      "session": {
+       "price_usdc": "0.066"
+      }
+     }
+    },
+    {
+     "id": "maritime.anomalies",
+     "kind": "paid",
+     "path": "/v1/maritime/{region}/anomalies",
+     "summary": "AIS gaps (vessels going dark), position jumps, loitering",
+     "parameters": [
+      {
+       "name": "region",
+       "in": "path",
+       "required": true,
+       "description": "dover = Dover Strait, rotterdam = Port of Rotterdam approaches, panama = Panama Canal approaches",
+       "schema": {
+        "type": "string",
+        "enum": [
+         "dover",
+         "rotterdam",
+         "panama"
+        ]
+       }
+      }
+     ],
+     "pay": {
+      "x402": {
+       "price_usdc": "0.066"
+      },
+      "credits": {
+       "price_gbp": 0.05
+      },
+      "session": {
+       "price_usdc": "0.066"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": "grid",
+   "name": "Grid carbon",
+   "description": "GB grid carbon intensity signals for carbon-aware scheduling: now, a half-hourly forecast, and the cleanest window to run a job. Supported by National Energy SO Open Data. Not provided or endorsed by NESO.",
+   "kind": "data",
+   "coverage": [
+    {
+     "id": "england",
+     "name": "England",
+     "mode": "live",
+     "fresh": true,
+     "data_age_s": 712
+    },
+    {
+     "id": "scotland",
+     "name": "Scotland",
+     "mode": "live",
+     "fresh": true,
+     "data_age_s": 712
+    },
+    {
+     "id": "wales",
+     "name": "Wales",
+     "mode": "live",
+     "fresh": true,
+     "data_age_s": 712
+    }
+   ],
+   "endpoints": [
+    {
+     "id": "grid.countries",
+     "kind": "free",
+     "path": "/v1/grid/countries",
+     "summary": "Countries covered, with forecast freshness and the paid endpoints for each",
+     "parameters": [],
+     "pay": {
+      "x402": null,
+      "credits": null,
+      "session": null
+     }
+    },
+    {
+     "id": "grid.intensity",
+     "kind": "paid",
+     "path": "/v1/grid/{country}/intensity",
+     "summary": "Grid carbon intensity now (gCO2/kWh), the next half-hour, and how now compares with the next 24 h",
+     "parameters": [
+      {
+       "name": "country",
+       "in": "path",
+       "required": true,
+       "description": "GB country whose grid carbon intensity to read (NESO country forecast)",
+       "schema": {
+        "type": "string",
+        "enum": [
+         "england",
+         "scotland",
+         "wales"
+        ]
+       }
+      }
+     ],
+     "pay": {
+      "x402": {
+       "price_usdc": "0.01"
+      },
+      "credits": {
+       "price_gbp": 0.008
+      },
+      "session": {
+       "price_usdc": "0.01"
+      }
+     }
+    },
+    {
+     "id": "grid.forecast",
+     "kind": "paid",
+     "path": "/v1/grid/{country}/forecast",
+     "summary": "Half-hourly carbon intensity forecast from now",
+     "parameters": [
+      {
+       "name": "country",
+       "in": "path",
+       "required": true,
+       "description": "GB country whose grid carbon intensity to read (NESO country forecast)",
+       "schema": {
+        "type": "string",
+        "enum": [
+         "england",
+         "scotland",
+         "wales"
+        ]
+       }
+      },
+      {
+       "name": "hours",
+       "in": "query",
+       "description": "Horizon in hours (1-48, default 24)",
+       "schema": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 48
+       },
+       "required": false
+      }
+     ],
+     "pay": {
+      "x402": {
+       "price_usdc": "0.02"
+      },
+      "credits": {
+       "price_gbp": 0.015
+      },
+      "session": {
+       "price_usdc": "0.02"
+      }
+     }
+    },
+    {
+     "id": "grid.window",
+     "kind": "paid",
+     "path": "/v1/grid/{country}/window",
+     "summary": "Cleanest time to run a job: the lowest-carbon contiguous window, and the saving versus starting now",
+     "parameters": [
+      {
+       "name": "country",
+       "in": "path",
+       "required": true,
+       "description": "GB country whose grid carbon intensity to read (NESO country forecast)",
+       "schema": {
+        "type": "string",
+        "enum": [
+         "england",
+         "scotland",
+         "wales"
+        ]
+       }
+      },
+      {
+       "name": "duration_h",
+       "in": "query",
+       "required": true,
+       "description": "Job length in hours, in half-hour steps (0.5-12)",
+       "schema": {
+        "type": "number",
+        "minimum": 0.5,
+        "maximum": 12
+       }
+      },
+      {
+       "name": "within_h",
+       "in": "query",
+       "description": "Must finish within this many hours (duration_h-48, default 24)",
+       "schema": {
+        "type": "number",
+        "minimum": 0.5,
+        "maximum": 48
+       },
+       "required": false
+      }
+     ],
+     "pay": {
+      "x402": {
+       "price_usdc": "0.05"
+      },
+      "credits": {
+       "price_gbp": 0.04
+      },
+      "session": {
+       "price_usdc": "0.05"
+      }
+     }
+    },
+    {
+     "id": "grid.history",
+     "kind": "paid",
+     "path": "/v1/grid/{country}/history",
+     "summary": "Point-in-time history: for each half-hour in a range, the forecast as it stood at as_of (default now), with when we first knew it",
+     "parameters": [
+      {
+       "name": "country",
+       "in": "path",
+       "required": true,
+       "description": "GB country whose grid carbon intensity to read (NESO country forecast)",
+       "schema": {
+        "type": "string",
+        "enum": [
+         "england",
+         "scotland",
+         "wales"
+        ]
+       }
+      },
+      {
+       "name": "from",
+       "in": "query",
+       "required": true,
+       "description": "Range start, ISO 8601 with a zone (e.g. 2026-11-07T00:00:00Z)",
+       "schema": {
+        "type": "string",
+        "format": "date-time"
+       }
+      },
+      {
+       "name": "to",
+       "in": "query",
+       "description": "Range end (exclusive), at most 7 days after from; default from + 24 h",
+       "schema": {
+        "type": "string",
+        "format": "date-time"
+       },
+       "required": false
+      },
+      {
+       "name": "as_of",
+       "in": "query",
+       "description": "Knowledge time: only versions known by then (default now; not in the future)",
+       "schema": {
+        "type": "string",
+        "format": "date-time"
+       },
+       "required": false
+      }
+     ],
+     "pay": {
+      "x402": {
+       "price_usdc": "0.05"
+      },
+      "credits": {
+       "price_gbp": 0.04
+      },
+      "session": {
+       "price_usdc": "0.05"
+      }
+     }
+    },
+    {
+     "id": "grid.revisions",
+     "kind": "paid",
+     "path": "/v1/grid/{country}/revisions",
+     "summary": "Every version of one half-hour's forecast, oldest first: how the forecast for that period changed",
+     "parameters": [
+      {
+       "name": "country",
+       "in": "path",
+       "required": true,
+       "description": "GB country whose grid carbon intensity to read (NESO country forecast)",
+       "schema": {
+        "type": "string",
+        "enum": [
+         "england",
+         "scotland",
+         "wales"
+        ]
+       }
+      },
+      {
+       "name": "period",
+       "in": "query",
+       "required": true,
+       "description": "Half-hour start, ISO 8601 with a zone, on :00 or :30",
+       "schema": {
+        "type": "string",
+        "format": "date-time"
+       }
+      }
+     ],
+     "pay": {
+      "x402": {
+       "price_usdc": "0.02"
+      },
+      "credits": {
+       "price_gbp": 0.015
+      },
+      "session": {
+       "price_usdc": "0.02"
+      }
+     }
+    },
+    {
+     "id": "grid.stream",
+     "kind": "stream",
+     "path": "/v1/grid/{country}/stream",
+     "summary": "Server-sent events: the current forecast on connect, then each new version as it lands. Charged per event from an x402 session",
+     "parameters": [
+      {
+       "name": "country",
+       "in": "path",
+       "required": true,
+       "description": "GB country whose grid carbon intensity to read (NESO country forecast)",
+       "schema": {
+        "type": "string",
+        "enum": [
+         "england",
+         "scotland",
+         "wales"
+        ]
+       }
+      }
+     ],
+     "pay": {
+      "x402": null,
+      "credits": null,
+      "session": {
+       "price_usdc": "0.01"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "id": "sessions",
+   "name": "x402 sessions",
+   "description": "Prepay once with x402, then read any product at memory speed with Authorization: Session <token>. Each read spends the product's x402 price from the balance.",
+   "kind": "access",
+   "coverage": [],
+   "endpoints": [
+    {
+     "id": "sessions.sizes",
+     "kind": "free",
+     "path": "/v1/sessions/sizes",
+     "summary": "Session sizes you can buy, and how to use a session token",
+     "parameters": [],
+     "pay": {
+      "x402": null,
+      "credits": null,
+      "session": null
+     }
+    },
+    {
+     "id": "sessions.usd1",
+     "kind": "paid",
+     "path": "/v1/sessions/usd1",
+     "summary": "A $1 session, valid 1 h from settlement",
+     "parameters": [],
+     "pay": {
+      "x402": {
+       "price_usdc": "1"
+      },
+      "credits": null,
+      "session": null
+     }
+    },
+    {
+     "id": "sessions.usd5",
+     "kind": "paid",
+     "path": "/v1/sessions/usd5",
+     "summary": "A $5 session, valid 1 h from settlement",
+     "parameters": [],
+     "pay": {
+      "x402": {
+       "price_usdc": "5"
+      },
+      "credits": null,
+      "session": null
+     }
+    },
+    {
+     "id": "sessions.usd20",
+     "kind": "paid",
+     "path": "/v1/sessions/usd20",
+     "summary": "A $20 session, valid 1 h from settlement",
+     "parameters": [],
+     "pay": {
+      "x402": {
+       "price_usdc": "20"
+      },
+      "credits": null,
+      "session": null
+     }
+    }
+   ]
+  }
+ ]
+}

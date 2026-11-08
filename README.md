@@ -53,7 +53,7 @@ Install Foundry with `foundryup --install v1.8.5` (CI pins the same version). Co
 | `apps/ingest` | AIS ingest: own receivers (UDP/TCP NMEA), aisstream.io, simulator → NATS + Postgres |
 | `apps/ingest-env` | Environmental data ingest: stores every published NESO version in Postgres (`env_observation`), for point-in-time history |
 | `apps/facilitator` | Self-hosted x402 facilitator (`/supported`, `/verify`, `/settle`): the gateway's fallback when CDP is down, and the settlement path in e2e |
-| `apps/mcp` | MCP server (stdio) for agents, paying through the policy SDK |
+| `apps/mcp` | MCP server (stdio) for AI assistants: every product, sessions, spending limits ([setup](docs/mcp.md)) |
 | `packages/ais` | NMEA/AIS decoder, dedupe, traffic simulator |
 | `packages/policy-sdk` | Buyer-side policy engine (Product B, thin) |
 | `packages/reconcile` | Ledger against chain reconciliation: library (used by e2e) and the staging/production watch service |
