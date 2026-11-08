@@ -25,6 +25,7 @@ function browser(env: TestEnv, origin = ORIGIN) {
     return res;
   };
   return {
+    send,
     get: (path: string) => send(path),
     post: (path: string, form: Record<string, string> = {}) => send(path, { form }),
     get cookie() {
@@ -186,6 +187,17 @@ describe("customer sign-up, sign-in and account pages", () => {
     vi.setSystemTime(Date.parse("2026-11-08T12:15:01Z"));
     expect((await browser(env).post("/signin", { email: form.email, password: PASSWORD })).status).toBe(303);
   });
+
+  it("the per-IP sign-in limit can't be dodged by forging proxy headers the edge doesn't set", async () => {
+    const env = await createTestEnv({ CLIENT_IP_HEADER: "x-real-ip" });
+    const attempt = (i: number, headers: Record<string, string>) =>
+      browser(env).send("/signin", { headers, form: { email: `nobody-${i}@acme.test`, password: "not the password" } });
+    // 20 per 15 minutes from one client, each with a different forged CF-Connecting-IP and X-Forwarded-For.
+    for (let i = 0; i < 20; i++) expect((await attempt(i, { "x-real-ip": "203.0.113.7", "cf-connecting-ip": `10.0.0.${i}`, "x-forwarded-for": `10.1.0.${i}` })).status).toBe(401);
+    expect((await attempt(20, { "x-real-ip": "203.0.113.7", "cf-connecting-ip": "10.0.0.99", "x-forwarded-for": "10.1.0.99" })).status).toBe(429);
+    // A different client (as the edge reports it) has its own budget.
+    expect((await attempt(21, { "x-real-ip": "203.0.113.8" })).status).toBe(401);
+  }, 30_000); // 22 real scrypt verifications
 
   it("sessions expire", async () => {
     vi.useFakeTimers({ now: Date.parse("2026-11-08T12:00:00Z"), toFake: ["Date"] });

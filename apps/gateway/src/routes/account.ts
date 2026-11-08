@@ -83,7 +83,7 @@ export function accountRoutes(d: AppDeps) {
   r.post("/signup", async (c) => {
     const f = await form(c);
     const values = { company: f.company ?? "", email: f.email ?? "", country: f.country ?? "GB", taxId: f.taxId ?? "" };
-    if (!signUpLimit.hit(clientIp(c))) return page(c, signUpPage(opts, values, { form: "Too many sign-ups from your network. Try again later." }), 429);
+    if (!signUpLimit.hit(clientIp(c, d.cfg.CLIENT_IP_HEADER))) return page(c, signUpPage(opts, values, { form: "Too many sign-ups from your network. Try again later." }), 429);
     try {
       const res = await customers.signUp({ ...values, password: f.password });
       setSession(c, res.token, res.expiresAt);
@@ -107,7 +107,7 @@ export function accountRoutes(d: AppDeps) {
   r.post("/signin", async (c) => {
     const f = await form(c);
     const email = (f.email ?? "").trim();
-    if (!signInLimit.hit(clientIp(c))) return page(c, signInPage(opts, email, "Too many attempts from your network. Wait a few minutes and try again."), 429);
+    if (!signInLimit.hit(clientIp(c, d.cfg.CLIENT_IP_HEADER))) return page(c, signInPage(opts, email, "Too many attempts from your network. Wait a few minutes and try again."), 429);
     const res = await customers.signIn(email, f.password);
     if (!res.ok) {
       d.metrics.inc("account_signin_failed_total", { reason: res.reason });

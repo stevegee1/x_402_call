@@ -71,6 +71,12 @@ const schema = z
     STRIPE_WEBHOOK_SECRET: z.string().optional(),
 
     // Ops
+    /**
+     * The one header the edge proxy sets (and overwrites) with the client's IP, used for per-IP
+     * rate limits. Railway: x-real-ip. Behind Cloudflare: cf-connecting-ip. Never trust a header
+     * your edge doesn't overwrite, or clients choose their own rate-limit bucket.
+     */
+    CLIENT_IP_HEADER: z.enum(["x-real-ip", "cf-connecting-ip", "x-forwarded-for-first", "x-forwarded-for-last"]).default("x-real-ip"),
     ADMIN_TOKEN: z.string().min(24, "ADMIN_TOKEN must be at least 24 chars").optional(),
     /** "fixed" values every payment at FX_FALLBACK_USDC_GBP: hermetic tests only, refused in production. */
     FX_PROVIDER: z.enum(["coinbase", "fixed"]).default("coinbase"),

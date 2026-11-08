@@ -94,6 +94,9 @@ export default defineRailway((ctx) => {
       PUBLIC_BASE_URL: "https://${{RAILWAY_PUBLIC_DOMAIN}}",
       DATABASE_URL: db.env.DATABASE_URL,
       ADMIN_TOKEN: preserve(),
+      // Railway's edge overwrites X-Real-IP with the caller's address; verified on staging by
+      // forging it (docs/staging.md). Never X-Forwarded-For here: its last hop is an edge node.
+      CLIENT_IP_HEADER: "x-real-ip",
 
       X402_NETWORK: "eip155:84532",
       PAY_TO: STAGING_PAY_TO,
