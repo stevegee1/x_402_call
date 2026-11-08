@@ -27,6 +27,8 @@ export interface FreeRoute {
   product: Product;
   path: string;
   legacyPaths: string[];
+  /** One line for the catalog and API reference. */
+  summary?: string;
   handler: Handler;
 }
 
@@ -112,7 +114,7 @@ export class Catalog {
         },
         free: (path, handler, opts) => {
           if (!path.startsWith("/")) throw new CatalogError(`${p.id}: free path must start with /`);
-          const route: FreeRoute = { product: p, path: `/v1/${p.id}${path}`, legacyPaths: opts?.legacyPaths ?? [], handler };
+          const route: FreeRoute = { product: p, path: `/v1/${p.id}${path}`, legacyPaths: opts?.legacyPaths ?? [], summary: opts?.summary, handler };
           claim(`GET ${route.path}`);
           for (const l of route.legacyPaths) claim(`GET ${l}`);
           free.push(route);

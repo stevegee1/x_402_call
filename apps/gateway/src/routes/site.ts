@@ -317,7 +317,7 @@ ${mainnet ? "" : '<meta name="robots" content="noindex">\n'}<meta name="theme-co
 ${mainnet ? "" : `<div class="banner" role="note">Test environment. Payments use ${esc(network)} test USDC, so no real money moves.</div>`}
 <header class="appbar"><div class="wrap">
   <a class="brand" href="/">${BRAND_MARK}<span>wearebase</span></a>
-  <nav aria-label="Main"><a href="#offer">What we offer</a><a href="#how">How it works</a><a href="#how-to-use">How to use</a><a href="#pricing">Pricing</a>${d.identity ? '<a href="#identity">Identity</a>' : ""}<a href="/openapi.json">API</a></nav>
+  <nav aria-label="Main"><a href="#offer">What we offer</a><a href="#how">How it works</a><a href="#how-to-use">How to use</a><a href="#pricing">Pricing</a>${d.identity ? '<a href="#identity">Identity</a>' : ""}<a href="/catalog">Catalog</a><a href="/docs">API</a></nav>
   <div class="acts">${d.customers ? '<a class="btn text" href="/signin">Sign in</a><a class="btn filled" href="/signup">Get started</a>' : '<a class="btn text" href="#try">Try it</a><a class="btn filled" href="#how-to-use">Get started</a>'}</div>
 </div></header>
 <main id="main"><div class="wrap">
@@ -412,7 +412,7 @@ ${mainnet ? "" : `<div class="banner" role="note">Test environment. Payments use
   </section>
 </div></main>
 <footer><div class="wrap">
-  <nav aria-label="Footer"><a href="/openapi.json">API spec</a><a href="/status">Service status</a><a href="/v1/products">Catalog (JSON)</a></nav>
+  <nav aria-label="Footer"><a href="/catalog">Catalog</a><a href="/docs">API reference</a><a href="/openapi.json?format=json">openapi.json</a><a href="/status">Service status</a></nav>
   <div>Payments on ${esc(network)}.${grid ? " Grid data supported by National Energy SO Open Data; not provided or endorsed by NESO." : ""}</div>
 </div></footer>
 <script>${JS}</script>

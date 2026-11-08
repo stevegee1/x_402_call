@@ -153,6 +153,7 @@ export class GridProduct implements Product<GridState> {
         }),
         source: SOURCE,
       }),
+      { summary: "Countries covered, with forecast freshness and the paid endpoints for each" },
     );
 
     r.paid(

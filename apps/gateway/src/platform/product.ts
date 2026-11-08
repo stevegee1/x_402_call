@@ -103,7 +103,7 @@ export interface ProductRoutes<S> {
    */
   stream(resourceId: string, open: StreamOpen<S>): void;
   /** Free GET route under `/v1/<productId>`. */
-  free(path: string, handler: Handler, opts?: { legacyPaths?: string[] }): void;
+  free(path: string, handler: Handler, opts?: { legacyPaths?: string[]; summary?: string }): void;
   /** Operator route under `/admin/<productId>`, behind admin auth. */
   admin(method: "GET" | "POST" | "PUT", path: string, handler: Handler): void;
 }
