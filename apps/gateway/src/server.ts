@@ -1,7 +1,7 @@
 import { serve } from "@hono/node-server";
 import { CARBON_INTENSITY, EnvCache, EnvFollower, PgEnvStore } from "@mx/env";
 import { createApp } from "./app";
-import { loadConfig, isMainnet } from "./config";
+import { isMainnet, loadConfig, settleConcurrency } from "./config";
 import type { AppDeps } from "./context";
 import { StripeCheckout } from "./credits/checkout";
 import { CustomerAccounts } from "./customers/service";
@@ -129,6 +129,7 @@ const facilitator = new FailoverFacilitator(primary, fallback, (name, state) => 
   metrics.set("breaker_open", state === "open" ? 1 : 0, { breaker: name });
   log.warn({ breaker: name, state }, "circuit breaker state change");
 });
+facilitator.limitSettles(settleConcurrency(cfg), (queued) => metrics.inc("x402_settle_queued_total", { queued: queued > 4 ? "5+" : String(queued) }));
 const resourceServer = createResourceServer(facilitator, cfg.X402_NETWORK);
 await resourceServer.initialize();
 const requirements = new RequirementsCache(resourceServer, { payTo: cfg.PAY_TO, network: cfg.X402_NETWORK, maxTimeoutSeconds: cfg.MAX_TIMEOUT_SECONDS });
