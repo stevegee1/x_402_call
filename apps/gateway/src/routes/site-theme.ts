@@ -77,7 +77,7 @@ pre{background:var(--surface-c);border:1px solid var(--outline-v);border-radius:
 .chip.ok .dot{animation:pulse 2s var(--ease-std) infinite}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
 /* Forms (M3 outlined text fields) */
-.field{display:grid;gap:6px;margin:0 0 18px}
+.field{display:grid;gap:6px;margin:0 0 18px;align-content:start}
 .field label{font:500 14px/1.3 var(--font);color:var(--on-surface)}
 .field input,.field select{height:52px;border:1px solid var(--outline);border-radius:8px;background:var(--surface);color:var(--on-surface);padding:0 16px;font:400 16px/1 var(--font);width:100%;transition:border-color .2s var(--ease-std),box-shadow .2s var(--ease-std)}
 .field input:focus,.field select:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 1px var(--primary)}

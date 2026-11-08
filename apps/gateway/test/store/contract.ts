@@ -359,6 +359,93 @@ export function describeStoreContract(name: string, make: () => Promise<StoreHar
       });
     });
 
+    describe("customer accounts", () => {
+      const user = (email = `ops-${randomUUID()}@acme.test`) => ({ email, passwordHash: "scrypt$14$8$5$c2FsdA$aGFzaA" });
+      const key = () => ({ hash: keyHash(), prefix: "mk_test_abcd" });
+      const NOW = new Date("2026-11-08T12:00:00Z");
+
+      it("creates the account, its first key and its user together", async () => {
+        const k = key();
+        const u = user();
+        const r = await s.createCustomer(newAccount({ email: u.email }), u, k);
+        if (r === "email_taken") throw new Error("unexpected");
+        expect(r.user).toMatchObject({ accountId: r.account.id, email: u.email, passwordHash: u.passwordHash, failedLogins: 0, lockedUntil: null, lastLoginAt: null });
+        expect(await s.accountByKeyHash(k.hash)).toEqual(r.account);
+        expect(await s.customerByEmail(u.email.toUpperCase())).toEqual(r.user);
+        expect(await s.listApiKeys(r.account.id)).toEqual([{ id: expect.any(String), prefix: k.prefix, createdAt: expect.any(Date), revokedAt: null }]);
+      });
+
+      it("refuses a second user with the same email in any case, and creates nothing for it", async () => {
+        const u = user("Dup@Acme.test");
+        expect(await s.createCustomer(newAccount(), u, key())).not.toBe("email_taken");
+        const k = key();
+        expect(await s.createCustomer(newAccount({ company: "Second Ltd" }), user("dup@ACME.test"), k)).toBe("email_taken");
+        expect(await s.accountByKeyHash(k.hash)).toBeNull(); // the account and key were not kept either
+      });
+
+      it("concurrent sign-ups with one email: exactly one wins", async () => {
+        const results = await Promise.all(Array.from({ length: 8 }, () => s.createCustomer(newAccount(), user("race@acme.test"), key())));
+        expect(results.filter((r) => r !== "email_taken")).toHaveLength(1);
+      });
+
+      it("locks after the maximum failures, restarting the count; success clears everything", async () => {
+        const r = await s.createCustomer(newAccount(), user(), key());
+        if (r === "email_taken") throw new Error("unexpected");
+        for (let i = 0; i < 2; i++) await s.recordLoginFailure(r.user.id, NOW, 3, 60_000);
+        expect(await s.customerByEmail(r.user.email)).toMatchObject({ failedLogins: 2, lockedUntil: null });
+        await s.recordLoginFailure(r.user.id, NOW, 3, 60_000);
+        expect(await s.customerByEmail(r.user.email)).toMatchObject({ failedLogins: 0, lockedUntil: new Date(NOW.getTime() + 60_000) });
+        await s.recordLoginFailure(r.user.id, NOW, 3, 60_000);
+        await s.recordLoginSuccess(r.user.id, NOW);
+        expect(await s.customerByEmail(r.user.email)).toMatchObject({ failedLogins: 0, lockedUntil: null, lastLoginAt: NOW });
+      });
+
+      it("concurrent failures all count", async () => {
+        const r = await s.createCustomer(newAccount(), user(), key());
+        if (r === "email_taken") throw new Error("unexpected");
+        await Promise.all(Array.from({ length: 5 }, () => s.recordLoginFailure(r.user.id, NOW, 100, 60_000)));
+        expect((await s.customerByEmail(r.user.email))!.failedLogins).toBe(5);
+      });
+
+      it("web sessions: found while live, gone once expired or revoked", async () => {
+        const r = await s.createCustomer(newAccount(), user(), key());
+        if (r === "email_taken") throw new Error("unexpected");
+        await s.createWebSession("h1", r.user.id, new Date(NOW.getTime() + 1_000));
+        expect(await s.webSession("h1", NOW)).toEqual({ user: r.user, account: r.account });
+        expect(await s.webSession("h1", new Date(NOW.getTime() + 1_000))).toBeNull();
+        await s.createWebSession("h2", r.user.id, new Date(NOW.getTime() + 60_000));
+        await s.revokeWebSession("h2");
+        expect(await s.webSession("h2", NOW)).toBeNull();
+        expect(await s.webSession("unknown", NOW)).toBeNull();
+      });
+
+      it("the session sees the account's current balance", async () => {
+        const r = await s.createCustomer(newAccount(), user(), key());
+        if (r === "email_taken") throw new Error("unexpected");
+        await s.createWebSession("h3", r.user.id, new Date(NOW.getTime() + 60_000));
+        await s.applyTopUp({ ref: "seed-h3", accountId: r.account.id, netMicros: 5_000_000, vatMicros: 1_000_000 }, topUpJournal(r.account.id, "seed-h3", 5_000_000, 1_000_000));
+        expect((await s.webSession("h3", NOW))!.account.balanceMicros).toBe(5_000_000);
+      });
+
+      it("adds and revokes keys; a revoked key stops resolving; another account can't revoke it", async () => {
+        const a = await s.createCustomer(newAccount(), user(), key());
+        const b = await s.createCustomer(newAccount(), user(), key());
+        if (a === "email_taken" || b === "email_taken") throw new Error("unexpected");
+        const h = keyHash();
+        const added = await s.addApiKey(a.account.id, h, "mk_test_zzzz");
+        expect(added).toMatchObject({ prefix: "mk_test_zzzz", revokedAt: null });
+        expect((await s.accountByKeyHash(h))!.id).toBe(a.account.id);
+        expect(await s.revokeApiKey(b.account.id, added.id)).toBe(false);
+        expect(await s.revokeApiKey(a.account.id, "not-a-uuid")).toBe(false);
+        expect(await s.revokeApiKey(a.account.id, added.id)).toBe(true);
+        expect(await s.revokeApiKey(a.account.id, added.id)).toBe(false);
+        expect(await s.accountByKeyHash(h)).toBeNull();
+        const keys = await s.listApiKeys(a.account.id);
+        expect(keys).toHaveLength(2);
+        expect(keys.find((k) => k.id === added.id)!.revokedAt).toBeInstanceOf(Date);
+      });
+    });
+
     describe("credits", () => {
       it("creates an active, zero-balance account with an upper-cased country, found by key hash", async () => {
         const h = keyHash();

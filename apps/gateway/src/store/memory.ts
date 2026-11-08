@@ -12,7 +12,7 @@ import {
   type JournalEntry,
   type JournalInput,
 } from "../ledger/journal";
-import type { AdmitOptions, Admission, CreditAccount, NewAccount, NewPayment, PaymentRow, PaymentStatus, PolicyEventRow, ReserveResult, SessionRow, SessionUsage, Store, SyncReason, UsageRow } from "./types";
+import type { AdmitOptions, Admission, ApiKeyInfo, CreditAccount, CustomerUser, NewAccount, NewPayment, PaymentRow, PaymentStatus, PolicyEventRow, ReserveResult, SessionRow, SessionUsage, Store, SyncReason, UsageRow } from "./types";
 
 /**
  * In-memory Store for tests and zero-dependency local runs. Not durable: never used when
@@ -23,6 +23,9 @@ export class MemoryStore implements Store {
   private nonces = new Set<string>();
   private accounts = new Map<string, CreditAccount>();
   private keys = new Map<string, string>();
+  private keyInfo = new Map<string, ApiKeyInfo & { hash: string; accountId: string }>();
+  private users = new Map<string, CustomerUser>();
+  private webSessions = new Map<string, { userId: string; expiresAt: Date; revokedAt: Date | null }>();
   private topups = new Set<string>();
   private usageRows = new Map<string, UsageRow[]>();
   private entries: JournalEntry[] = [];
@@ -141,11 +144,91 @@ export class MemoryStore implements Store {
     return { totalAtomic: e.total, payers: e.payers };
   }
 
-  async createAccount(a: NewAccount, keyHash: string, _keyPrefix: string) {
+  async createAccount(a: NewAccount, keyHash: string, keyPrefix: string) {
+    return this.createAccountNow(a, keyHash, keyPrefix);
+  }
+
+  private createAccountNow(a: NewAccount, keyHash: string, keyPrefix: string): CreditAccount {
     const acct: CreditAccount = { id: randomUUID(), ...a, country: a.country.toUpperCase(), balanceMicros: 0, status: "active", createdAt: new Date() };
     this.accounts.set(acct.id, acct);
-    this.keys.set(keyHash, acct.id);
+    this.addKeyNow(acct.id, keyHash, keyPrefix);
     return { ...acct };
+  }
+
+  private addKeyNow(accountId: string, hash: string, prefix: string): ApiKeyInfo {
+    const k = { id: randomUUID(), prefix, createdAt: new Date(), revokedAt: null, hash, accountId };
+    this.keyInfo.set(k.id, k);
+    this.keys.set(hash, accountId);
+    return { id: k.id, prefix, createdAt: k.createdAt, revokedAt: null };
+  }
+
+  // No await between the email check and the inserts, so concurrent sign-ups can't share an email.
+  async createCustomer(a: NewAccount, user: { email: string; passwordHash: string }, key: { hash: string; prefix: string }) {
+    const email = user.email.toLowerCase();
+    for (const u of this.users.values()) if (u.email.toLowerCase() === email) return "email_taken" as const;
+    const account = this.createAccountNow(a, key.hash, key.prefix);
+    const u: CustomerUser = { id: randomUUID(), accountId: account.id, email: user.email, passwordHash: user.passwordHash, failedLogins: 0, lockedUntil: null, createdAt: new Date(), lastLoginAt: null };
+    this.users.set(u.id, u);
+    return { account, user: { ...u } };
+  }
+
+  async customerByEmail(email: string) {
+    const e = email.toLowerCase();
+    for (const u of this.users.values()) if (u.email.toLowerCase() === e) return { ...u };
+    return null;
+  }
+
+  async recordLoginFailure(userId: string, now: Date, maxFailures: number, lockMs: number) {
+    const u = this.users.get(userId);
+    if (!u) return;
+    if (u.failedLogins + 1 >= maxFailures) {
+      u.failedLogins = 0;
+      u.lockedUntil = new Date(now.getTime() + lockMs);
+    } else u.failedLogins += 1;
+  }
+
+  async recordLoginSuccess(userId: string, now: Date) {
+    const u = this.users.get(userId);
+    if (!u) return;
+    u.failedLogins = 0;
+    u.lockedUntil = null;
+    u.lastLoginAt = now;
+  }
+
+  async createWebSession(tokenHash: string, userId: string, expiresAt: Date) {
+    this.webSessions.set(tokenHash, { userId, expiresAt, revokedAt: null });
+  }
+
+  async webSession(tokenHash: string, now: Date) {
+    const s = this.webSessions.get(tokenHash);
+    if (!s || s.revokedAt || s.expiresAt <= now) return null;
+    const user = this.users.get(s.userId);
+    const account = user && this.accounts.get(user.accountId);
+    return user && account ? { user: { ...user }, account: { ...account } } : null;
+  }
+
+  async revokeWebSession(tokenHash: string) {
+    const s = this.webSessions.get(tokenHash);
+    if (s && !s.revokedAt) s.revokedAt = new Date();
+  }
+
+  async listApiKeys(accountId: string) {
+    return [...this.keyInfo.values()]
+      .filter((k) => k.accountId === accountId)
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+      .map(({ id, prefix, createdAt, revokedAt }) => ({ id, prefix, createdAt, revokedAt }));
+  }
+
+  async addApiKey(accountId: string, hash: string, prefix: string) {
+    return this.addKeyNow(accountId, hash, prefix);
+  }
+
+  async revokeApiKey(accountId: string, keyId: string) {
+    const k = this.keyInfo.get(keyId);
+    if (!k || k.accountId !== accountId || k.revokedAt) return false;
+    k.revokedAt = new Date();
+    this.keys.delete(k.hash);
+    return true;
   }
 
   async accountByKeyHash(hash: string) {

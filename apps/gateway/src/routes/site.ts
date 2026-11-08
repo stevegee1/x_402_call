@@ -268,8 +268,8 @@ curl -H "Authorization: Session $TOKEN" \\
     : "";
   const business = `<div class="panel" role="tabpanel" id="panel-business" aria-labelledby="tab-business">
     <ol>
-      <li><b>Create a business account.</b> You get an API key once; keep it safe.</li>
-      <li><b>Top up in GBP</b> by card or bank transfer. VAT is charged at top-up, so per-call prices exclude it.</li>
+      <li><b>Create a business account</b>${d.customers ? ` <a href="/signup">here</a>, or with the API` : ""}. You get an API key once; keep it safe.</li>
+      <li><b>Top up in GBP</b>${d.customers ? ` from your <a href="/account">account page</a>` : ""} by card or bank transfer. VAT is charged at top-up, so per-call prices exclude it.</li>
       <li><b>Call endpoints with your key.</b> Each response shows what was charged and your balance.</li>
     </ol>
     <div><pre tabindex="0"><code>curl -X POST ${esc(base)}/v1/credits/accounts \\
@@ -318,7 +318,7 @@ ${mainnet ? "" : `<div class="banner" role="note">Test environment. Payments use
 <header class="appbar"><div class="wrap">
   <a class="brand" href="/">${BRAND_MARK}<span>wearebase</span></a>
   <nav aria-label="Main"><a href="#offer">What we offer</a><a href="#how">How it works</a><a href="#how-to-use">How to use</a><a href="#pricing">Pricing</a>${d.identity ? '<a href="#identity">Identity</a>' : ""}<a href="/openapi.json">API</a></nav>
-  <div class="acts"><a class="btn text" href="#try">Try it</a><a class="btn filled" href="#how-to-use">Get started</a></div>
+  <div class="acts">${d.customers ? '<a class="btn text" href="/signin">Sign in</a><a class="btn filled" href="/signup">Get started</a>' : '<a class="btn text" href="#try">Try it</a><a class="btn filled" href="#how-to-use">Get started</a>'}</div>
 </div></header>
 <main id="main"><div class="wrap">
   <div class="hero">
@@ -326,7 +326,7 @@ ${mainnet ? "" : `<div class="banner" role="note">Test environment. Payments use
       <span class="overline">x402${d.identity ? " · ERC-8004" : ""} · USDC on ${esc(network)}</span>
       <h1>Intelligence your AI can buy, one request at a time.</h1>
       <p class="lede">Maritime and energy-grid data, cleaned and ready for models. Your agent sees the price, pays in USDC with x402 and gets the answer, with no sign-up or contract. Businesses can prepay in GBP.</p>
-      <div class="actions"><a class="btn filled lg" href="#how-to-use">Get started</a><a class="btn tonal lg" href="#how">See how it works</a></div>
+      <div class="actions"><a class="btn filled lg" href="#how-to-use">Start building</a><a class="btn tonal lg" href="#how">See how it works</a></div>
       <ul class="stats">
         <li><b>$${from}</b><span>from, per request</span></li>
         <li><b>In memory</b><span>reads with x402 sessions</span></li>
