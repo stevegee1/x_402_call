@@ -35,7 +35,7 @@ export function maritimeRoutes(r: ProductRoutes<RegionSnapshot>, p: MaritimeProd
           };
         }),
       }),
-    { legacyPaths: ["/v1/regions"] },
+    { legacyPaths: ["/v1/regions"], summary: "Regions covered, with live status, anchorages and the paid endpoints for each" },
   );
 
   r.paid("maritime.vessels", (c, s) => {

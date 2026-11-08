@@ -50,6 +50,7 @@ export class SessionsProduct implements Product<null> {
         data: this.resources.map((res) => ({ id: res.id, price_usdc: res.pricing.priceUsd, buy: `/v1/sessions${res.path}`, description: res.summary })),
         usage: "Authorization: Session <token>",
       }),
+      { summary: "Session sizes you can buy, and how to use a session token" },
     );
     for (const res of this.resources) {
       r.paid(res.id, async (c) => {
