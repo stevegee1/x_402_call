@@ -131,6 +131,18 @@ async function main() {
     const rows = (await evaluate(`[document.querySelectorAll("#sessions-body tr").length, document.querySelectorAll("#payments-body tr").length]`)) as number[];
     step(`activity: ${rows[0]} sessions, ${rows[1]} payments`);
 
+    // Back on the page later: reconnects by itself (no prompt, no click).
+    await send("Page.reload");
+    await until("silent reconnect", `!document.getElementById("connected").hidden`, 15_000);
+    if (await evaluate(`!document.querySelector("[data-size]").disabled`)) step("reload: reconnected without a click, buy buttons enabled");
+    // Disconnect: forgotten, and stays disconnected after a reload.
+    await evaluate(`document.getElementById("disconnect").click()`);
+    await sleep(1500);
+    await until("connect button after disconnect", `!!document.querySelector("#choices button")`);
+    await sleep(1000);
+    if (await evaluate(`document.getElementById("connected").hidden && document.querySelector("[data-size]").disabled`)) step("disconnect: stays disconnected after reload");
+    else throw new Error("still connected after disconnect");
+
     const shot = (await send("Page.captureScreenshot", { format: "png" })).data as string;
     const file = join(profile, "wallet.png");
     writeFileSync(file, Buffer.from(shot, "base64"));

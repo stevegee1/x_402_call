@@ -154,25 +154,58 @@ export const WALLET_UI_JS = `
   window.dispatchEvent(new Event("eip6963:requestProvider"));
   setTimeout(function () {
     if (!state.providers.length && window.ethereum) { state.providers.push({ info: { uuid: "injected", name: "Browser wallet" }, provider: window.ethereum }); renderChoices(); }
-    if (!state.providers.length) show("no-wallet", true);
+    if (!state.providers.length) { show("no-wallet", true); return; }
+    reconnect();
   }, 400);
+
+  // Which wallet this visitor last connected (a per-browser convenience; storage may be blocked).
+  var KEY = "wb_wallet";
+  function idOf(p) { return p.info.rdns || p.info.uuid; }
+  function remembered() { try { return localStorage.getItem(KEY); } catch (e) { return null; } }
+  function remember(p) { try { if (p) localStorage.setItem(KEY, idOf(p)); else localStorage.removeItem(KEY); } catch (e) {} }
+
+  /**
+   * Back on the page with a wallet that already approved this site: reconnect without a prompt
+   * (eth_accounts never prompts). Never pop a wallet window on page load: on the wrong network, or
+   * if anything fails, leave the Connect button.
+   */
+  async function reconnect() {
+    var id = remembered(); if (!id) return;
+    var p = state.providers.filter(function (x) { return idOf(x) === id; })[0]; if (!p) return;
+    try {
+      var accounts = await p.provider.request({ method: "eth_accounts" });
+      if (!accounts || !accounts.length) return;
+      var have = await p.provider.request({ method: "eth_chainId" });
+      if (String(have).toLowerCase() !== "0x" + chainId.toString(16)) return;
+      await connect(p, accounts);
+    } catch (e) {}
+  }
 
   function renderChoices() {
     var box = $("choices"); box.textContent = ""; show("no-wallet", false);
     state.providers.forEach(function (p) {
       var b = document.createElement("button"); b.type = "button"; b.className = "btn filled"; b.textContent = "Connect " + p.info.name;
-      b.addEventListener("click", function () { connect(p.provider); });
+      b.addEventListener("click", function () { connect(p); });
       box.appendChild(b);
     });
   }
 
-  async function connect(provider) {
-    status("connect-msg", "info", "Check your wallet to connect…");
+  $("disconnect").addEventListener("click", async function () {
+    remember(null);
+    // Also drop the site's permission where the wallet supports it (MetaMask does); harmless otherwise.
+    try { await state.provider.request({ method: "wallet_revokePermissions", params: [{ eth_accounts: {} }] }); } catch (e) {}
+    location.reload();
+  });
+
+  async function connect(p, known) {
+    var provider = p.provider;
+    if (!known) status("connect-msg", "info", "Check your wallet to connect…");
     try {
-      var accounts = await provider.request({ method: "eth_requestAccounts" });
+      var accounts = known || await provider.request({ method: "eth_requestAccounts" });
       if (!accounts || !accounts.length) throw new Error("no account selected");
-      await core.ensureChain(provider, chainId);
+      if (!known) await core.ensureChain(provider, chainId);
       state.provider = provider; state.address = accounts[0];
+      remember(p);
       provider.on && provider.on("accountsChanged", function () { location.reload(); });
       provider.on && provider.on("chainChanged", function () { location.reload(); });
       status("connect-msg", "", "");

@@ -4,6 +4,7 @@ import { isMainnet } from "../config";
 import type { AppDeps, AppEnv } from "../context";
 import { CreditsError } from "../credits/service";
 import { accountPage, ACCOUNT_HEADERS, errorPage, newKeyPage, signInPage, signUpPage, type AccountView, type PageOpts } from "./account-pages";
+import { sessionCookieName } from "../customers/web-session";
 import { clientIp, WindowLimiter } from "./limits";
 
 const NETWORK_NAMES: Record<string, string> = { "eip155:8453": "Base", "eip155:84532": "Base Sepolia" };
@@ -40,7 +41,7 @@ export function accountRoutes(d: AppDeps) {
   if (!customers) return r;
   const base = new URL(d.cfg.PUBLIC_BASE_URL);
   const secure = base.protocol === "https:";
-  const COOKIE = secure ? "__Host-wb_session" : "wb_session";
+  const COOKIE = sessionCookieName(d.cfg);
   const opts: PageOpts = { testnet: isMainnet(d.cfg) ? null : (NETWORK_NAMES[d.cfg.X402_NETWORK] ?? d.cfg.X402_NETWORK), base: d.cfg.PUBLIC_BASE_URL };
   const signInLimit = new WindowLimiter(20, 15 * 60_000);
   const signUpLimit = new WindowLimiter(10, 60 * 60_000);

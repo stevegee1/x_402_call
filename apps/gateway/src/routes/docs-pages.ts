@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import { isMainnet } from "../config";
 import type { AppDeps } from "../context";
 import { catalogView, type EndpointView, type ProductView, type ScopeView } from "./catalog-model";
+import type { Viewer } from "../customers/web-session";
+import { headerActs } from "./site";
 import { BRAND_MARK, esc, FAVICON, THEME_CSS } from "./site-theme";
 
 /**
@@ -78,9 +80,9 @@ export const DOCS_HEADERS: Record<string, string> = {
   "content-security-policy": DOCS_CSP,
   "x-content-type-options": "nosniff",
   "referrer-policy": "strict-origin-when-cross-origin",
-  // Live coverage on the page: short shared cache; never serve HTML to a JSON client.
-  "cache-control": "public, max-age=30",
-  vary: "Accept",
+  // Per-visitor header (signed in or not): never cache shared; never serve HTML to a JSON client.
+  "cache-control": "private, no-cache",
+  vary: "Accept, Cookie",
 };
 
 const NETWORK_NAMES: Record<string, string> = { "eip155:8453": "Base", "eip155:84532": "Base Sepolia" };
@@ -94,6 +96,8 @@ export interface ShellOptions {
   css?: string;
   /** Page script (hash-pinned in the CSP). */
   script?: string;
+  /** The signed-in customer, if any (header shows their account instead of sign in). */
+  viewer?: Viewer | null;
 }
 
 /** The CSP for a page built with pageShell: one style hash, and a script hash only if it has one. */
@@ -134,7 +138,7 @@ ${mainnet ? "" : `<div class="banner" role="note">Test environment. Payments use
 <header class="appbar"><div class="wrap">
   <a class="brand" href="/">${BRAND_MARK}<span>wearebase</span></a>
   <nav aria-label="Main">${nav("/#offer", "What we offer")}${nav("/catalog", "Catalog", "catalog")}${nav("/docs", "API reference", "docs")}${nav("/wallet", "Wallet", "wallet")}${nav("/#pricing", "Pricing")}</nav>
-  <div class="acts">${d.customers ? '<a class="btn text" href="/signin">Sign in</a><a class="btn filled" href="/signup">Get started</a>' : '<a class="btn filled" href="/#how-to-use">Get started</a>'}</div>
+  <div class="acts">${headerActs(d, o.viewer, '<a class="btn filled" href="/#how-to-use">Get started</a>')}</div>
 </div></header>
 <main id="main">${o.body}</main>
 <footer><div class="wrap">
@@ -213,7 +217,7 @@ ${sizes.map((e) => `<tr><td>${methodBadge(e)}<span class="ep-path">${esc(e.path)
 </div></section>`;
 }
 
-export function renderCatalogPage(d: AppDeps): string {
+export function renderCatalogPage(d: AppDeps, viewer?: Viewer | null): string {
   const views = catalogView(d);
   const data = views.filter((v) => v.kind === "data");
   const access = views.filter((v) => v.kind === "access");
@@ -227,7 +231,7 @@ export function renderCatalogPage(d: AppDeps): string {
 ${data.map(dataProductSection).join("\n")}
 ${access.map(accessSection).join("\n")}
 </div>`;
-  return shell(d, { title: "Data catalog", description: "Products, live coverage and per-call prices.", active: "catalog", body });
+  return shell(d, { title: "Data catalog", description: "Products, live coverage and per-call prices.", active: "catalog", body, viewer });
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -289,7 +293,7 @@ ${responsesList(spec, e)}
 </article>`;
 }
 
-export function renderDocsPage(d: AppDeps, spec: OpenApiLike): string {
+export function renderDocsPage(d: AppDeps, spec: OpenApiLike, viewer?: Viewer | null): string {
   const base = d.cfg.PUBLIC_BASE_URL;
   const views = catalogView(d);
   const links = `<ul>
@@ -338,5 +342,5 @@ ${views
   )
   .join("\n")}
 </div></div></div>`;
-  return shell(d, { title: "API reference", description: "Endpoints, parameters, prices and how to pay.", active: "docs", body });
+  return shell(d, { title: "API reference", description: "Endpoints, parameters, prices and how to pay.", active: "docs", body, viewer });
 }

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { isMainnet } from "../config";
+import type { Viewer } from "../customers/web-session";
 import type { AppDeps } from "../context";
 import type { PricedResource, Product } from "../platform/product";
 import { agentsScene, maritimeScene, paymentScene, SCENES_CSS, tradingScene } from "./site-scenes";
@@ -287,7 +288,13 @@ curl -H "Authorization: Bearer mk_..." ${esc(target)}</code></pre></div>
   </section>`;
 }
 
-export function renderSite(d: AppDeps): string {
+/** Header actions: a signed-in customer gets their account, everyone else sign in / get started. */
+export function headerActs(d: AppDeps, viewer: Viewer | null | undefined, anon: string): string {
+  if (viewer) return `<a class="btn filled" href="/account" title="${esc(viewer.company)}">Your account</a>`;
+  return d.customers ? '<a class="btn text" href="/signin">Sign in</a><a class="btn filled" href="/signup">Get started</a>' : anon;
+}
+
+export function renderSite(d: AppDeps, viewer?: Viewer | null): string {
   const base = d.cfg.PUBLIC_BASE_URL;
   const mainnet = isMainnet(d.cfg);
   const network = NETWORK_NAMES[d.cfg.X402_NETWORK] ?? d.cfg.X402_NETWORK;
@@ -318,7 +325,7 @@ ${mainnet ? "" : `<div class="banner" role="note">Test environment. Payments use
 <header class="appbar"><div class="wrap">
   <a class="brand" href="/">${BRAND_MARK}<span>wearebase</span></a>
   <nav aria-label="Main"><a href="#offer">What we offer</a><a href="#how">How it works</a><a href="#how-to-use">How to use</a><a href="#pricing">Pricing</a>${d.identity ? '<a href="#identity">Identity</a>' : ""}<a href="/catalog">Catalog</a><a href="/docs">API</a><a href="/wallet">Wallet</a></nav>
-  <div class="acts">${d.customers ? '<a class="btn text" href="/signin">Sign in</a><a class="btn filled" href="/signup">Get started</a>' : '<a class="btn text" href="#try">Try it</a><a class="btn filled" href="#how-to-use">Get started</a>'}</div>
+  <div class="acts">${headerActs(d, viewer, '<a class="btn text" href="#try">Try it</a><a class="btn filled" href="#how-to-use">Get started</a>')}</div>
 </div></header>
 <main id="main"><div class="wrap">
   <div class="hero">
@@ -433,7 +440,8 @@ export const SITE_HEADERS: Record<string, string> = {
   "content-security-policy": SITE_CSP,
   "x-content-type-options": "nosniff",
   "referrer-policy": "strict-origin-when-cross-origin",
-  // Live status on the page: short shared cache, and never serve the HTML to a JSON client.
-  "cache-control": "public, max-age=30",
-  vary: "Accept",
+  // The header differs for a signed-in visitor, so never cache it shared; never serve the HTML to a
+  // JSON client.
+  "cache-control": "private, no-cache",
+  vary: "Accept, Cookie",
 };
