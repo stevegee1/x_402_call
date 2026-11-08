@@ -22,13 +22,23 @@ const loadCore = (): Core => runInNewContext(`${WALLET_CORE_JS};core`, { crypto:
  * A browser wallet stand-in: EIP-1193 requests answered the way MetaMask answers them (decimal
  * strings in typed data, lowercase addresses), signed by a real key.
  */
-function wallet(account: PrivateKeyAccount, opts: { chainId?: string; usdcAtomic?: bigint; reject?: string } = {}) {
+function wallet(account: PrivateKeyAccount, opts: { chainId?: string; usdcAtomic?: bigint; reject?: string; locked?: boolean; staleOnce?: boolean; unlockAs?: PrivateKeyAccount } = {}) {
   const calls: string[] = [];
   const provider = {
     request: async ({ method, params }: { method: string; params?: unknown[] }) => {
       calls.push(method);
       if (opts.reject === method) throw Object.assign(new Error("User rejected the request."), { code: 4001 });
+      // A locked wallet (or one whose site access was removed) lists no accounts and refuses to sign.
+      if ((method === "personal_sign" || method === "eth_signTypedData_v4") && (opts.locked || opts.staleOnce)) {
+        opts.staleOnce = false;
+        throw Object.assign(new Error("The requested account and/or method has not been authorized by the user."), { code: 4100 });
+      }
       switch (method) {
+        case "eth_accounts":
+          return opts.locked ? [] : [account.address.toLowerCase()];
+        case "eth_requestAccounts": // the unlock / connect prompt
+          opts.locked = false;
+          return [(opts.unlockAs ?? account).address.toLowerCase()];
         case "eth_chainId":
           return opts.chainId ?? "0x14a34";
         case "wallet_switchEthereumChain":
@@ -71,7 +81,7 @@ describe("pay from a browser wallet (/wallet)", () => {
     const s = await loadCore().buySession(w.provider, fetchVia(env), { base: BASE_URL, network: NETWORK, size: "usd1", from: account.address.toLowerCase() });
     expect(s.session_token).toMatch(/^ses_/);
     expect(s.amount_usdc).toBe("1");
-    expect(w.calls).toEqual(["eth_chainId", "eth_call", "eth_signTypedData_v4"]); // no transaction, no gas
+    expect(w.calls).toEqual(["eth_chainId", "eth_call", "eth_accounts", "eth_signTypedData_v4"]); // no transaction, no gas
     expect(env.facilitator.settled).toHaveLength(1);
 
     const read = await env.fetch(`${BASE_URL}/v1/maritime/dover/vessels`, { headers: { authorization: `Session ${s.session_token}` } });
@@ -104,7 +114,12 @@ describe("pay from a browser wallet (/wallet)", () => {
     const other = privateKeyToAccount(generatePrivateKey());
     // The page claims to be `other`, but the wallet signs with `signer`.
     const w = wallet(signer);
-    const p = { request: async (a: { method: string; params?: unknown[] }) => (a.method === "eth_signTypedData_v4" ? w.provider.request({ ...a, params: [signer.address, a.params![1]] }) : w.provider.request(a)) };
+    // A lying wallet: claims `other` (so the page's own check passes) but signs with `signer`. The
+    // server must still refuse it.
+    const p = {
+      request: async (a: { method: string; params?: unknown[] }) =>
+        a.method === "eth_accounts" ? [other.address] : a.method === "eth_signTypedData_v4" ? w.provider.request({ ...a, params: [signer.address, a.params![1]] }) : w.provider.request(a),
+    };
     await expect(loadCore().buySession(p, fetchVia(env), { base: BASE_URL, network: NETWORK, size: "usd1", from: other.address })).rejects.toMatchObject({ status: 402 });
     expect(env.facilitator.settled).toHaveLength(0);
   });
@@ -126,6 +141,53 @@ describe("pay from a browser wallet (/wallet)", () => {
     const b = await core.activity(wallet(stranger).provider, fetchVia(env), { base: BASE_URL, from: stranger.address });
     expect(b.payments).toHaveLength(0);
     expect(b.sessions).toHaveLength(0);
+  });
+});
+
+describe("a wallet that locked itself or lost the site's access", () => {
+  it("asks the wallet to unlock, then signs: activity works (the 4100 'not authorized' case)", async () => {
+    const env = await createTestEnv({}, { sessions: true });
+    const account = privateKeyToAccount(generatePrivateKey());
+    const w = wallet(account, { locked: true });
+    const a = await loadCore().activity(w.provider, fetchVia(env), { base: BASE_URL, from: account.address });
+    expect(a.address).toBe(account.address);
+    expect(w.calls).toEqual(["eth_accounts", "eth_requestAccounts", "eth_accounts", "personal_sign"]);
+  });
+
+  it("buying works too when the wallet locked after connecting", async () => {
+    const env = await createTestEnv({}, { sessions: true });
+    const account = privateKeyToAccount(generatePrivateKey());
+    const w = wallet(account, { locked: true });
+    const s = await loadCore().buySession(w.provider, fetchVia(env), { base: BASE_URL, network: NETWORK, size: "usd1", from: account.address, checkBalance: false });
+    expect(s.session_token).toMatch(/^ses_/);
+    expect(w.calls).toContain("eth_requestAccounts");
+  });
+
+  it("retries once after re-asking when the wallet says 4100 despite listing the account", async () => {
+    const env = await createTestEnv({}, { sessions: true });
+    const account = privateKeyToAccount(generatePrivateKey());
+    const w = wallet(account, { staleOnce: true });
+    await loadCore().activity(w.provider, fetchVia(env), { base: BASE_URL, from: account.address });
+    expect(w.calls.filter((m) => m === "personal_sign")).toHaveLength(2);
+    expect(w.calls).toContain("eth_requestAccounts");
+  });
+
+  it("never signs as a different account than the page shows", async () => {
+    const env = await createTestEnv({}, { sessions: true });
+    const shown = privateKeyToAccount(generatePrivateKey());
+    const other = privateKeyToAccount(generatePrivateKey());
+    const w = wallet(shown, { locked: true, unlockAs: other });
+    await expect(loadCore().buySession(w.provider, fetchVia(env), { base: BASE_URL, network: NETWORK, size: "usd1", from: shown.address, checkBalance: false })).rejects.toThrow("account_changed");
+    expect(w.calls).not.toContain("eth_signTypedData_v4");
+    expect(env.facilitator.settled).toHaveLength(0);
+  });
+
+  it("if the person won't unlock, nothing is signed", async () => {
+    const env = await createTestEnv({}, { sessions: true });
+    const account = privateKeyToAccount(generatePrivateKey());
+    const w = wallet(account, { locked: true, reject: "eth_requestAccounts" });
+    await expect(loadCore().activity(w.provider, fetchVia(env), { base: BASE_URL, from: account.address })).rejects.toMatchObject({ code: 4001 });
+    expect(w.calls).not.toContain("personal_sign");
   });
 });
 
