@@ -135,7 +135,15 @@ export function accountRoutes(d: AppDeps) {
   r.get("/account", async (c) => {
     const s = await current(c);
     if (!s) return seeOther(c, "/signin");
-    return page(c, accountPage(opts, await view(s)));
+    // Back from Stripe Checkout. Credits land when Stripe's webhook confirms, usually within seconds.
+    const topup = c.req.query("topup");
+    const notice: AccountView["notice"] =
+      topup === "success"
+        ? { kind: "ok", text: "Payment received. Your balance updates as soon as Stripe confirms it, usually within a few seconds; refresh to see it." }
+        : topup === "cancelled"
+          ? { kind: "info", text: "Top-up cancelled. You weren't charged." }
+          : undefined;
+    return page(c, accountPage(opts, await view(s, notice)));
   });
 
   r.post("/account/keys", async (c) => {

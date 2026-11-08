@@ -65,8 +65,12 @@ export function creditsRoutes(d: AppDeps) {
     return c.json({ checkout_url: session.url, session_id: session.id });
   });
 
-  r.get("/v1/credits/checkout/success", (c) => c.text("Payment received. Credits are applied once Stripe confirms the payment (usually seconds)."));
-  r.get("/v1/credits/checkout/cancelled", (c) => c.text("Checkout cancelled. No charge was made."));
+  // Stripe sends the buyer back here. With customer accounts, return them to their dashboard;
+  // otherwise (API-only deployments) a plain confirmation.
+  r.get("/v1/credits/checkout/success", (c) =>
+    d.customers ? c.redirect("/account?topup=success", 303) : c.text("Payment received. Credits are applied once Stripe confirms the payment (usually seconds)."),
+  );
+  r.get("/v1/credits/checkout/cancelled", (c) => (d.customers ? c.redirect("/account?topup=cancelled", 303) : c.text("Checkout cancelled. No charge was made.")));
 
   r.post("/v1/stripe/webhook", async (c) => {
     const sig = c.req.header("stripe-signature");
