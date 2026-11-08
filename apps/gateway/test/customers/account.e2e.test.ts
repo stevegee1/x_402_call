@@ -186,7 +186,7 @@ describe("customer sign-up, sign-in and account pages", () => {
     expect(await locked.text()).toContain("locked");
     vi.setSystemTime(Date.parse("2026-11-08T12:15:01Z"));
     expect((await browser(env).post("/signin", { email: form.email, password: PASSWORD })).status).toBe(303);
-  });
+  }, 60_000); // 13 real scrypt hashes: generous for loaded CI runners
 
   it("the per-IP sign-in limit can't be dodged by forging proxy headers the edge doesn't set", async () => {
     const env = await createTestEnv({ CLIENT_IP_HEADER: "x-real-ip" });
@@ -197,7 +197,7 @@ describe("customer sign-up, sign-in and account pages", () => {
     expect((await attempt(20, { "x-real-ip": "203.0.113.7", "cf-connecting-ip": "10.0.0.99", "x-forwarded-for": "10.1.0.99" })).status).toBe(429);
     // A different client (as the edge reports it) has its own budget.
     expect((await attempt(21, { "x-real-ip": "203.0.113.8" })).status).toBe(401);
-  }, 30_000); // 22 real scrypt verifications
+  }, 60_000); // 22 real scrypt verifications: generous for loaded CI runners
 
   it("sessions expire", async () => {
     vi.useFakeTimers({ now: Date.parse("2026-11-08T12:00:00Z"), toFake: ["Date"] });
