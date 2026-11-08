@@ -3,17 +3,13 @@ import { Hono, type MiddlewareHandler } from "hono";
 import type { AppDeps, AppEnv } from "../context";
 import { looksLikeApiKey } from "../credits/keys";
 import { CreditsError } from "../credits/service";
+import { clientIp, WindowLimiter } from "./limits";
 
-/** Fixed-window per-IP limiter for unauthenticated account creation. Cloudflare rate limits sit in front. */
+/** Per-IP limiter for unauthenticated account creation. Cloudflare rate limits sit in front. */
 function signupLimiter(max: number, windowMs: number): MiddlewareHandler<AppEnv> {
-  const hits = new Map<string, { n: number; resetAt: number }>();
+  const limiter = new WindowLimiter(max, windowMs);
   return async (c, next) => {
-    const ip = c.req.header("cf-connecting-ip") ?? c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
-    const now = Date.now();
-    const h = hits.get(ip);
-    if (!h || now > h.resetAt) hits.set(ip, { n: 1, resetAt: now + windowMs });
-    else if (++h.n > max) return c.json({ error: "rate_limited" }, 429);
-    if (hits.size > 50_000) hits.clear();
+    if (!limiter.hit(clientIp(c))) return c.json({ error: "rate_limited" }, 429);
     await next();
   };
 }

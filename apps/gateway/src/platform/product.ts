@@ -114,6 +114,11 @@ export interface Product<S = unknown> {
   /** Human name for status pages, OpenAPI and the agent card. */
   readonly displayName: string;
   readonly description: string;
+  /**
+   * "data" (default) sells data. "access" sells a way to pay for other products (x402 sessions):
+   * it has no data of its own, so status pages and the site don't present it as a data feed.
+   */
+  readonly kind?: "data" | "access";
   readonly resources: readonly PricedResource[];
   /** Maps a request to its scope and state, or returns a Response (e.g. 404 unknown scope, never charged). */
   resolve(c: ProductContext): Resolution<S> | Response;

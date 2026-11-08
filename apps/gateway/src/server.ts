@@ -4,6 +4,7 @@ import { createApp } from "./app";
 import { loadConfig, isMainnet } from "./config";
 import type { AppDeps } from "./context";
 import { StripeCheckout } from "./credits/checkout";
+import { CustomerAccounts } from "./customers/service";
 import { CreditsService } from "./credits/service";
 import { CoinbaseFx, FixedFx } from "./ledger/fx";
 import { createLogger } from "./logger";
@@ -184,6 +185,7 @@ const sanctions = new SanctionsService({
 const checkout = cfg.STRIPE_SECRET_KEY && cfg.STRIPE_WEBHOOK_SECRET ? new StripeCheckout(cfg.STRIPE_SECRET_KEY, cfg.STRIPE_WEBHOOK_SECRET) : undefined;
 if (!checkout) log.warn("Stripe not configured: card top-ups disabled (manual/bank top-ups still available)");
 const credits = new CreditsService(store, checkout, { publicBaseUrl: cfg.PUBLIC_BASE_URL, keyEnv: isMainnet(cfg) ? "live" : "test" });
+const customers = new CustomerAccounts(store, credits, isMainnet(cfg) ? "live" : "test");
 
 const deps: AppDeps = {
   cfg,
@@ -192,6 +194,7 @@ const deps: AppDeps = {
   store,
   catalog,
   credits,
+  customers,
   resourceServer,
   requirements,
   facilitator,

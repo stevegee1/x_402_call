@@ -31,19 +31,29 @@ export class CreditsService {
     private readonly opts: { publicBaseUrl: string; keyEnv: "live" | "test" },
   ) {}
 
-  async createAccount(input: NewAccount): Promise<{ account: CreditAccount; apiKey: string }> {
-    const company = input.company?.trim();
-    const email = input.email?.trim().toLowerCase();
-    const country = input.country?.trim().toUpperCase();
-    const taxId = input.taxId?.replace(/\s/g, "").toUpperCase() || null;
+  /** Validates and normalises new-account details (shared by the API and the browser sign-up). */
+  normalizeAccount(input: NewAccount): NewAccount {
+    const company = typeof input.company === "string" ? input.company.trim() : "";
+    const email = typeof input.email === "string" ? input.email.trim().toLowerCase() : "";
+    const country = typeof input.country === "string" ? input.country.trim().toUpperCase() : "";
+    const taxId = (typeof input.taxId === "string" ? input.taxId.replace(/\s/g, "").toUpperCase() : "") || null;
     if (!company || company.length > 200) throw new CreditsError("invalid_company", "company is required");
-    if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw new CreditsError("invalid_email", "a valid email is required");
-    const taxErr = validateTaxId(country ?? "", taxId ?? undefined);
+    if (!email || email.length > 254 || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw new CreditsError("invalid_email", "a valid email is required");
+    const taxErr = validateTaxId(country, taxId ?? undefined);
     if (taxErr) throw new CreditsError("invalid_tax_details", taxErr);
+    return { company, email, country, taxId };
+  }
 
+  async createAccount(input: NewAccount): Promise<{ account: CreditAccount; apiKey: string }> {
+    const a = this.normalizeAccount(input);
     const { key, hash, prefix } = generateApiKey(this.opts.keyEnv);
-    const account = await this.store.createAccount({ company, email, country: country!, taxId }, hash, prefix);
+    const account = await this.store.createAccount(a, hash, prefix);
     return { account, apiKey: key };
+  }
+
+  /** Drops this replica's key cache, e.g. after a key is revoked. */
+  forgetKeys() {
+    this.keyCache.clear();
   }
 
   /** Resolves an API key to an account. Caches the key->id mapping only, never the balance. */

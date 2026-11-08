@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Hono } from "hono";
 import type { AppDeps, AppEnv } from "./context";
+import { accountRoutes } from "./routes/account";
 import { adminRoutes } from "./routes/admin";
 import { productRoutes } from "./platform/mount";
 import { creditsRoutes } from "./routes/credits";
@@ -23,6 +24,7 @@ export function createApp(d: AppDeps) {
 
   app.route("/", publicRoutes(d));
   app.route("/", creditsRoutes(d));
+  app.route("/", accountRoutes(d));
   app.route("/", adminRoutes(d));
   // Products last: their deprecated aliases (/v1/:region/…) must never shadow platform routes.
   app.route("/", productRoutes(d));

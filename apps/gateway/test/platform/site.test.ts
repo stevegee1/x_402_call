@@ -32,7 +32,7 @@ describe("public site", () => {
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/html");
     expect(html).toMatch(/^<!doctype html>/);
-    expect(html).toContain('<div class="brand">wearebase</div>');
+    expect(html).toMatch(/<a class="brand" href="\/">[\s\S]*?<span>wearebase<\/span><\/a>/);
     expect(html).toContain("<title>wearebase:");
     expect(html).not.toContain("x402 data gateway");
     const clients: Record<string, string>[] = [{}, { accept: "*/*" }, { accept: "application/json" }];

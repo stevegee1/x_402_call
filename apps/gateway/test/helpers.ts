@@ -15,6 +15,7 @@ import { exposureCaps, failurePolicy } from "../src/payments/exposure";
 import { FailoverFacilitator } from "../src/payments/facilitator";
 import { SanctionsService } from "../src/payments/sanctions";
 import { Settler } from "../src/payments/settlement";
+import { CustomerAccounts, type CustomerPolicy } from "../src/customers/service";
 import { createResourceServer, RequirementsCache } from "../src/payments/x402";
 import { Catalog } from "../src/platform/catalog";
 import type { Product } from "../src/platform/product";
@@ -119,6 +120,8 @@ export interface TestEnvOptions {
   sellerIdentity?: AppDeps["sellerIdentity"];
   /** x402 sessions: true for defaults, or options to override. Timers are not started (tests flush explicitly). */
   sessions?: boolean | Partial<SessionOptions>;
+  /** Customer sign-in policy (session lifetime, lockout). */
+  customerPolicy?: CustomerPolicy;
 }
 
 export const SESSION_SECRET = "test-session-secret-0123456789abcdef0123";
@@ -161,13 +164,15 @@ export async function createTestEnv(overrides: Partial<Record<keyof Config, stri
   const settler = new Settler(store, resourceServer, log, metrics);
   const checkout = new FakeCheckout();
   const sanctions = new SanctionsService({ failClosed: false });
+  const credits = new CreditsService(store, checkout, { publicBaseUrl: BASE_URL, keyEnv: "test" });
   const deps: AppDeps = {
     cfg,
     log,
     metrics,
     store,
     catalog,
-    credits: new CreditsService(store, checkout, { publicBaseUrl: BASE_URL, keyEnv: "test" }),
+    credits,
+    customers: new CustomerAccounts(store, credits, "test", opts.customerPolicy),
     resourceServer,
     requirements,
     facilitator: failover,

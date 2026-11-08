@@ -1,6 +1,7 @@
 import type { x402ResourceServer } from "@x402/core/server";
 import type { Config } from "./config";
 import type { CreditsService } from "./credits/service";
+import type { CustomerAccounts } from "./customers/service";
 import type { FxService } from "./ledger/fx";
 import type { Logger } from "./logger";
 import type { Metrics } from "./metrics";
@@ -23,6 +24,8 @@ export interface AppDeps {
   /** The products this gateway hosts (maritime, …). */
   catalog: Catalog;
   credits: CreditsService;
+  /** Browser sign-up/sign-in for credit accounts; undefined disables the account pages. */
+  customers?: CustomerAccounts;
   resourceServer: x402ResourceServer;
   requirements: RequirementsCache;
   facilitator: FailoverFacilitator;

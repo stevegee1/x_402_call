@@ -6,6 +6,7 @@ import type { PricedResource, Product } from "../platform/product";
 import { renderSite, SITE_HEADERS, wantsHtml } from "./site";
 
 const creditsOk = (r: PricedResource) => !r.rails || r.rails.includes("credits");
+const sessionOk = (r: PricedResource) => !r.rails || r.rails.includes("session");
 const priceOf = (r: PricedResource) => ({ price_usdc: r.pricing.priceUsd, price_credits_gbp: creditsOk(r) ? r.pricing.creditsGbpMicros / 1e6 : null, ...(r.rails ? { rails: r.rails } : {}) });
 
 export function publicRoutes(d: AppDeps) {
@@ -107,7 +108,7 @@ function openapi(d: AppDeps) {
         parameters: (e.parameters ?? []).map((p) => ({ ...p, required: p.in === "path" ? true : (p.required ?? false) })),
         "x-x402": { price_usdc: e.pricing.priceUsd, network: d.cfg.X402_NETWORK, pay_to: d.cfg.PAY_TO },
         ...(creditsOk(e) ? { "x-credits": { price_gbp: e.pricing.creditsGbpMicros / 1e6 } } : {}),
-        security: [{}, { credits: [] }],
+        security: [{}, ...(creditsOk(e) ? [{ credits: [] }] : []), ...(sessionOk(e) ? [{ session: [] }] : [])],
         responses: {
           "200": { description: "Data envelope: {mode, snapshot_ts, source_ts, degraded, data, …}" },
           "402": { description: "Payment required (x402 PAYMENT-REQUIRED header + JSON body; credits alternative in body)" },
@@ -119,6 +120,25 @@ function openapi(d: AppDeps) {
     paths[toOpenApiPath(route.path)] = op(false);
     for (const legacy of e.legacyPaths ?? []) paths[toOpenApiPath(legacy)] = op(true);
   }
+  for (const route of d.catalog.streams) {
+    const e = route.resource;
+    paths[toOpenApiPath(route.path)] = {
+      get: {
+        operationId: e.id,
+        tags: [route.product.id],
+        summary: e.summary,
+        parameters: (e.parameters ?? []).map((p) => ({ ...p, required: p.in === "path" ? true : (p.required ?? false) })),
+        "x-session": { price_usdc_per_event: e.pricing.priceUsd, buy: `${d.cfg.PUBLIC_BASE_URL}/v1/sessions/sizes` },
+        security: [{ session: [] }],
+        responses: {
+          "200": { description: "text/event-stream: each event is charged from the session before it is sent; a final session_ended event closes the stream", content: { "text/event-stream": {} } },
+          "401": { description: "Invalid or expired session; not charged" },
+          "402": { description: "No session, or its balance is spent; not charged" },
+          "503": { description: "Data stale or sessions unavailable; not charged" },
+        },
+      },
+    };
+  }
   for (const route of d.catalog.free) {
     paths[toOpenApiPath(route.path)] = { get: { tags: [route.product.id], summary: `Free: ${route.product.displayName} metadata`, responses: { "200": { description: "OK" } } } };
   }
@@ -127,7 +147,12 @@ function openapi(d: AppDeps) {
     info: { title: "x402 data gateway", version: "0.2.0" },
     servers: [{ url: d.cfg.PUBLIC_BASE_URL }],
     tags: d.catalog.products.map((p) => ({ name: p.id, description: p.description })),
-    components: { securitySchemes: { credits: { type: "http", scheme: "bearer" } } },
+    components: {
+      securitySchemes: {
+        credits: { type: "http", scheme: "bearer", description: "Prepaid GBP credits: Authorization: Bearer mk_..." },
+        session: { type: "apiKey", in: "header", name: "Authorization", description: "x402 session: Authorization: Session <token> (buy at /v1/sessions/sizes)" },
+      },
+    },
     "x-credit-packs": Object.values(CREDIT_PACKS),
     paths,
   };

@@ -13,7 +13,7 @@ import {
   type JournalEntry,
   type JournalInput,
 } from "../ledger/journal";
-import type { AdmitOptions, Admission, CreditAccount, NewAccount, NewPayment, PaymentRow, PaymentStatus, ReserveResult, SessionRow, SessionUsage, SettleMode, Store, SyncReason } from "./types";
+import type { AdmitOptions, Admission, ApiKeyInfo, CreditAccount, CustomerUser, NewAccount, NewPayment, PaymentRow, PaymentStatus, ReserveResult, SessionRow, SessionUsage, SettleMode, Store, SyncReason } from "./types";
 
 // bigint columns (balances, micros) fit in JS safe integers for our ranges; parse them as numbers.
 pg.types.setTypeParser(20, (v) => Number(v));
@@ -65,6 +65,21 @@ function rowToSession(r: Record<string, any>): SessionRow {
     closedAt: r.closed_at,
   };
 }
+
+function rowToUser(r: Record<string, any>): CustomerUser {
+  return {
+    id: r.id,
+    accountId: r.account_id,
+    email: r.email,
+    passwordHash: r.password_hash,
+    failedLogins: Number(r.failed_logins),
+    lockedUntil: r.locked_until,
+    createdAt: r.created_at,
+    lastLoginAt: r.last_login_at,
+  };
+}
+
+const rowToKey = (r: Record<string, any>): ApiKeyInfo => ({ id: r.id, prefix: r.key_prefix, createdAt: r.created_at, revokedAt: r.revoked_at });
 
 function rowToAccount(r: Record<string, any>): CreditAccount {
   return {
@@ -261,6 +276,84 @@ export class PgStore implements Store {
       await c.query("insert into api_keys (account_id, key_hash, key_prefix) values ($1, $2, $3)", [acct.id, keyHash, keyPrefix]);
       return acct;
     });
+  }
+
+  async createCustomer(a: NewAccount, user: { email: string; passwordHash: string }, key: { hash: string; prefix: string }) {
+    try {
+      return await this.tx(async (c) => {
+        const r = await c.query(
+          "insert into credit_accounts (id, company, email, country, tax_id) values ($1, $2, $3, $4, $5) returning *",
+          [randomUUID(), a.company, a.email, a.country.toUpperCase(), a.taxId],
+        );
+        const account = rowToAccount(r.rows[0]);
+        await c.query("insert into api_keys (account_id, key_hash, key_prefix) values ($1, $2, $3)", [account.id, key.hash, key.prefix]);
+        const u = await c.query("insert into customer_users (id, account_id, email, password_hash) values ($1, $2, $3, $4) returning *", [randomUUID(), account.id, user.email, user.passwordHash]);
+        return { account, user: rowToUser(u.rows[0]) };
+      });
+    } catch (e) {
+      // The unique index on lower(email): the whole transaction, account included, is rolled back.
+      if ((e as { code?: string; constraint?: string }).code === "23505" && (e as { constraint?: string }).constraint === "customer_users_email") return "email_taken" as const;
+      throw e;
+    }
+  }
+
+  async customerByEmail(email: string) {
+    const r = await this.pool.query("select * from customer_users where lower(email) = lower($1)", [email]);
+    return r.rows[0] ? rowToUser(r.rows[0]) : null;
+  }
+
+  async recordLoginFailure(userId: string, now: Date, maxFailures: number, lockMs: number) {
+    // One atomic update, so failures counted on different replicas at once all land.
+    await this.pool.query(
+      `update customer_users set
+         locked_until = case when failed_logins + 1 >= $3 then $2::timestamptz + make_interval(secs => $4::double precision / 1000) else locked_until end,
+         failed_logins = case when failed_logins + 1 >= $3 then 0 else failed_logins + 1 end
+       where id = $1`,
+      [userId, now, maxFailures, lockMs],
+    );
+  }
+
+  async recordLoginSuccess(userId: string, now: Date) {
+    await this.pool.query("update customer_users set failed_logins = 0, locked_until = null, last_login_at = $2 where id = $1", [userId, now]);
+  }
+
+  async createWebSession(tokenHash: string, userId: string, expiresAt: Date) {
+    await this.pool.query("insert into customer_sessions (token_hash, user_id, expires_at) values ($1, $2, $3)", [tokenHash, userId, expiresAt]);
+    // Housekeeping: this user's expired sessions are no use to anyone.
+    await this.pool.query("delete from customer_sessions where user_id = $1 and expires_at < now() - interval '1 day'", [userId]);
+  }
+
+  async webSession(tokenHash: string, now: Date) {
+    const r = await this.pool.query(
+      `select u.*, row_to_json(a.*) as account from customer_sessions s
+       join customer_users u on u.id = s.user_id join credit_accounts a on a.id = u.account_id
+       where s.token_hash = $1 and s.revoked_at is null and s.expires_at > $2`,
+      [tokenHash, now],
+    );
+    const row = r.rows[0];
+    if (!row) return null;
+    const a = row.account as Record<string, unknown>;
+    return { user: rowToUser(row), account: rowToAccount({ ...a, created_at: new Date(a.created_at as string) }) };
+  }
+
+  async revokeWebSession(tokenHash: string) {
+    await this.pool.query("update customer_sessions set revoked_at = now() where token_hash = $1 and revoked_at is null", [tokenHash]);
+  }
+
+  async listApiKeys(accountId: string) {
+    const r = await this.pool.query("select id, key_prefix, created_at, revoked_at from api_keys where account_id = $1 order by created_at desc, id", [accountId]);
+    return r.rows.map(rowToKey);
+  }
+
+  async addApiKey(accountId: string, hash: string, prefix: string) {
+    const r = await this.pool.query("insert into api_keys (account_id, key_hash, key_prefix) values ($1, $2, $3) returning id, key_prefix, created_at, revoked_at", [accountId, hash, prefix]);
+    return rowToKey(r.rows[0]);
+  }
+
+  async revokeApiKey(accountId: string, keyId: string) {
+    if (!/^[0-9a-f-]{36}$/i.test(keyId)) return false;
+    const r = await this.pool.query("update api_keys set revoked_at = now() where id = $1 and account_id = $2 and revoked_at is null", [keyId, accountId]);
+    return r.rowCount === 1;
   }
 
   async accountByKeyHash(hash: string) {

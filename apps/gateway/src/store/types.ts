@@ -87,6 +87,25 @@ export interface CreditAccount {
   createdAt: Date;
 }
 
+/** A person who signs in to manage one credit account (the browser side of the credits rail). */
+export interface CustomerUser {
+  id: string;
+  accountId: string;
+  email: string;
+  passwordHash: string;
+  failedLogins: number;
+  lockedUntil: Date | null;
+  createdAt: Date;
+  lastLoginAt: Date | null;
+}
+
+export interface ApiKeyInfo {
+  id: string;
+  prefix: string;
+  createdAt: Date;
+  revokedAt: Date | null;
+}
+
 export interface NewAccount {
   company: string;
   email: string;
@@ -177,6 +196,23 @@ export interface Store {
   /** Idempotent on ref (Stripe checkout session id / bank reference). */
   applyTopUp(t: { ref: string; accountId: string; netMicros: number; vatMicros: number }, journal: JournalInput): Promise<"applied" | "duplicate">;
   usage(accountId: string, limit: number): Promise<UsageRow[]>;
+
+  // Customer sign-in (browser account pages)
+  /** Creates the credit account, its first API key and its user in one transaction. */
+  createCustomer(a: NewAccount, user: { email: string; passwordHash: string }, key: { hash: string; prefix: string }): Promise<{ account: CreditAccount; user: CustomerUser } | "email_taken">;
+  /** Case-insensitive. */
+  customerByEmail(email: string): Promise<CustomerUser | null>;
+  /** Counts a failed sign-in; at maxFailures the user is locked until now + lockMs and the count restarts. */
+  recordLoginFailure(userId: string, now: Date, maxFailures: number, lockMs: number): Promise<void>;
+  recordLoginSuccess(userId: string, now: Date): Promise<void>;
+  createWebSession(tokenHash: string, userId: string, expiresAt: Date): Promise<void>;
+  /** The signed-in user and their account, if the session exists, is not revoked and has not expired. */
+  webSession(tokenHash: string, now: Date): Promise<{ user: CustomerUser; account: CreditAccount } | null>;
+  revokeWebSession(tokenHash: string): Promise<void>;
+  listApiKeys(accountId: string): Promise<ApiKeyInfo[]>;
+  addApiKey(accountId: string, hash: string, prefix: string): Promise<ApiKeyInfo>;
+  /** False if the key isn't this account's or was already revoked. */
+  revokeApiKey(accountId: string, keyId: string): Promise<boolean>;
 
   // x402 sessions
   /**
