@@ -35,7 +35,41 @@ var core = (function () {
   function walletError(e) {
     var code = e && (e.code || (e.data && e.data.code));
     if (code === 4001 || code === "ACTION_REJECTED") return "You declined the request in your wallet. Nothing was charged.";
+    if (code === 4100) return "Your wallet is locked or hasn't given this site access. Unlock it, then try again.";
+    if (e && e.message === "account_changed") return "Your wallet switched to a different account. Reloading…";
     return (e && e.message) || String(e);
+  }
+
+  /**
+   * Makes sure the wallet still gives this site the address the page shows, before asking for a
+   * signature. Wallets lock themselves after idling (MetaMask) or the site's access can be removed;
+   * the page doesn't hear about either, and signing then fails with 4100 "not authorized". If
+   * access is missing, ask for it (the wallet shows its unlock/connect prompt). If the wallet hands
+   * back a different account, stop: never sign as an account the page isn't showing.
+   */
+  async function access(provider, address, force) {
+    var want = String(address).toLowerCase();
+    var has = function (list) { return (list || []).some(function (a) { return String(a).toLowerCase() === want; }); };
+    if (!force) {
+      var current = [];
+      try { current = await provider.request({ method: "eth_accounts" }); } catch (e) {}
+      if (has(current)) return;
+    }
+    var granted = await provider.request({ method: "eth_requestAccounts" });
+    if (has(granted)) return;
+    var err = new Error("account_changed"); err.account = granted && granted[0]; throw err;
+  }
+
+  /** A signing request, with access checked first and one retry after re-asking on 4100. */
+  async function signAs(provider, address, method, params) {
+    await access(provider, address, false);
+    try {
+      return await provider.request({ method: method, params: params });
+    } catch (e) {
+      if (!e || e.code !== 4100) throw e;
+      await access(provider, address, true);
+      return await provider.request({ method: method, params: params });
+    }
   }
 
   /** The exact-scheme offer for our network from a 402 body. */
@@ -105,7 +139,7 @@ var core = (function () {
       }
     }
     var td = typedData(req, opts.from, Math.floor((opts.now ? opts.now() : Date.now()) / 1000), opts.nonce || randomNonce());
-    var signature = await provider.request({ method: "eth_signTypedData_v4", params: [opts.from, td.json] });
+    var signature = await signAs(provider, opts.from, "eth_signTypedData_v4", [opts.from, td.json]);
     var res = await fetchFn(url, { headers: { accept: "application/json", "payment-signature": paymentHeader(pr, req, td.authorization, signature) } });
     var body = await res.json().catch(function () { return {}; });
     if (res.status !== 201 && res.status !== 200) {
@@ -116,10 +150,12 @@ var core = (function () {
 
   /** Proves control of the address (sign-in message, no funds) and fetches its activity. */
   async function activity(provider, fetchFn, opts) {
+    // Check access before fetching a challenge, so an unlock prompt doesn't eat into its 5 minutes.
+    await access(provider, opts.from, false);
     var ch = await fetchFn(opts.base + "/v1/wallet/challenge", { method: "POST", headers: { "content-type": "application/json", accept: "application/json" }, body: JSON.stringify({ address: opts.from }) });
     if (!ch.ok) throw new Error("sign-in unavailable (HTTP " + ch.status + ")");
     var c = await ch.json();
-    var signature = await provider.request({ method: "personal_sign", params: [utf8Hex(c.message), opts.from] });
+    var signature = await signAs(provider, opts.from, "personal_sign", [utf8Hex(c.message), opts.from]);
     var res = await fetchFn(opts.base + "/v1/wallet/activity", { method: "POST", headers: { "content-type": "application/json", accept: "application/json" }, body: JSON.stringify({ message: c.message, mac: c.mac, signature: signature }) });
     var body = await res.json().catch(function () { return {}; });
     if (!res.ok) throw new Error(body.error || ("HTTP " + res.status));
@@ -240,7 +276,7 @@ export const WALLET_UI_JS = `
     } catch (e) {
       if (e && e.message === "insufficient_usdc") status("buy-msg", "error", "Not enough USDC: this needs " + usd(e.need) + ", the wallet has " + usd(e.have) + "." + (cfg.faucet ? " Get test USDC from " + cfg.faucet : ""));
       else if (e && e.status === 402) status("buy-msg", "error", "Payment not accepted: " + ((e.body && e.body.error) || "unknown reason") + ". You weren't charged.");
-      else status("buy-msg", "error", core.walletError(e));
+      else { status("buy-msg", "error", core.walletError(e)); if (e && e.message === "account_changed") setTimeout(function () { location.reload(); }, 1200); }
     } finally { button.disabled = false; }
   }
 
@@ -255,7 +291,7 @@ export const WALLET_UI_JS = `
       status("act-msg", "", "");
       renderSessions(a.sessions || []); renderPayments(a.payments || []);
       show("activity", true);
-    } catch (e) { status("act-msg", "error", core.walletError(e)); }
+    } catch (e) { status("act-msg", "error", core.walletError(e)); if (e && e.message === "account_changed") setTimeout(function () { location.reload(); }, 1200); }
   });
 
   function cell(tr, text, cls, label) { var td = document.createElement("td"); td.textContent = text; if (cls) td.className = cls; if (label) td.setAttribute("data-label", label); tr.appendChild(td); return td; }
