@@ -199,6 +199,23 @@ describe("customer sign-up, sign-in and account pages", () => {
     expect((await attempt(21, { "x-real-ip": "203.0.113.8" })).status).toBe(401);
   }, 60_000); // 22 real scrypt verifications: generous for loaded CI runners
 
+  it("after Stripe Checkout, the buyer lands back on their dashboard with a clear message", async () => {
+    const env = await createTestEnv();
+    const b = browser(env);
+    await b.post("/signup", signUpForm());
+    for (const [path, to, text] of [
+      ["/v1/credits/checkout/success", "/account?topup=success", "Payment received"],
+      ["/v1/credits/checkout/cancelled", "/account?topup=cancelled", "Top-up cancelled"],
+    ] as const) {
+      const back = await b.get(path);
+      expect(back.status).toBe(303);
+      expect(back.headers.get("location")).toBe(to);
+      expect(await (await b.get(to)).text()).toContain(text);
+    }
+    // Signed out, the return link still lands somewhere sensible: sign-in.
+    expect((await browser(env).get("/account?topup=success")).headers.get("location")).toBe("/signin");
+  });
+
   it("sessions expire", async () => {
     vi.useFakeTimers({ now: Date.parse("2026-11-08T12:00:00Z"), toFake: ["Date"] });
     const env = await createTestEnv({}, { customerPolicy: { sessionTtlMs: 60_000, maxFailures: 10, lockMs: 60_000 } });
