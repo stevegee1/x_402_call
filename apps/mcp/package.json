@@ -3,8 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "MCP server (stdio) exposing the maritime gateway to AI agents, paying through the policy SDK.",
+  "description": "MCP server (stdio) exposing every product the gateway sells (from its catalog) to AI agents, paying through the policy SDK: x402 per call, credits, or a prepaid x402 session.",
   "bin": {
+    "wearebase-mcp": "./src/index.ts",
     "maritime-mcp": "./src/index.ts"
   },
   "scripts": {
