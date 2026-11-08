@@ -85,7 +85,35 @@ export const DOCS_HEADERS: Record<string, string> = {
 
 const NETWORK_NAMES: Record<string, string> = { "eip155:8453": "Base", "eip155:84532": "Base Sepolia" };
 
-function shell(d: AppDeps, o: { title: string; description: string; active: "catalog" | "docs"; body: string }): string {
+export interface ShellOptions {
+  title: string;
+  description: string;
+  active: "catalog" | "docs" | "wallet";
+  body: string;
+  /** Page-specific CSS, appended to the theme (covered by the same style hash). */
+  css?: string;
+  /** Page script (hash-pinned in the CSP). */
+  script?: string;
+}
+
+/** The CSP for a page built with pageShell: one style hash, and a script hash only if it has one. */
+export function pageCsp(o: Pick<ShellOptions, "css" | "script">): string {
+  return [
+    "default-src 'none'",
+    `style-src '${sha(CSS + (o.css ?? ""))}'`,
+    ...(o.script ? [`script-src '${sha(o.script)}'`, "connect-src 'self'"] : []),
+    "img-src data:",
+    "base-uri 'none'",
+    "form-action 'none'",
+    "frame-ancestors 'none'",
+  ].join("; ");
+}
+
+export function pageShell(d: AppDeps, o: ShellOptions): string {
+  return shell(d, o);
+}
+
+function shell(d: AppDeps, o: ShellOptions): string {
   const mainnet = isMainnet(d.cfg);
   const network = NETWORK_NAMES[d.cfg.X402_NETWORK] ?? d.cfg.X402_NETWORK;
   const nav = (href: string, label: string, key?: string) => `<a href="${href}"${key === o.active ? ' aria-current="page"' : ""}>${label}</a>`;
@@ -98,14 +126,14 @@ function shell(d: AppDeps, o: { title: string; description: string; active: "cat
 <meta name="description" content="${esc(o.description)}">
 ${mainnet ? "" : '<meta name="robots" content="noindex">\n'}<meta name="theme-color" content="#0b57d0">
 <link rel="icon" href="${esc(FAVICON)}">
-<style>${CSS}</style>
+<style>${CSS}${o.css ?? ""}</style>
 </head>
 <body>
 <a class="skip" href="#main">Skip to content</a>
 ${mainnet ? "" : `<div class="banner" role="note">Test environment. Payments use ${esc(network)} test USDC, so no real money moves.</div>`}
 <header class="appbar"><div class="wrap">
   <a class="brand" href="/">${BRAND_MARK}<span>wearebase</span></a>
-  <nav aria-label="Main">${nav("/#offer", "What we offer")}${nav("/catalog", "Catalog", "catalog")}${nav("/docs", "API reference", "docs")}${nav("/#pricing", "Pricing")}</nav>
+  <nav aria-label="Main">${nav("/#offer", "What we offer")}${nav("/catalog", "Catalog", "catalog")}${nav("/docs", "API reference", "docs")}${nav("/wallet", "Wallet", "wallet")}${nav("/#pricing", "Pricing")}</nav>
   <div class="acts">${d.customers ? '<a class="btn text" href="/signin">Sign in</a><a class="btn filled" href="/signup">Get started</a>' : '<a class="btn filled" href="/#how-to-use">Get started</a>'}</div>
 </div></header>
 <main id="main">${o.body}</main>
@@ -113,7 +141,7 @@ ${mainnet ? "" : `<div class="banner" role="note">Test environment. Payments use
   <nav aria-label="Footer"><a href="/">Home</a><a href="/catalog">Catalog</a><a href="/docs">API reference</a><a href="/openapi.json?format=json">openapi.json</a><a href="/v1/products?format=json">Catalog (JSON)</a><a href="/status">Service status</a></nav>
   <div>Payments on ${esc(network)}.${d.catalog.product("grid") ? " Grid data supported by National Energy SO Open Data; not provided or endorsed by NESO." : ""}</div>
 </div></footer>
-</body>
+${o.script ? `<script>${o.script}</script>\n` : ""}</body>
 </html>`;
 }
 

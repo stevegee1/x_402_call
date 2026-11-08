@@ -129,6 +129,21 @@ export function describeStoreContract(name: string, make: () => Promise<StoreHar
         expect(j.filter((e) => e.ref === p.id)).toHaveLength(1);
       });
 
+      it("lists a wallet's own payments, newest first, whatever the address casing", async () => {
+        const mine = "0xABCDEF0000000000000000000000000000000002";
+        const older = newPayment({ payer: mine, endpoint: "grid.intensity" });
+        await s.insertPayment(older);
+        await new Promise((r) => setTimeout(r, 15)); // distinct created_at
+        const newer = newPayment({ payer: mine.toLowerCase(), endpoint: "sessions.usd1" });
+        await s.insertPayment(newer);
+        await s.insertPayment(newPayment()); // someone else's
+        const a = await s.walletActivity(mine, 10);
+        expect(a.payments.map((p) => p.id)).toEqual([newer.id, older.id]);
+        expect(a.sessions).toEqual([]);
+        expect((await s.walletActivity(mine.toLowerCase(), 1)).payments.map((p) => p.id)).toEqual([newer.id]);
+        expect((await s.walletActivity("0x0000000000000000000000000000000000000009", 10)).payments).toEqual([]);
+      });
+
       it("never settles a cancelled or failed payment", async () => {
         const a = newPayment();
         const b = newPayment();

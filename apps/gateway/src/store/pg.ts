@@ -255,6 +255,15 @@ export class PgStore implements Store {
     await this.pool.query("update x402_payments set status = 'cancelled', error = $2 where id = $1 and status = 'verified'", [id, reason]);
   }
 
+  async walletActivity(payer: string, limit: number) {
+    const p = payer.toLowerCase();
+    const [payments, sessions] = await Promise.all([
+      this.pool.query("select * from x402_payments where payer = $1 order by created_at desc limit $2", [p, limit]),
+      this.pool.query("select * from x402_sessions where payer = $1 order by created_at desc limit $2", [p, limit]),
+    ]);
+    return { payments: payments.rows.map(rowToPayment), sessions: sessions.rows.map(rowToSession) };
+  }
+
   async listPayments(opts: { status?: PaymentStatus; limit: number; before?: string }) {
     const r = await this.pool.query(
       `select * from x402_payments
