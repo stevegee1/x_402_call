@@ -18,6 +18,37 @@ export const FACILITATOR_BREAKER: BreakerOptions = { windowMs: 30_000, minCalls:
  * Settling on the fallback after an indeterminate primary timeout is safe: the EIP-3009 nonce is
  * single-use on-chain, so at most one settlement can succeed.
  */
+/** At most `max` tasks at once; the rest wait in arrival order. */
+export class Semaphore {
+  private active = 0;
+  private readonly waiting: (() => void)[] = [];
+
+  constructor(
+    private readonly max: number,
+    private readonly onWait?: (queued: number) => void,
+  ) {}
+
+  get inFlight() {
+    return this.active;
+  }
+
+  async run<T>(task: () => Promise<T>): Promise<T> {
+    if (this.active >= this.max) {
+      await new Promise<void>((resolve) => {
+        this.waiting.push(resolve);
+        this.onWait?.(this.waiting.length);
+      });
+    }
+    this.active++;
+    try {
+      return await task();
+    } finally {
+      this.active--;
+      this.waiting.shift()?.();
+    }
+  }
+}
+
 export class FailoverFacilitator implements FacilitatorClient {
   readonly breaker: CircuitBreaker;
 
@@ -48,8 +79,21 @@ export class FailoverFacilitator implements FacilitatorClient {
   }
 
   settle(payload: PaymentPayload, req: PaymentRequirements): Promise<SettleResponse> {
-    return this.call((f) => f.settle(payload, req));
+    const run = () => this.call((f) => f.settle(payload, req));
+    return this.settleSlots ? this.settleSlots.run(run) : run();
   }
+
+  /**
+   * Cap settlements in flight at the facilitator. Some facilitators submit every settlement from one
+   * hot wallet and fail a share of simultaneous ones (seen on x402.org: 2 of 4 at once); queueing a
+   * few here costs milliseconds, a failed settlement costs the sale.
+   */
+  limitSettles(max: number, onWait?: (queued: number) => void): this {
+    this.settleSlots = max > 0 ? new Semaphore(max, onWait) : undefined;
+    return this;
+  }
+
+  private settleSlots?: Semaphore;
 
   getSupported(): Promise<SupportedResponse> {
     return this.call((f) => f.getSupported());

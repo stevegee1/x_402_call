@@ -26,6 +26,11 @@ const schema = z
     FALLBACK_FACILITATOR_URL: z.string().url().optional(),
     FALLBACK_FACILITATOR_AUTH_TOKEN: z.string().min(24).optional(),
     FACILITATOR_TIMEOUT_MS: z.coerce.number().int().default(3_000),
+    /**
+     * Max settlements in flight at the facilitator per replica (0 = no cap). Unset: 2 for the public
+     * x402.org testnet facilitator (it fails a share of simultaneous settlements), 16 otherwise.
+     */
+    SETTLE_MAX_CONCURRENCY: z.coerce.number().int().min(0).max(256).optional(),
     SETTLEMENT_MODE: z.enum(["async", "sync"]).default("async"),
     EXPOSURE_CAP_USD: z.coerce.number().default(25),
     EXPOSURE_CAP_PER_PAYER_USD: z.coerce.number().default(1),
@@ -147,3 +152,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 }
 
 export const isMainnet = (c: Pick<Config, "X402_NETWORK">) => c.X402_NETWORK === "eip155:8453";
+
+/** Settlements allowed in flight at the facilitator (0 = no cap); see SETTLE_MAX_CONCURRENCY. */
+export const settleConcurrency = (c: Pick<Config, "SETTLE_MAX_CONCURRENCY" | "FACILITATOR">) => c.SETTLE_MAX_CONCURRENCY ?? (c.FACILITATOR === "x402org" ? 2 : 16);
