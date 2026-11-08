@@ -6,6 +6,7 @@ import { adminRoutes } from "./routes/admin";
 import { productRoutes } from "./platform/mount";
 import { creditsRoutes } from "./routes/credits";
 import { publicRoutes } from "./routes/public";
+import { walletRoutes } from "./routes/wallet";
 
 export function createApp(d: AppDeps) {
   const app = new Hono<AppEnv>();
@@ -25,6 +26,7 @@ export function createApp(d: AppDeps) {
   app.route("/", publicRoutes(d));
   app.route("/", creditsRoutes(d));
   app.route("/", accountRoutes(d));
+  app.route("/", walletRoutes(d));
   app.route("/", adminRoutes(d));
   // Products last: their deprecated aliases (/v1/:region/…) must never shadow platform routes.
   app.route("/", productRoutes(d));

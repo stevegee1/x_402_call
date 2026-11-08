@@ -89,6 +89,15 @@ export class MemoryStore implements Store {
     if (p?.status === "verified") Object.assign(p, { status: "cancelled", error: reason });
   }
 
+  async walletActivity(payer: string, limit: number) {
+    const p = payer.toLowerCase();
+    const newest = <T extends { createdAt: Date }>(a: T, b: T) => b.createdAt.getTime() - a.createdAt.getTime();
+    return {
+      payments: [...this.payments.values()].filter((r) => r.payer === p).sort(newest).slice(0, limit),
+      sessions: [...this.sessions.values()].filter((s) => s.payer === p).sort(newest).slice(0, limit),
+    };
+  }
+
   async listPayments(opts: { status?: PaymentStatus; limit: number; before?: string }) {
     // Mirrors PgStore: order by (created_at, id) descending; `before` is an exclusive cursor (a payment id).
     const cmp = (a: PaymentRow, b: PaymentRow) => a.createdAt.getTime() - b.createdAt.getTime() || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);

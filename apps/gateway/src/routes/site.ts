@@ -317,7 +317,7 @@ ${mainnet ? "" : '<meta name="robots" content="noindex">\n'}<meta name="theme-co
 ${mainnet ? "" : `<div class="banner" role="note">Test environment. Payments use ${esc(network)} test USDC, so no real money moves.</div>`}
 <header class="appbar"><div class="wrap">
   <a class="brand" href="/">${BRAND_MARK}<span>wearebase</span></a>
-  <nav aria-label="Main"><a href="#offer">What we offer</a><a href="#how">How it works</a><a href="#how-to-use">How to use</a><a href="#pricing">Pricing</a>${d.identity ? '<a href="#identity">Identity</a>' : ""}<a href="/catalog">Catalog</a><a href="/docs">API</a></nav>
+  <nav aria-label="Main"><a href="#offer">What we offer</a><a href="#how">How it works</a><a href="#how-to-use">How to use</a><a href="#pricing">Pricing</a>${d.identity ? '<a href="#identity">Identity</a>' : ""}<a href="/catalog">Catalog</a><a href="/docs">API</a><a href="/wallet">Wallet</a></nav>
   <div class="acts">${d.customers ? '<a class="btn text" href="/signin">Sign in</a><a class="btn filled" href="/signup">Get started</a>' : '<a class="btn text" href="#try">Try it</a><a class="btn filled" href="#how-to-use">Get started</a>'}</div>
 </div></header>
 <main id="main"><div class="wrap">

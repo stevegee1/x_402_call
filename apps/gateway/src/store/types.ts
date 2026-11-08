@@ -160,6 +160,8 @@ export interface Store {
 
   // x402 payments
   insertPayment(p: NewPayment): Promise<"inserted" | "duplicate">;
+  /** A wallet's own x402 payments and sessions, newest first (payer is matched lowercase). */
+  walletActivity(payer: string, limit: number): Promise<{ payments: PaymentRow[]; sessions: SessionRow[] }>;
   getPayment(id: string): Promise<PaymentRow | null>;
   /**
    * Claims due 'verified' payments for settlement by pushing next_attempt_at forward by leaseMs.
