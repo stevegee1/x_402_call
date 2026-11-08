@@ -89,7 +89,7 @@ describe("public site", () => {
     expect(csp).toContain("frame-ancestors 'none'");
     expect(csp).not.toContain("unsafe");
     expect(res.headers.get("x-content-type-options")).toBe("nosniff");
-    expect(res.headers.get("vary")).toBe("Accept");
+    expect(res.headers.get("vary")).toBe("Accept, Cookie"); // the header differs when signed in
   });
 
   it("loads nothing from third parties", async () => {

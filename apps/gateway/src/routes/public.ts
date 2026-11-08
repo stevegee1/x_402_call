@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import { isMainnet } from "../config";
 import type { AppDeps, AppEnv } from "../context";
 import type { PricedResource, Product } from "../platform/product";
+import { viewerOf } from "../customers/web-session";
 import { catalogView, creditsOk, sessionOk, templatePath, type ProductView } from "./catalog-model";
 import { DOCS_HEADERS, renderCatalogPage, renderDocsPage } from "./docs-pages";
 import { renderSite, SITE_HEADERS, wantsHtml } from "./site";
@@ -30,10 +31,10 @@ export function publicRoutes(d: AppDeps) {
   const docsLinks = () => ({ api_reference: `${d.cfg.PUBLIC_BASE_URL}/docs`, openapi: `${d.cfg.PUBLIC_BASE_URL}/openapi.json`, catalog: `${d.cfg.PUBLIC_BASE_URL}/catalog` });
   const htmlHeaders = () => ({ ...DOCS_HEADERS, ...(isMainnet(d.cfg) ? {} : { "x-robots-tag": "noindex" }) });
 
-  r.get("/", (c) => {
+  r.get("/", async (c) => {
     if (wantsHtml(c.req.header("accept"))) {
       const noindex: Record<string, string> = isMainnet(d.cfg) ? {} : { "x-robots-tag": "noindex" };
-      return c.body(renderSite(d), 200, { ...SITE_HEADERS, ...noindex });
+      return c.body(renderSite(d, await viewerOf(c, d)), 200, { ...SITE_HEADERS, ...noindex });
     }
     c.header("vary", "Accept");
     return c.json({
@@ -71,12 +72,12 @@ export function publicRoutes(d: AppDeps) {
   );
 
   // People get pages, agents and SDKs get JSON, from the same URLs (Vary: Accept).
-  r.get("/catalog", (c) => c.body(renderCatalogPage(d), 200, htmlHeaders()));
-  r.get("/docs", (c) => c.body(renderDocsPage(d, openapi(d)), 200, htmlHeaders()));
+  r.get("/catalog", async (c) => c.body(renderCatalogPage(d, await viewerOf(c, d)), 200, htmlHeaders()));
+  r.get("/docs", async (c) => c.body(renderDocsPage(d, openapi(d), await viewerOf(c, d)), 200, htmlHeaders()));
 
-  r.get("/v1/products", (c) => {
+  r.get("/v1/products", async (c) => {
     c.header("vary", "Accept");
-    if (wantsHtml(c.req.header("accept")) && c.req.query("format") !== "json") return c.body(renderCatalogPage(d), 200, htmlHeaders());
+    if (wantsHtml(c.req.header("accept")) && c.req.query("format") !== "json") return c.body(renderCatalogPage(d, await viewerOf(c, d)), 200, htmlHeaders());
     const views = catalogView(d);
     return c.json({ data: d.catalog.products.map((p) => productSummary(p, d.cfg.PUBLIC_BASE_URL, views.find((v) => v.id === p.id)!)), docs: docsLinks() });
   });
@@ -113,10 +114,10 @@ export function publicRoutes(d: AppDeps) {
     return c.text(d.metrics.render(), 200, { "content-type": "text/plain; version=0.0.4" });
   });
 
-  r.get("/openapi.json", (c) => {
+  r.get("/openapi.json", async (c) => {
     c.header("vary", "Accept");
     // A browser gets the readable reference; tools (and ?format=json, the download link) get the spec.
-    if (wantsHtml(c.req.header("accept")) && c.req.query("format") !== "json") return c.body(renderDocsPage(d, openapi(d)), 200, htmlHeaders());
+    if (wantsHtml(c.req.header("accept")) && c.req.query("format") !== "json") return c.body(renderDocsPage(d, openapi(d), await viewerOf(c, d)), 200, htmlHeaders());
     return c.json(openapi(d));
   });
 

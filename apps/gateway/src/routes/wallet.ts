@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { Hono } from "hono";
 import { isMainnet } from "../config";
 import type { AppDeps, AppEnv } from "../context";
+import { viewerOf, type Viewer } from "../customers/web-session";
 import { makeVerifier, WalletSignIn } from "../wallet/signin";
 import { WALLET_CORE_JS, WALLET_UI_JS } from "../wallet/wallet-script";
 import { DOCS_HEADERS, pageCsp, pageShell } from "./docs-pages";
@@ -29,10 +30,11 @@ const WALLET_CSS = `
 .token{font-family:var(--mono);font-size:13px;background:var(--surface);border:1px solid var(--outline-v);border-radius:12px;padding:12px 14px;overflow-wrap:anywhere;margin:8px 0 12px}
 .wallet pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px}
 .wallet h3{margin-top:4px}
+.gap-top{margin-top:12px}
 @media (max-width:640px){.sizes3{grid-template-columns:minmax(0,1fr)}.wallet{padding-top:28px}}
 `;
 
-function walletPage(d: AppDeps): string {
+function walletPage(d: AppDeps, viewer: Viewer | null): string {
   const network = d.cfg.X402_NETWORK;
   const name = NETWORK_NAMES[network] ?? network;
   const testnet = !isMainnet(d.cfg);
@@ -52,6 +54,7 @@ function walletPage(d: AppDeps): string {
     </div>
     <div id="connected" hidden>
       <dl class="kv2"><dt>Wallet</dt><dd><code id="addr"></code></dd><dt>Network</dt><dd>${esc(name)}</dd><dt>USDC</dt><dd id="bal">…</dd></dl>
+      <div class="row gap-top"><button class="btn text" type="button" id="disconnect">Disconnect</button></div>
     </div>
   </section>
 
@@ -87,7 +90,7 @@ function walletPage(d: AppDeps): string {
     </div>
   </section>
 </div></div>`;
-  return pageShell(d, { title: "Pay from your wallet", description: "Connect a wallet, buy an x402 session with USDC, and see your payments.", active: "wallet", body, css: WALLET_CSS, script: SCRIPT });
+  return pageShell(d, { title: "Pay from your wallet", description: "Connect a wallet, buy an x402 session with USDC, and see your payments.", active: "wallet", body, css: WALLET_CSS, script: SCRIPT, viewer });
 }
 
 export const WALLET_CSP = pageCsp({ css: WALLET_CSS, script: SCRIPT });
@@ -131,7 +134,7 @@ export function walletRoutes(d: AppDeps) {
   const limiter = new WindowLimiter(60, 10 * 60_000);
   const headers = () => ({ ...DOCS_HEADERS, "content-security-policy": WALLET_CSP, "cache-control": "no-store", ...(isMainnet(d.cfg) ? {} : { "x-robots-tag": "noindex" }) });
 
-  r.get("/wallet", (c) => c.body(walletPage(d), 200, headers()));
+  r.get("/wallet", async (c) => c.body(walletPage(d, await viewerOf(c, d)), 200, headers()));
 
   r.post("/v1/wallet/challenge", async (c) => {
     if (!limiter.hit(clientIp(c, d.cfg.CLIENT_IP_HEADER))) return c.json({ error: "rate_limited" }, 429);

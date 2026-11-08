@@ -216,6 +216,30 @@ describe("customer sign-up, sign-in and account pages", () => {
     expect((await browser(env).get("/account?topup=success")).headers.get("location")).toBe("/signin");
   });
 
+  it("every page's header knows you're signed in, and none is cached for others", async () => {
+    const env = await createTestEnv({}, { sessions: true });
+    const b = browser(env);
+    const page = (who: ReturnType<typeof browser>, path: string) => who.send(path, { headers: { accept: "text/html,application/xhtml+xml,*/*;q=0.8" } });
+    const anon = browser(env);
+    for (const path of ["/", "/catalog", "/docs", "/wallet"]) {
+      const res = await page(anon, path);
+      expect(res.headers.get("cache-control"), path).toMatch(/^(private, no-cache|no-store)$/);
+      expect(res.headers.get("vary"), path).toMatch(/Cookie/);
+      const html = await res.text();
+      expect(html, path).toContain('href="/signin"');
+      expect(html, path).not.toContain("Your account");
+    }
+    await b.post("/signup", signUpForm({ company: "Signed In Ltd" }));
+    for (const path of ["/", "/catalog", "/docs", "/wallet", "/v1/products", "/openapi.json"]) {
+      const html = await (await page(b, path)).text();
+      expect(html, path).toContain('<a class="btn filled" href="/account" title="Signed In Ltd">Your account</a>');
+      expect(html, path).not.toContain('href="/signin">Sign in');
+    }
+    // A stale or forged cookie is just "signed out", never an error.
+    b.cookie = "wb_session=" + "A".repeat(43);
+    expect(await (await page(b, "/")).text()).toContain('href="/signin"');
+  });
+
   it("sessions expire", async () => {
     vi.useFakeTimers({ now: Date.parse("2026-11-08T12:00:00Z"), toFake: ["Date"] });
     const env = await createTestEnv({}, { customerPolicy: { sessionTtlMs: 60_000, maxFailures: 10, lockMs: 60_000 } });
