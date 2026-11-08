@@ -6,10 +6,12 @@ any environment other than `staging`.
 
 | Service | Role | Network | Health check |
 |---|---|---|---|
-| `@mx/gateway` | API: billing, settlement, ledger, products (maritime simulated, grid live) | public domain + private `mxgateway.railway.internal:8080` | `/readyz` |
+| `@mx/gateway` | API: billing, settlement, ledger, products (maritime from live AIS, grid live) | public domain + private `mxgateway.railway.internal:8080` | `/readyz` |
 | `facilitator` | Self-hosted x402 facilitator, the gateway's **fallback** (primary: x402.org) | private only, `facilitator.railway.internal:8090` | `/healthz` |
 | `reconciler` | Ledger against chain every 15 min; alerts on persistent mismatches | private only | `/healthz` |
 | `ingest-env` | Stores every published NESO version (point-in-time history); exits until the gateway has migrated | private only, `ingest-env.railway.internal:8091` | `/healthz` |
+| `ingest` | Live AIS from AISStream onto the bus, and position history (30 days) into Postgres | private only, `ingest.railway.internal:8092` | `/healthz` |
+| `nats` | AIS bus (`nats:2.10.29-alpine`, no persistence); ingest publishes, the gateway subscribes | private only, `nats.railway.internal:4222` | (none) |
 | `postgres` | Railway-managed Postgres | private | (managed) |
 
 Deploys come from the branch named by `STAGING_BRANCH` in the config file (`feat/staging-railway`
@@ -18,7 +20,7 @@ code, a shared package, the schema or the Dockerfile changes.
 
 ## Secrets
 
-The config file holds no secret values. Four secrets are set out of band; other services
+The config file holds no secret values. Five secrets are set out of band; other services
 reference them rather than copying them:
 
 | Variable | Service | Referenced by |
@@ -27,6 +29,7 @@ reference them rather than copying them:
 | `SESSION_SECRET` | `@mx/gateway` | (only the gateway; signs x402 session tokens) |
 | `AUTH_TOKEN` | `facilitator` | `@mx/gateway.FALLBACK_FACILITATOR_AUTH_TOKEN` |
 | `FACILITATOR_PRIVATE_KEY` | `facilitator` | (only the facilitator) |
+| `AISSTREAM_API_KEY` | `ingest` | (only ingest; from aisstream.io) |
 
 The staging wallet keys live in the operator's macOS Keychain (`pnpm staging:wallets`):
 
@@ -81,6 +84,22 @@ railway config apply
 Rotating `SESSION_SECRET` invalidates every session token in flight (their prepaid balances expire
 as breakage), so rotate only on suspected compromise.
 
+## Turning on live AIS (once)
+
+The gateway starts without the bus and retries it forever; until AIS flows, maritime reports not
+ready and its regions are stale, so nothing is charged. Order matters only for a clean first deploy:
+
+1. **Add `nats`** (dashboard: New, Docker Image, `nats:2.10.29-alpine`). No variables, no domain.
+   Its private name must be `nats` (Settings, Private Networking).
+2. **Add `ingest`** (dashboard: New, GitHub Repo, this repo, branch `STAGING_BRANCH`). Set the
+   variables from `.railway/railway.ts`, with `AISSTREAM_API_KEY` pasted in and sealed. Start command
+   `pnpm --filter @mx/ingest start`, health check `/healthz`. Private name `ingest`. No domain.
+3. **Switch the gateway**: `DATA_SOURCE=nats`, `NATS_URL=nats://nats.railway.internal:4222`.
+
+Coverage is community terrestrial receivers: Dover and Rotterdam fill within minutes; Panama is
+sparse and may stay stale. **Licensing:** AISStream is a development/beta source. Clear its terms
+before selling derived data on mainnet (`apps/ingest/src/sources/aisstream.ts`).
+
 ## Checks
 
 ```bash
@@ -90,6 +109,8 @@ curl https://<gateway-domain>/v1/sessions/sizes   # usd1, usd5, usd20 (sessions 
 curl https://<gateway-domain>/v1/grid/countries   # endpoints include grid.history, grid.revisions, grid.stream
 railway logs -s reconciler                 # one JSON line per run: "ok":true
 railway logs -s ingest-env                 # "fetched" lines; changed > 0 after each NESO publish
+railway logs -s ingest                     # "aisstream subscribed", then no "aisstream error" lines
+curl https://<gateway-domain>/status       # maritime feed_connected true; dover/rotterdam "mode":"live", data_age_s < 120
 ```
 
 Pay end to end with test USDC from https://faucet.circle.com (Base Sepolia):

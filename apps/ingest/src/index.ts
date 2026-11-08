@@ -5,6 +5,7 @@ import { connect, JSONCodec } from "nats";
 import pg from "pg";
 import { pino } from "pino";
 import { z } from "zod";
+import { pruneHistory } from "./retention";
 import { aisstreamSource } from "./sources/aisstream";
 import { tcpNmeaSource, udpNmeaSource } from "./sources/nmea";
 import type { Source } from "./sources/types";
@@ -21,12 +22,16 @@ const cfg = z
     RECEIVER_ID: z.string().default("rx-kent-01"),
     AISSTREAM_API_KEY: z.string().optional(),
     HEALTH_PORT: z.coerce.number().default(8090),
+    /** Days of ais_positions history to keep; 0 keeps everything. Pruned hourly, in batches. */
+    AIS_HISTORY_RETENTION_DAYS: z.coerce.number().int().min(0).default(30),
     LOG_LEVEL: z.string().default("info"),
   })
   .parse(process.env);
 
 const log = pino({ level: cfg.LOG_LEVEL, base: { service: "ingest" } });
-const nc = await connect({ servers: cfg.NATS_URL, name: "ingest", reconnect: true, maxReconnectAttempts: -1 });
+// waitOnFirstConnect: retry until the bus is up (a first deploy can start us before NATS) instead
+// of crashing and burning through the platform's restart budget.
+const nc = await connect({ servers: cfg.NATS_URL, name: "ingest", reconnect: true, maxReconnectAttempts: -1, waitOnFirstConnect: true });
 const jc = JSONCodec<AisEvent>();
 const dedupe = new Deduper();
 const counters = { published: 0, duplicates: 0, historyWritten: 0, historyErrors: 0 };
@@ -56,6 +61,18 @@ async function flushHistory() {
   }
 }
 setInterval(() => void flushHistory(), 1_000).unref();
+
+async function prune() {
+  if (!pool) return;
+  try {
+    const n = await pruneHistory(pool, cfg.AIS_HISTORY_RETENTION_DAYS);
+    if (n > 0) log.info({ deleted: n, retention_days: cfg.AIS_HISTORY_RETENTION_DAYS }, "pruned position history");
+  } catch (e) {
+    log.warn({ err: e }, "history prune failed");
+  }
+}
+setTimeout(() => void prune(), 60_000).unref();
+setInterval(() => void prune(), 3_600_000).unref();
 
 function emit(e: AisEvent) {
   if (dedupe.isDuplicate(e)) {

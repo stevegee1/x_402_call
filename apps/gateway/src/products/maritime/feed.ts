@@ -10,29 +10,71 @@ export interface Feed {
   close(): Promise<void>;
 }
 
-/** Subscribes to the ingest bus and applies events to the in-memory world state. */
-export async function natsFeed(url: string, world: WorldState, log: Logger, metrics: Metrics): Promise<Feed> {
-  const nc: NatsConnection = await connect({ servers: url, name: "gateway", reconnect: true, maxReconnectAttempts: -1 });
+/**
+ * Subscribes to the ingest bus and applies events to the in-memory world state.
+ *
+ * Returns at once and connects in the background, retrying forever: a NATS outage (or NATS not up
+ * yet on a first deploy) must never stop the gateway, which also sells Grid and runs payments.
+ * While the bus is down, connected() is false (maritime reports not ready) and regions go stale,
+ * so billing stops charging for them; nothing is served as fresh that isn't.
+ */
+export function natsFeed(url: string, world: WorldState, log: Logger, metrics: Metrics, dial: typeof connect = connect): Feed {
   const jc = JSONCodec<AisEvent>();
-  for (const subject of [SUBJECTS.positionWildcard, SUBJECTS.static]) {
-    const sub = nc.subscribe(subject);
-    void (async () => {
-      for await (const m of sub) {
-        try {
-          world.apply(jc.decode(m.data));
-          metrics.inc("feed_messages_total", { subject: subject === SUBJECTS.static ? "static" : "position" });
-        } catch (e) {
-          metrics.inc("feed_decode_errors_total");
-          log.debug({ err: e }, "bad bus message");
+  let nc: NatsConnection | undefined;
+  let up = false;
+  let closing = false;
+
+  const ready = (async () => {
+    // waitOnFirstConnect: keep retrying the first connection instead of failing it.
+    const conn = await dial({ servers: url, name: "gateway", reconnect: true, maxReconnectAttempts: -1, waitOnFirstConnect: true, reconnectTimeWait: 2_000 });
+    if (closing) {
+      await conn.close();
+      return;
+    }
+    nc = conn;
+    up = true;
+    metrics.set("feed_connected", 1);
+    log.info({ url }, "subscribed to AIS bus");
+    for (const subject of [SUBJECTS.positionWildcard, SUBJECTS.static]) {
+      const sub = conn.subscribe(subject);
+      void (async () => {
+        for await (const m of sub) {
+          try {
+            world.apply(jc.decode(m.data));
+            metrics.inc("feed_messages_total", { subject: subject === SUBJECTS.static ? "static" : "position" });
+          } catch (e) {
+            metrics.inc("feed_decode_errors_total");
+            log.debug({ err: e }, "bad bus message");
+          }
         }
+      })();
+    }
+    for await (const st of conn.status()) {
+      if (st.type === "disconnect") {
+        up = false;
+        metrics.set("feed_connected", 0);
+        log.warn({ url }, "AIS bus disconnected; reconnecting");
+      } else if (st.type === "reconnect") {
+        up = true;
+        metrics.set("feed_connected", 1);
+        log.info({ url }, "AIS bus reconnected");
       }
-    })();
-  }
-  void (async () => {
-    for await (const s of nc.status()) log.info({ type: s.type }, "nats status");
-  })();
-  log.info({ url }, "subscribed to AIS bus");
-  return { connected: () => !nc.isClosed() && !nc.isDraining(), close: () => nc.drain() };
+    }
+  })().catch((e) => {
+    up = false;
+    log.error({ err: e }, "AIS bus connection ended");
+  });
+  metrics.set("feed_connected", 0);
+
+  return {
+    connected: () => up && !!nc && !nc.isClosed() && !nc.isDraining(),
+    close: async () => {
+      closing = true;
+      up = false;
+      if (nc && !nc.isClosed()) await nc.drain();
+      void ready;
+    },
+  };
 }
 
 /** In-process synthetic traffic (dev/demo). Data is tagged mode=simulated. */

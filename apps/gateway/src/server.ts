@@ -59,7 +59,7 @@ if (cfg.DATABASE_URL) {
 
 // Products. Each owns its data plane; the catalog validates them all before we serve anything.
 const world = new WorldState();
-const feed = cfg.DATA_SOURCE === "nats" ? await natsFeed(cfg.NATS_URL, world, log, metrics) : simulatorFeed(world);
+const feed = cfg.DATA_SOURCE === "nats" ? natsFeed(cfg.NATS_URL, world, log, metrics) : simulatorFeed(world);
 const engine = new SnapshotEngine(world, cfg.SNAPSHOT_INTERVAL_MS);
 const maritime = new MaritimeProduct({ engine, store, feedConnected: feed.connected, snapshotIntervalMs: cfg.SNAPSHOT_INTERVAL_MS });
 await maritime.load();
