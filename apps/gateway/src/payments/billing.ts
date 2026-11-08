@@ -230,9 +230,12 @@ async function chargeX402(c: Context<AppEnv>, next: () => Promise<void>, resourc
 
   if (sync) {
     const row = (await d.store.getPayment(id))!;
-    const outcome = await d.settler.settleNow(row);
+    // Retry transient facilitator failures in place; if it still fails with a known outcome, the
+    // payment is failed for good (never settled later), so "not charged" below is true.
+    const outcome = await d.settler.settleNow(row, { inline: true, finalizeOnFailure: true });
     if (!outcome.ok) {
-      if (!outcome.final) return c.json({ error: "settlement_pending", payment_id: id, detail: "settlement did not complete; retry shortly" }, 503);
+      // Unknown outcome (timeout): the worker checks the chain; it may still settle.
+      if (!outcome.final) return c.json({ error: "settlement_pending", payment_id: id, detail: "settlement outcome unknown; check /v1/payments/" + id + " before paying again" }, 503);
       return paymentRequired(c, resource, d, `settlement_failed: ${outcome.reason}`);
     }
     c.set("payment", { id, payer });
