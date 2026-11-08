@@ -39,6 +39,9 @@ export class FakeFacilitator implements FacilitatorClient {
   settled: string[] = [];
   down = false;
   settleFails?: string;
+  /** Fail this many settles with this reason, then behave normally (a flaky facilitator). */
+  flaky?: { times: number; reason: string };
+  settleCalls = 0;
 
   constructor(private readonly networks: string[]) {}
 
@@ -76,7 +79,12 @@ export class FakeFacilitator implements FacilitatorClient {
   async settle(payload: PaymentPayload, req: PaymentRequirements): Promise<SettleResponse> {
     if (this.down) throw new Error("ECONNREFUSED");
     const a = (payload.payload as { authorization: { from: string; nonce: string } }).authorization;
+    this.settleCalls++;
     if (this.settleFails) return { success: false, errorReason: this.settleFails, transaction: "", network: req.network };
+    if (this.flaky && this.flaky.times > 0) {
+      this.flaky.times--;
+      return { success: false, errorReason: this.flaky.reason, transaction: "", network: req.network };
+    }
     if (this.usedNonces.has(a.nonce)) return { success: false, errorReason: "invalid_exact_evm_nonce_used", transaction: "", network: req.network };
     this.usedNonces.add(a.nonce);
     const tx = `0x${randomBytes(32).toString("hex")}`;
@@ -161,7 +169,7 @@ export async function createTestEnv(overrides: Partial<Record<keyof Config, stri
   const resourceServer = createResourceServer(failover, cfg.X402_NETWORK);
   await resourceServer.initialize();
   const requirements = new RequirementsCache(resourceServer, { payTo: PAY_TO, network: cfg.X402_NETWORK, maxTimeoutSeconds: cfg.MAX_TIMEOUT_SECONDS });
-  const settler = new Settler(store, resourceServer, log, metrics);
+  const settler = new Settler(store, resourceServer, log, metrics, undefined, 500, async () => {}); // instant inline retries
   const checkout = new FakeCheckout();
   const sanctions = new SanctionsService({ failClosed: false });
   const credits = new CreditsService(store, checkout, { publicBaseUrl: BASE_URL, keyEnv: "test" });

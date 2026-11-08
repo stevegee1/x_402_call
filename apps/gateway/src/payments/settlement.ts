@@ -8,10 +8,35 @@ import type { AuthorizationChecker } from "./onchain";
 
 const MAX_ATTEMPTS = 6;
 const LEASE_MS = 60_000;
-/** Facilitator error reasons that will never succeed on retry. */
-const FINAL_REASON = /insufficient|invalid|signature|expired|value|recipient|unsupported/i;
+/**
+ * Facilitator failures that are worth retrying: the transaction didn't make it (reverted, dropped,
+ * nonce clash in the facilitator's wallet, RPC trouble) but the authorization is still good.
+ * Checked before FINAL_REASON, because every x402 EVM error code starts with "invalid_" (e.g.
+ * invalid_exact_evm_transaction_failed is transient). Retrying is always safe: the EIP-3009 nonce
+ * is single-use on chain, so at most one attempt can move the funds.
+ */
+const TRANSIENT_REASON = /transaction_failed|simulation_failed|settlement_pending|invalid_transaction_state|broadcast_failed|timeout|timed out|unavailable|rate.?limit|internal|network error|ECONN|503|502|500/i;
+/** Facilitator error reasons that will never succeed on retry (bad payment, not a bad moment). */
+const FINAL_REASON = /insufficient|invalid|signature|expired|valid_before|value|recipient|unsupported|mismatch|not_supported/i;
 
-export type SettleOutcome = { ok: true; response: SettleResponse | null } | { ok: false; reason: string; final: boolean };
+export const isFinalReason = (reason: string) => !TRANSIENT_REASON.test(reason) && FINAL_REASON.test(reason);
+
+/** Inline retries for a sync settlement: short, jittered, so the buyer waits about a second at most. */
+const INLINE_RETRY_MS = [300, 700];
+
+export type SettleOutcome = { ok: true; response: SettleResponse | null } | { ok: false; reason: string; final: boolean; indeterminate?: boolean };
+
+export interface SettleOptions {
+  /** Retry transient facilitator failures in place (sync settlement on the request path). */
+  inline?: boolean;
+  /**
+   * Sync only: when settlement can't complete now and the outcome is known (the facilitator said it
+   * failed), fail the payment for good. The buyer is told they weren't charged, so the worker must
+   * never settle it later. An indeterminate outcome (timeout) is still left to the worker and the
+   * on-chain check.
+   */
+  finalizeOnFailure?: boolean;
+}
 
 interface Authorization {
   from: string;
@@ -36,6 +61,7 @@ export class Settler {
     private readonly metrics: Metrics,
     private readonly checker?: AuthorizationChecker,
     private readonly pollMs = 500,
+    private readonly sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
   ) {}
 
   start() {
@@ -60,7 +86,7 @@ export class Settler {
     }
   }
 
-  async settleNow(row: PaymentRow): Promise<SettleOutcome> {
+  async settleNow(row: PaymentRow, opts: SettleOptions = {}): Promise<SettleOutcome> {
     const t0 = Date.now();
     const auth = authOf(row);
     const asset = (row.requirements as PaymentRequirements).asset;
@@ -71,23 +97,40 @@ export class Settler {
       return this.markFailed(row, "authorization_expired", true);
     }
 
-    let res: SettleResponse;
-    try {
-      res = await this.server.settlePayment(row.payload as PaymentPayload, row.requirements as PaymentRequirements);
-    } catch (e) {
-      // Timeout / transport error: outcome unknown. Check chain before deciding.
-      if (auth && (await this.consumedOnChain(asset, auth))) return this.markSettled(row, null);
-      return this.markFailed(row, `indeterminate: ${(e as Error).message}`, false);
-    } finally {
-      this.metrics.set("x402_settle_last_ms", Date.now() - t0);
+    let res: SettleResponse | undefined;
+    let confirmedOnChain = false;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        res = await this.server.settlePayment(row.payload as PaymentPayload, row.requirements as PaymentRequirements);
+      } catch (e) {
+        this.metrics.set("x402_settle_last_ms", Date.now() - t0);
+        // Timeout / transport error: outcome unknown. Check chain before deciding.
+        if (auth && (await this.consumedOnChain(asset, auth))) return this.markSettled(row, null);
+        return this.markFailed(row, `indeterminate: ${(e as Error).message}`, false, true);
+      }
+      if (res.success) break;
+      const reason = res.errorReason ?? "unknown";
+      // A "nonce already used" style failure may mean a previous attempt succeeded.
+      if (/nonce|used|already/i.test(reason) && auth && (await this.consumedOnChain(asset, auth))) {
+        confirmedOnChain = true;
+        break;
+      }
+      const delay = opts.inline && !isFinalReason(reason) ? INLINE_RETRY_MS[attempt] : undefined;
+      if (delay === undefined || Date.now() + delay >= row.validBefore.getTime()) break;
+      this.metrics.inc("x402_settle_inline_retries_total", { reason: reason.slice(0, 64) });
+      this.log.info({ paymentId: row.id, reason, attempt: attempt + 1 }, "settlement failed transiently; retrying");
+      await this.sleep(delay * (0.75 + Math.random() * 0.5));
     }
+    this.metrics.set("x402_settle_last_ms", Date.now() - t0);
 
     if (res.success) return this.markSettled(row, res);
-
+    if (confirmedOnChain) return this.markSettled(row, null);
     const reason = res.errorReason ?? "unknown";
-    // A "nonce already used" style failure may mean a previous attempt succeeded.
-    if (/nonce|used|already/i.test(reason) && auth && (await this.consumedOnChain(asset, auth))) return this.markSettled(row, null);
-    return this.markFailed(row, reason, FINAL_REASON.test(reason));
+    const final = opts.finalizeOnFailure || isFinalReason(reason) || row.attempts + 1 >= MAX_ATTEMPTS;
+    // Before giving up for good on a failure that wasn't the payment's fault, make sure the funds
+    // didn't move anyway (a facilitator can report failure for a transaction that later mined).
+    if (final && !isFinalReason(reason) && auth && (await this.consumedOnChain(asset, auth))) return this.markSettled(row, null);
+    return this.markFailed(row, reason, final);
   }
 
   private async consumedOnChain(asset: string, auth: Authorization): Promise<boolean> {
@@ -119,7 +162,7 @@ export class Settler {
     return { ok: true, response: res };
   }
 
-  private async markFailed(row: PaymentRow, reason: string, finalHint: boolean): Promise<SettleOutcome> {
+  private async markFailed(row: PaymentRow, reason: string, finalHint: boolean, indeterminate = false): Promise<SettleOutcome> {
     const final = finalHint || row.attempts + 1 >= MAX_ATTEMPTS;
     const backoffMs = Math.min(30_000, 1_000 * 2 ** row.attempts);
     await this.store.failPayment(row.id, reason, final, final ? undefined : new Date(Date.now() + backoffMs));
@@ -130,6 +173,6 @@ export class Settler {
     } else {
       this.metrics.inc("x402_settlements_total", { result: "retry" });
     }
-    return { ok: false, reason, final };
+    return { ok: false, reason, final, ...(indeterminate ? { indeterminate } : {}) };
   }
 }
