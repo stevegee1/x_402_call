@@ -72,10 +72,10 @@ describe("catalog and API reference", () => {
     expect(grid.kind).toBe("data");
     expect(grid.coverage.map((s) => s.id)).toEqual(["england", "scotland", "wales"]);
     // Original shape, unchanged for existing clients.
-    expect(grid.resources.find((r) => r.id === "grid.intensity")).toMatchObject({ path: `${BASE_URL}/v1/grid/:country/intensity`, price_usdc: "0.01" });
+    expect(grid.resources.find((r) => r.id === "grid.intensity")).toMatchObject({ path: `${BASE_URL}/v1/grid/:country/intensity`, price_usdc: "0.012" });
     const intensity = grid.endpoints.find((e) => e.id === "grid.intensity")!;
     expect(intensity).toMatchObject({ kind: "paid", path: "/v1/grid/{country}/intensity", url: `${BASE_URL}/v1/grid/{country}/intensity`, docs: `${BASE_URL}/docs#grid.intensity` });
-    expect(intensity.pay).toMatchObject({ x402: { price_usdc: "0.01" }, credits: { price_gbp: 0.008 }, session: { price_usdc: "0.01" } });
+    expect(intensity.pay).toMatchObject({ x402: { price_usdc: "0.012" }, credits: { price_gbp: 0.01 }, session: { price_usdc: "0.012" } });
     const stream = grid.endpoints.find((e) => e.kind === "stream")!;
     expect(stream.pay).toMatchObject({ x402: null, credits: null });
     expect(grid.endpoints.find((e) => e.kind === "free")).toMatchObject({ path: "/v1/grid/countries", pay: { x402: null, credits: null, session: null } });

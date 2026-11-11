@@ -24,7 +24,7 @@ const body = (reqOver: Record<string, unknown> = {}) => ({
   paymentRequirements: requirements(reqOver),
 });
 
-function setup(opts: { token?: string; chainId?: number; gas?: bigint; probeFails?: boolean } = {}) {
+function setup(opts: { token?: string; chainId?: number; gas?: bigint; probeFails?: boolean; feeFails?: boolean } = {}) {
   const core = {
     verify: vi.fn<FacilitatorCore["verify"]>(async () => ({ isValid: true, payer: "0xpayer" })),
     settle: vi.fn<FacilitatorCore["settle"]>(async () => ({ success: true, transaction: "0xtx", network: "eip155:84532", payer: "0xpayer" })),
@@ -37,6 +37,10 @@ function setup(opts: { token?: string; chainId?: number; gas?: bigint; probeFail
       return opts.chainId ?? 84532;
     },
     gasBalanceWei: async () => opts.gas ?? 10n ** 18n,
+    txFee: vi.fn(async () => {
+      if (opts.feeFails) throw new Error("receipt not found");
+      return { gasUsed: 85_740n, feeWei: 514_440_000_000n }; // 85,740 gas at 0.006 gwei
+    }),
   };
   const metrics = new Metrics();
   const app = createApp({
@@ -48,7 +52,7 @@ function setup(opts: { token?: string; chainId?: number; gas?: bigint; probeFail
   });
   const call = (method: string, path: string, json?: unknown, headers: Record<string, string> = { authorization: `Bearer ${TOKEN}` }) =>
     app.request(path, { method, headers: { "content-type": "application/json", ...headers }, body: json === undefined ? undefined : JSON.stringify(json) });
-  return { app, core, metrics, call };
+  return { app, core, chain, metrics, call };
 }
 
 describe("facilitator HTTP API", () => {
@@ -147,6 +151,46 @@ describe("facilitator HTTP API", () => {
       const res = await t.call("POST", "/settle", body());
       expect(await res.json()).toMatchObject({ success: true, transaction: "0xtx" });
       expect(t.metrics.get("facilitator_settle_total", { result: "success" })).toBe(1);
+    });
+
+    it("records each successful settle's real gas cost from its receipt", async () => {
+      await t.call("POST", "/settle", body());
+      await t.call("POST", "/settle", body());
+      await vi.waitFor(() => expect(t.metrics.get("facilitator_settle_fee_recorded_total")).toBe(2));
+      expect(t.chain.txFee).toHaveBeenCalledWith("0xtx");
+      expect(t.metrics.get("facilitator_settle_gas_used_total")).toBe(171_480);
+      expect(t.metrics.get("facilitator_settle_fee_gwei_total")).toBeCloseTo(1028.88, 6);
+      expect(t.metrics.get("facilitator_settle_fee_gwei_last")).toBeCloseTo(514.44, 6);
+    });
+
+    it("answers the settle without waiting for the gas-cost lookup (off the response path)", async () => {
+      let resolve!: (v: { gasUsed: bigint; feeWei: bigint }) => void;
+      (t.chain.txFee as ReturnType<typeof vi.fn>).mockImplementationOnce(() => new Promise((r) => (resolve = r)));
+      const res = await t.call("POST", "/settle", body()); // would hang here if the lookup were awaited
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ success: true, transaction: "0xtx" });
+      expect(t.metrics.get("facilitator_settle_fee_recorded_total")).toBe(0);
+      resolve({ gasUsed: 85_740n, feeWei: 514_440_000_000n });
+      await vi.waitFor(() => expect(t.metrics.get("facilitator_settle_fee_recorded_total")).toBe(1));
+    });
+
+    it("a failed gas-cost lookup never fails the settle", async () => {
+      const f = setup({ feeFails: true });
+      const res = await f.call("POST", "/settle", body());
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ success: true, transaction: "0xtx" });
+      await vi.waitFor(() => expect(f.metrics.get("facilitator_settle_fee_lookup_failed_total")).toBe(1));
+      expect(f.metrics.get("facilitator_settle_fee_recorded_total")).toBe(0);
+    });
+
+    it("records no gas cost for settles that did not happen", async () => {
+      t.core.settle.mockResolvedValueOnce({ success: false, errorReason: "insufficient_funds", transaction: "", network: "eip155:84532" });
+      await t.call("POST", "/settle", body());
+      await t.call("POST", "/settle", body({ payTo: "0x00000000000000000000000000000000000000bb" }));
+      t.core.settle.mockRejectedValueOnce(new Error("receipt timeout"));
+      await t.call("POST", "/settle", body());
+      await new Promise((r) => setTimeout(r, 10));
+      expect(t.chain.txFee).not.toHaveBeenCalled();
     });
 
     it("refuses a disallowed payTo as a final, well-formed SettleResponse", async () => {

@@ -9,7 +9,7 @@
  *
  * Secrets are never in this file. They appear as preserve() and are set out of band
  * (docs/staging.md): ADMIN_TOKEN and SESSION_SECRET on the gateway, FACILITATOR_PRIVATE_KEY and AUTH_TOKEN on the
- * facilitator, AISSTREAM_API_KEY on ingest. Services that need a secret reference the owner's variable instead of copying it.
+ * facilitator, KEEPER_PRIVATE_KEY on gas-keeper, AISSTREAM_API_KEY on ingest. Services that need a secret reference the owner's variable instead of copying it.
  * Do NOT use ctx.randomString for secrets: it is a deterministic hash of the environment and label.
  *
  * Variables are managed: a variable missing from this file is deleted on apply.
@@ -28,6 +28,9 @@ const FACILITATOR_PORT = "8090";
 const RECONCILER_PORT = "8095";
 const INGEST_ENV_PORT = "8091";
 const INGEST_PORT = "8092";
+const GAS_KEEPER_PORT = "8093";
+/** Staging facilitator gas wallet (Keychain: x402-staging-facilitator). gas-keeper sends ETH only here. */
+const STAGING_FACILITATOR_ADDRESS = "0x9F03ad7f2C2c00D4668Dcead2CA3b03d1a0552f5";
 /** The AIS bus, private network only. Pinned: the same version CI tests against. */
 const NATS_IMAGE = "nats:2.10.29-alpine";
 const NATS_URL = "nats://nats.railway.internal:4222";
@@ -209,8 +212,39 @@ export default defineRailway((ctx) => {
     },
   });
 
+  // Keeps the facilitator's gas wallet funded from a bounded USDC float (docs/gas-keeper.md).
+  const gasKeeper = service("gas-keeper", {
+    source,
+    build: build("apps/gas-keeper"),
+    // /healthz, not /readyz: an empty float must not block deploys; /readyz and alerts report it.
+    // Railway starts the new deployment before stopping the old one. The old keeper, on SIGTERM,
+    // finishes only the transaction it is waiting on and exits within 80 s (drainingSeconds covers
+    // that); the new one waits START_DELAY_MS (120 s) before its first tick, so they never act at once.
+    deploy: { ...deploy("pnpm --filter @mx/gas-keeper start", "/healthz"), overlapSeconds: 0, drainingSeconds: 90 },
+    // Exactly one: two keepers would both see the same low balance and both top it up.
+    replicas: { sfo: 1 },
+    networking: { privateNetworkEndpoint: "gas-keeper" },
+    env: {
+      NODE_ENV: "production",
+      PORT: GAS_KEEPER_PORT,
+      LOG_LEVEL: "info",
+      NETWORK: "eip155:84532",
+      RPC_URL: BASE_SEPOLIA_RPC,
+      FACILITATOR_ADDRESS: STAGING_FACILITATOR_ADDRESS,
+      KEEPER_PRIVATE_KEY: preserve(),
+      // Staging test money: small caps so a fault can't burn the testnet float.
+      MAX_USDC_PER_TOPUP: "25",
+      MAX_USDC_PER_DAY: "50",
+      // Base Sepolia's pool is thin and often off the oracle; allow a wide band (cheaper fills always pass).
+      MAX_SLIPPAGE_BPS: "500",
+      FLOAT_LOW_USDC: "5",
+      // A Slack (or similar) incoming webhook, set out of band; without it alerts reach only /readyz.
+      ALERT_WEBHOOK_URL: preserve(),
+    },
+  });
+
   return project("authentic-rebirth", {
     variables: { managed: true },
-    resources: [db, facilitator, gateway, reconciler, ingestEnv, nats, ingest],
+    resources: [db, facilitator, gateway, reconciler, ingestEnv, nats, ingest, gasKeeper],
   });
 });

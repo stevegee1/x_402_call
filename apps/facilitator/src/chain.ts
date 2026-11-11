@@ -9,6 +9,8 @@ export interface ChainProbe {
   readonly address: Address;
   chainId(): Promise<number>;
   gasBalanceWei(): Promise<bigint>;
+  /** What a mined transaction cost us: L2 execution (gasUsed x effective price) plus the OP-stack L1 data fee. */
+  txFee(hash: `0x${string}`): Promise<{ gasUsed: bigint; feeWei: bigint }>;
 }
 
 export function createChain(cfg: Pick<Config, "NETWORK" | "RPC_URL" | "FACILITATOR_PRIVATE_KEY" | "CONFIRMATION_TIMEOUT_MS">) {
@@ -38,6 +40,11 @@ export function createChain(cfg: Pick<Config, "NETWORK" | "RPC_URL" | "FACILITAT
     address: account.address,
     chainId: () => client.getChainId(),
     gasBalanceWei: () => client.getBalance({ address: account.address }),
+    txFee: async (hash) => {
+      const r = await client.getTransactionReceipt({ hash });
+      const l1Fee = (r as { l1Fee?: bigint | null }).l1Fee ?? 0n;
+      return { gasUsed: r.gasUsed, feeWei: r.gasUsed * r.effectiveGasPrice + l1Fee };
+    },
   };
   return { signer, probe };
 }

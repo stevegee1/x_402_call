@@ -7,8 +7,8 @@ import { ERC8004_REGISTRIES } from "../../src/identity/registries";
 import { TierResolver } from "../../src/identity/tiers";
 import { BASE_URL, createTestEnv, type TestEnv } from "../helpers";
 
-// In-process: real app, policy SDK and x402 signing; registry faked. Caps: unknown $0.10,
-// identified $0.20, trusted $0.30 per payer, i.e. 3 / 6 / 9 concurrent $0.033 payments.
+// In-process: real app, policy SDK and x402 signing; registry faked. Caps: unknown $0.11,
+// identified $0.22, trusted $0.33 per payer, i.e. 3 / 6 / 9 concurrent $0.035 payments.
 const NET = "eip155:84532";
 const REG = ERC8004_REGISTRIES[NET]!.identity;
 const REVIEWER = "0x00000000000000000000000000000000000000f1" as Address;
@@ -49,11 +49,11 @@ async function setup(withIdentity = true) {
         minScore: 80,
         timeoutMs: 200,
         totalCapAtomic: 25_000_000n,
-        perPayerCapAtomic: { unknown: 100_000n, identified: 200_000n, trusted: 300_000n },
+        perPayerCapAtomic: { unknown: 110_000n, identified: 220_000n, trusted: 330_000n },
       })
     : undefined;
   const env = await createTestEnv(
-    { EXPOSURE_CAP_PER_PAYER_USD: "0.1", EXPOSURE_CAP_PER_PAYER_IDENTIFIED_USD: "0.2", EXPOSURE_CAP_PER_PAYER_TRUSTED_USD: "0.3" },
+    { EXPOSURE_CAP_PER_PAYER_USD: "0.11", EXPOSURE_CAP_PER_PAYER_IDENTIFIED_USD: "0.22", EXPOSURE_CAP_PER_PAYER_TRUSTED_USD: "0.33" },
     { identity, sellerIdentity: { agentRegistry: `${NET}:${REG}`, agentId: "7" } },
   );
   return { env, registry };

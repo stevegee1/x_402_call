@@ -1,8 +1,10 @@
+import { GAS_ALLOWANCE_GBP_MICROS, GAS_ALLOWANCE_USD, usdToUsdcAtomic } from "@mx/shared";
 import { describe, expect, it } from "vitest";
 import { revenueAccount } from "../../src/ledger/journal";
 import { Catalog, CatalogError, productOfResource } from "../../src/platform/catalog";
 import type { PricedResource, Product, ProductRoutes } from "../../src/platform/product";
 import { MaritimeProduct } from "../../src/products/maritime";
+import { GRID_HISTORY_RESOURCES, GRID_RESOURCES, GRID_STREAM_RESOURCES } from "../../src/products/grid/resources";
 import { MARITIME_RESOURCES } from "../../src/products/maritime/resources";
 import { AcmeProduct } from "./fake-product";
 
@@ -99,12 +101,44 @@ describe("Catalog validation (fails at boot, never on a paid request)", () => {
 describe("maritime product definition", () => {
   it("keeps the published price list and stable resource ids", () => {
     expect(MARITIME_RESOURCES.map((r) => [r.id, r.pricing.priceUsd, r.pricing.creditsGbpMicros])).toEqual([
-      ["maritime.vessels", "0.033", 25_000],
-      ["maritime.vessel", "0.033", 25_000],
-      ["maritime.density", "0.033", 25_000],
-      ["maritime.queue", "0.066", 50_000],
-      ["maritime.anomalies", "0.066", 50_000],
+      ["maritime.vessels", "0.035", 27_000],
+      ["maritime.vessel", "0.035", 27_000],
+      ["maritime.density", "0.035", 27_000],
+      ["maritime.queue", "0.068", 52_000],
+      ["maritime.anomalies", "0.068", 52_000],
     ]);
+  });
+
+  it("every per-call price is its base price plus the network-fee allowance, on both rails", () => {
+    // Base prices before the allowance (2026-11-11). Changing GAS_ALLOWANCE_* without moving the
+    // prices (or the reverse) fails here, so the allowance gas-keeper alerts against is what we charge.
+    const BASE: Record<string, [usd: string, gbpMicros: number]> = {
+      "maritime.vessels": ["0.033", 25_000],
+      "maritime.vessel": ["0.033", 25_000],
+      "maritime.density": ["0.033", 25_000],
+      "maritime.queue": ["0.066", 50_000],
+      "maritime.anomalies": ["0.066", 50_000],
+      "grid.intensity": ["0.01", 8_000],
+      "grid.forecast": ["0.02", 15_000],
+      "grid.window": ["0.05", 40_000],
+      "grid.history": ["0.05", 40_000],
+      "grid.revisions": ["0.02", 15_000],
+      "grid.stream": ["0.01", 8_000],
+    };
+    const all = [...MARITIME_RESOURCES, ...GRID_RESOURCES, ...GRID_HISTORY_RESOURCES, ...GRID_STREAM_RESOURCES];
+    expect(all.map((r) => r.id).sort()).toEqual(Object.keys(BASE).sort());
+    for (const r of all) {
+      const [usd, gbp] = BASE[r.id]!;
+      expect(usdToUsdcAtomic(r.pricing.priceUsd), r.id).toBe(usdToUsdcAtomic(usd) + usdToUsdcAtomic(GAS_ALLOWANCE_USD));
+      expect(r.pricing.creditsGbpMicros, r.id).toBe(gbp + GAS_ALLOWANCE_GBP_MICROS);
+    }
+  });
+
+  it("every real price displays exactly: credits in whole £0.001 (pages show 3 dp), USD in whole $0.001", () => {
+    for (const r of [...MARITIME_RESOURCES, ...GRID_RESOURCES, ...GRID_HISTORY_RESOURCES, ...GRID_STREAM_RESOURCES]) {
+      expect(r.pricing.creditsGbpMicros % 1_000, `${r.id} credits`).toBe(0);
+      expect(r.pricing.priceUsd, `${r.id} usd`).toMatch(/^\d+\.\d{1,3}$/);
+    }
   });
 
   it("passes catalog validation with every pre-platform path kept as an alias", () => {

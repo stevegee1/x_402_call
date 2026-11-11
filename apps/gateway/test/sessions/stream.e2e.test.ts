@@ -96,22 +96,22 @@ describe("grid push over SSE, paid per event from an x402 session", () => {
     expect((first!.data as { forecast: unknown[] }).forecast.length).toBeGreaterThan(90);
     updates.publish();
     expect(await events.next()).toMatchObject({ event: "forecast" });
-    expect(await spent(id)).toBe(20_000n); // two events at $0.01
+    expect(await spent(id)).toBe(24_000n); // two events at $0.012
     await events.cancel();
   });
 
   it("ends with session_ended once the balance is spent", async () => {
-    const { token, id } = await session(); // $1: 100 events at $0.01
+    const { token, id } = await session(); // $1: 83 events at $0.012, then $0.004 is left: less than one event
     const events = sse(await open(token));
     expect((await events.next())!.event).toBe("forecast");
-    for (let i = 0; i < 99; i++) {
+    for (let i = 0; i < 82; i++) {
       updates.publish();
       expect((await events.next())!.event).toBe("forecast");
     }
     updates.publish();
     expect(await events.next()).toEqual({ event: "session_ended", data: { reason: "balance_spent" } });
     expect(await events.next(200)).toBeNull(); // closed
-    expect(await spent(id)).toBe(1_000_000n);
+    expect(await spent(id)).toBe(996_000n);
     expect(updates.size).toBe(0);
   });
 
@@ -141,7 +141,7 @@ describe("grid push over SSE, paid per event from an x402 session", () => {
     await feed.poll();
     updates.publish();
     expect(await events.next(200)).toBeNull();
-    expect(await spent(id)).toBe(10_000n); // the connect event only
+    expect(await spent(id)).toBe(12_000n); // the connect event only
     await events.cancel();
   });
 
@@ -157,7 +157,7 @@ describe("grid push over SSE, paid per event from an x402 session", () => {
   it("is listed with its per-event price and the session rail", async () => {
     const countries = await (await env.fetch(`${BASE_URL}/v1/grid/countries`)).json();
     const stream = countries.data[0].endpoints.find((e: { id: string }) => e.id === "grid.stream");
-    expect(stream).toMatchObject({ price_usdc: "0.01" });
+    expect(stream).toMatchObject({ price_usdc: "0.012" });
   });
 });
 

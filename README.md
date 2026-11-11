@@ -2,8 +2,9 @@
 
 Live maritime data for the Dover Strait, the Port of Rotterdam and the Panama Canal. It is sold per request to AI agents and businesses:
 
-- **x402**: account-free, USDC on Base, 0.033–0.066 USDC per call
-- **Fiat credits**: prepaid GBP (Stripe or bank transfer), £0.025–£0.05 per call
+- **x402**: account-free, USDC on Base, 0.012–0.068 USDC per call. Buyers sign gasless payments; the
+  price includes a $0.002 network-fee allowance that pays our facilitator's gas ([docs/gas-keeper.md](docs/gas-keeper.md))
+- **Fiat credits**: prepaid GBP (Stripe or bank transfer), £0.010–£0.052 per call
 
 The repo also contains a **policy SDK** that enterprises use to govern agent spending (budgets, allowlists, circuit breakers, ERP accrual exports), and an **MCP server** that lets Claude and other agents use the data.
 
@@ -52,7 +53,8 @@ Install Foundry with `foundryup --install v1.8.5` (CI pins the same version). Co
 | `apps/gateway` | Hono API: platform kernel (catalog, billing on x402 + credits, settlement, ledger, admin console) and products (`src/products/maritime`) |
 | `apps/ingest` | AIS ingest: own receivers (UDP/TCP NMEA), aisstream.io, simulator → NATS + Postgres |
 | `apps/ingest-env` | Environmental data ingest: stores every published NESO version in Postgres (`env_observation`), for point-in-time history |
-| `apps/facilitator` | Self-hosted x402 facilitator (`/supported`, `/verify`, `/settle`): the gateway's fallback when CDP is down, and the settlement path in e2e |
+| `apps/facilitator` | Self-hosted x402 facilitator (`/supported`, `/verify`, `/settle`): the gateway's fallback when CDP is down, and the settlement path in e2e. Records each settle's gas cost |
+| `apps/gas-keeper` | Keeps the facilitator's gas wallet funded: swaps USDC from a bounded float wallet to ETH on Uniswap and tops it up; alerts when a settle costs more than the price allowance ([runbook](docs/gas-keeper.md)) |
 | `apps/mcp` | MCP server (stdio) for AI assistants: every product, sessions, spending limits ([setup](docs/mcp.md)) |
 | `packages/ais` | NMEA/AIS decoder, dedupe, traffic simulator |
 | `packages/policy-sdk` | Buyer-side policy engine (Product B, thin) |
@@ -63,7 +65,7 @@ Install Foundry with `foundryup --install v1.8.5` (CI pins the same version). Co
 | `contracts` | Foundry: test-only MockUSDC (EIP-3009), Multicall3Lite and ERC-8004 registry mocks, with Forge tests |
 | `e2e` | End-to-end harness and ledger/chain reconciler |
 | `db/migrations` | SQL schema |
-| `scripts` | Demo agent, production smoke check |
+| `scripts` | Demo agent, production smoke check, `gas:cost` (gas per settle from real settles, at Base mainnet fees) |
 
 ## API
 
@@ -74,11 +76,11 @@ billed by the platform kernel on both rails. `GET /v1/products` lists them with 
 |---|---|---|
 | `GET /v1/products`, `/v1/products/{id}`, `/status`, `/openapi.json` | free | free |
 | `GET /v1/maritime/regions` | free | free |
-| `GET /v1/maritime/{region}/vessels` (`?category=&min_speed_kn=&bbox=`) | 0.033 USDC | £0.025 |
-| `GET /v1/maritime/{region}/vessels/{mmsi}` | 0.033 USDC | £0.025 |
-| `GET /v1/maritime/{region}/density` | 0.033 USDC | £0.025 |
-| `GET /v1/maritime/{region}/queue` | 0.066 USDC | £0.05 |
-| `GET /v1/maritime/{region}/anomalies` | 0.066 USDC | £0.05 |
+| `GET /v1/maritime/{region}/vessels` (`?category=&min_speed_kn=&bbox=`) | 0.035 USDC | £0.027 |
+| `GET /v1/maritime/{region}/vessels/{mmsi}` | 0.035 USDC | £0.027 |
+| `GET /v1/maritime/{region}/density` | 0.035 USDC | £0.027 |
+| `GET /v1/maritime/{region}/queue` | 0.068 USDC | £0.052 |
+| `GET /v1/maritime/{region}/anomalies` | 0.068 USDC | £0.052 |
 
 `{region}` is one of `dover`, `rotterdam`, `panama`. The pre-platform paths (`/v1/regions`,
 `/v1/{region}/…`) are still served as deprecated aliases with `Deprecation: true` and a
@@ -92,9 +94,9 @@ Forecast (England, Scotland, Wales; half-hourly, about 48 h ahead). Enable with 
 
 | Endpoint | Price (x402 / credits) | Returns |
 |---|---|---|
-| `GET /v1/grid/{country}/intensity` | $0.01 / £0.008 | gCO2/kWh now, next half-hour, share of the next 24 h that is cleaner |
-| `GET /v1/grid/{country}/forecast?hours=1-48` | $0.02 / £0.015 | half-hourly forecast from now |
-| `GET /v1/grid/{country}/window?duration_h=0.5-12&within_h=…48` | $0.05 / £0.04 | cleanest contiguous window and the saving versus starting now |
+| `GET /v1/grid/{country}/intensity` | $0.012 / £0.010 | gCO2/kWh now, next half-hour, share of the next 24 h that is cleaner |
+| `GET /v1/grid/{country}/forecast?hours=1-48` | $0.022 / £0.017 | half-hourly forecast from now |
+| `GET /v1/grid/{country}/window?duration_h=0.5-12&within_h=…48` | $0.052 / £0.042 | cleanest contiguous window and the saving versus starting now |
 
 - **Licence.** The data is used under the NESO Open Data Licence, which permits commercial use with
   the attribution "Supported by National Energy SO Open Data". Every response carries it, plus a
@@ -130,8 +132,8 @@ values that changed to `env_observation`, stamped with `ingested_at` (the as-of 
 
   | Endpoint | x402 | Credits | Returns |
   |---|---|---|---|
-  | `GET /v1/grid/{country}/history?from=&to=&as_of=` | $0.05 | £0.04 | Each half-hour in `[from, to)` (up to 7 days) as known at `as_of` (default now), with `known_at` and `published_at` |
-  | `GET /v1/grid/{country}/revisions?period=` | $0.02 | £0.015 | Every version of one half-hour, oldest first |
+  | `GET /v1/grid/{country}/history?from=&to=&as_of=` | $0.052 | £0.042 | Each half-hour in `[from, to)` (up to 7 days) as known at `as_of` (default now), with `known_at` and `published_at` |
+  | `GET /v1/grid/{country}/revisions?period=` | $0.022 | £0.017 | Every version of one half-hour, oldest first |
 
   Times are ISO 8601 with a zone. Older history comes from Postgres, with the same answers. Grid goes
   stale (503, never charged) if the store stops refreshing for 2 min or ingest hasn't fetched for 20 min.
@@ -150,7 +152,7 @@ a buyer pays once with x402 and then reads any product with `Authorization: Sess
 |---|---|---|
 | `GET /v1/sessions/sizes` | free | Session sizes and how to use them |
 | `GET /v1/sessions/usd1` · `usd5` · `usd20` | $1 · $5 · $20 | `201 {session_token, session_id, expires_at, …}`, issued only after the payment settles on chain |
-| `GET /v1/grid/{country}/stream` | $0.01 per event, session only | SSE: the forecast on connect, then each new version (`GRID_SOURCE=store`) |
+| `GET /v1/grid/{country}/stream` | $0.012 per event, session only | SSE: the forecast on connect, then each new version (`GRID_SOURCE=store`) |
 
 - **Reads:** each one spends the product's x402 price from the session. A read is an HMAC check and an
   in-memory debit, with no facilitator, chain or database. Responses carry

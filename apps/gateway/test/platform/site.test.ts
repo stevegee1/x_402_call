@@ -55,6 +55,13 @@ describe("public site", () => {
     }
   });
 
+  it("tells buyers the price includes the network fee and their wallet needs no ETH", async () => {
+    const { html } = await page();
+    expect(html).toContain("USDC prices include VAT and the on-chain network fee, so your wallet never needs ETH.");
+    expect(html).toContain("<h3>No gas, no extra fees</h3>");
+    expect(html).toMatch(/payments are gasless signatures, and the network fee is already in the price/);
+  });
+
   it("says when data is simulated or delayed, and never calls it live", async () => {
     const acme = new AcmeProduct();
     const { env, html } = await page({}, [acme]);

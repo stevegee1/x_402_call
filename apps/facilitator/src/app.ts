@@ -115,6 +115,25 @@ export function createApp(d: FacilitatorDeps) {
     }
   });
 
+  /**
+   * The gas each settle really cost, from its receipt: what the price's network-fee allowance pays
+   * for. Off the response path; a failed lookup costs a metric, never a settle.
+   */
+  const recordFee = async (tx: string) => {
+    try {
+      const { gasUsed, feeWei } = await d.chain.txFee(tx as `0x${string}`);
+      const feeGwei = Number(feeWei) / 1e9;
+      d.metrics.inc("facilitator_settle_gas_used_total", undefined, Number(gasUsed));
+      d.metrics.inc("facilitator_settle_fee_gwei_total", undefined, feeGwei);
+      d.metrics.inc("facilitator_settle_fee_recorded_total");
+      d.metrics.set("facilitator_settle_fee_gwei_last", feeGwei);
+      d.log.info({ tx, gas_used: gasUsed.toString(), fee_wei: feeWei.toString() }, "settle gas cost");
+    } catch (e) {
+      d.metrics.inc("facilitator_settle_fee_lookup_failed_total");
+      d.log.warn({ err: e, tx }, "settle gas cost lookup failed");
+    }
+  };
+
   app.post("/settle", auth, limit, async (c) => {
     const body = await parse(await c.req.json().catch(() => null));
     if (!body) return c.json({ error: "invalid_request" }, 400);
@@ -127,8 +146,10 @@ export function createApp(d: FacilitatorDeps) {
     try {
       const res = await d.core.settle(body.payload, body.requirements);
       d.metrics.inc("facilitator_settle_total", { result: res.success ? "success" : "failed" });
-      if (res.success) d.log.info({ tx: res.transaction, payer: res.payer, ms: Date.now() - t0 }, "settled");
-      else d.log.warn({ reason: res.errorReason, payer: res.payer }, "settle rejected");
+      if (res.success) {
+        d.log.info({ tx: res.transaction, payer: res.payer, ms: Date.now() - t0 }, "settled");
+        void recordFee(res.transaction);
+      } else d.log.warn({ reason: res.errorReason, payer: res.payer }, "settle rejected");
       return c.json(res);
     } catch (e) {
       // The transaction may or may not have been broadcast: report "unknown", never "failed".

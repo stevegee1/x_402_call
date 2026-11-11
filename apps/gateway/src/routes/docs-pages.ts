@@ -225,7 +225,7 @@ export function renderCatalogPage(d: AppDeps, viewer?: Viewer | null): string {
 <div class="page-head">
   <span class="overline">Catalog</span>
   <h1>Data you can buy, one request at a time</h1>
-  <p class="lede">Every product, where it covers right now, and what each call costs. Pay per call in USDC with x402, from prepaid GBP credits, or from an x402 session. You're never charged for stale data.</p>
+  <p class="lede">Every product, where it covers right now, and what each call costs. Pay per call in USDC with x402, from prepaid GBP credits, or from an x402 session. Prices include the on-chain network fee, so a wallet needs only USDC. You're never charged for stale data.</p>
   <div class="actions"><a class="btn filled" href="/docs">API reference</a><a class="btn outlined" href="/v1/products?format=json">Catalog as JSON</a></div>
 </div>
 ${data.map(dataProductSection).join("\n")}

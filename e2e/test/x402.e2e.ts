@@ -15,7 +15,7 @@ const stack = inject("stack");
 const chain = clients(stack.rpcUrl);
 const gw = stack.gateways;
 const VESSELS = "/v1/maritime/dover/vessels";
-const PRICE = 33_000n; // maritime.vessels: $0.033
+const PRICE = 35_000n; // maritime.vessels: $0.035
 
 /** Payments each scenario expects to end up settled; the final reconciliation checks the total. */
 let expectedSettled = 0;
@@ -80,7 +80,7 @@ describe("stack", () => {
     const res = await fetch(`${gw.async}${VESSELS}`);
     expect(res.status).toBe(402);
     const body = await res.json();
-    expect(body.accepts[0]).toMatchObject({ scheme: "exact", network: "eip155:84532", asset: BASE_SEPOLIA_USDC, amount: "33000", payTo: stack.payTo });
+    expect(body.accepts[0]).toMatchObject({ scheme: "exact", network: "eip155:84532", asset: BASE_SEPOLIA_USDC, amount: "35000", payTo: stack.payTo });
   });
 });
 
@@ -100,7 +100,7 @@ describe("x402: async settlement", () => {
 
     const id = res.headers.get("X-Payment-Id")!;
     const p = await waitPayment(gw.async, id);
-    expect(p).toMatchObject({ status: "settled", amount_usdc: 0.033, resource: "maritime.vessels" });
+    expect(p).toMatchObject({ status: "settled", amount_usdc: 0.035, resource: "maritime.vessels" });
     await expectOnChainSettlement(p.transaction!, buyer.address, nonce);
     countSettled();
 
@@ -173,7 +173,7 @@ describe("x402: replicas share one settlement queue (I7)", () => {
 
 describe("x402: exposure caps are global across replicas (R4)", () => {
   it("one payer's concurrent payments on two replicas: only what fits the per-payer cap is served before settlement", async () => {
-    expect(stack.perPayerCapUsd).toBe(0.1); // three $0.033 payments fit; a fourth would not
+    expect(stack.perPayerCapUsd).toBe(0.11); // three $0.035 payments fit; a fourth would not
     const buyer = await newBuyer(stack.rpcUrl, 1_000_000n);
     const paid = await Promise.all(Array.from({ length: 6 }, (_, i) => pay(buyer, `${i % 2 ? gw.async : gw.flaky}${VESSELS}`)));
     for (const p of paid) expect(p.res.status).toBe(200);
@@ -370,10 +370,10 @@ describe("grid product (second product on the kernel)", () => {
     expect(body).toMatchObject({ country: "england", unit: "gCO2/kWh", mode: "live", window: { mean_intensity: 115 } });
     expect(body.source.attribution).toBe("Supported by National Energy SO Open Data");
     const settle = decodePaymentResponseHeader(res.headers.get("PAYMENT-RESPONSE")!);
-    await expectOnChainSettlement(settle.transaction, buyer.address, nonce, 50_000n);
-    countSettled(1, 50_000n);
+    await expectOnChainSettlement(settle.transaction, buyer.address, nonce, 52_000n);
+    countSettled(1, 52_000n);
     const p = await waitPayment(gw.sync, res.headers.get("X-Payment-Id")!);
-    expect(p).toMatchObject({ status: "settled", resource: "grid.window", amount_usdc: 0.05 });
+    expect(p).toMatchObject({ status: "settled", resource: "grid.window", amount_usdc: 0.052 });
   });
 
   it("bad parameters are refused before the challenge, on every replica, and nothing is signed or charged", async () => {
@@ -386,8 +386,8 @@ describe("grid product (second product on the kernel)", () => {
 
   it("grid revenue is booked to its own ledger account", async () => {
     const summary = await (await fetch(`${gw.async}/admin/summary`, { headers: { authorization: `Bearer ${stack.adminToken}` } })).json();
-    expect(summary.ledger_balances_gbp["revenue:grid"]).toBeLessThan(0); // credit balance: 0.05 USD * 0.8, ex VAT
-    expect(summary.ledger_balances_gbp["revenue:grid"]).toBeCloseTo(-(0.05 * 0.8) / 1.2, 6);
+    expect(summary.ledger_balances_gbp["revenue:grid"]).toBeLessThan(0); // credit balance: 0.052 USD * 0.8, ex VAT
+    expect(summary.ledger_balances_gbp["revenue:grid"]).toBeCloseTo(-(0.052 * 0.8) / 1.2, 6);
   });
 });
 
@@ -420,8 +420,8 @@ describe("x402 sessions (prepay once, then read from memory on any replica)", ()
     for (;;) {
       summary = await (await fetch(`${gw.async}/admin/summary`, { headers: { authorization: `Bearer ${stack.adminToken}` } })).json();
       const left = summary.ledger_balances_gbp["liability:session_prepaid"] ?? 0;
-      // net = 1 USDC x 0.8 / 1.2; after 24 reads, (1 - 24 x 0.033) of it remains as liability
-      if (Math.abs(left - -((1 - 24 * 0.033) * 0.8) / 1.2) < 1e-5) break;
+      // net = 1 USDC x 0.8 / 1.2; after 24 reads, (1 - 24 x 0.035) of it remains as liability
+      if (Math.abs(left - -((1 - 24 * 0.035) * 0.8) / 1.2) < 1e-5) break;
       if (Date.now() > deadline) throw new Error(`session usage not reported: liability ${left}`);
       await new Promise((r) => setTimeout(r, 200));
     }
@@ -460,8 +460,8 @@ describe("credits rail", () => {
     // Spend on a different replica than the one that sold the credits: the balance lives in Postgres.
     const res = await fetch(`${gw.sync}${VESSELS}`, { headers: { authorization: `Bearer ${api_key}` } });
     expect(res.status).toBe(200);
-    expect(res.headers.get("X-Credits-Charged-Gbp-Micros")).toBe("25000");
-    expect(res.headers.get("X-Credits-Balance-Gbp-Micros")).toBe("975000");
+    expect(res.headers.get("X-Credits-Charged-Gbp-Micros")).toBe("27000");
+    expect(res.headers.get("X-Credits-Balance-Gbp-Micros")).toBe("973000");
     expect(await usdcBalance(stack.rpcUrl, stack.payTo)).toBe(payToBefore);
   });
 });
@@ -490,6 +490,18 @@ describe("reconciliation", () => {
     expect(success).toBe(expectedSettled);
   });
 
+  it("the facilitator recorded the real gas cost of every settle it made, from the receipts", async () => {
+    const metrics = await (await fetch(`${stack.facilitator.url}/metrics`)).text();
+    const num = (name: string) => Number(new RegExp(`^${name} ([\\d.e+]+)$`, "m").exec(metrics)?.[1] ?? NaN);
+    expect(num("facilitator_settle_fee_recorded_total")).toBe(expectedSettled);
+    expect(metrics).not.toMatch(/^facilitator_settle_fee_lookup_failed_total/m);
+    // One USDC transferWithAuthorization: tens of thousands of gas each (85.7k on Base for real USDC).
+    const perSettle = num("facilitator_settle_gas_used_total") / expectedSettled;
+    expect(perSettle).toBeGreaterThan(30_000);
+    expect(perSettle).toBeLessThan(150_000);
+    expect(num("facilitator_settle_fee_gwei_total")).toBeGreaterThan(0);
+  });
+
   it("detects money that reached payTo outside the gateway", async () => {
     // A buyer's authorisation submitted straight to the token, bypassing the gateway and its ledger.
     const rogue = await newBuyer(stack.rpcUrl, 1_000_000n);
@@ -507,7 +519,7 @@ describe("reconciliation", () => {
     const report = await run();
     expect(report.ok).toBe(false);
     expect(report.problems).toEqual([
-      { code: "unrecorded_onchain_transfer", tx: hash, from: rogue.address.toLowerCase(), value: "33000", nonce: a.nonce },
+      { code: "unrecorded_onchain_transfer", tx: hash, from: rogue.address.toLowerCase(), value: String(PRICE), nonce: a.nonce },
       { code: "balance_mismatch", balance: String(expectedAtomic + PRICE), transfers: String(expectedAtomic + PRICE), settled: String(expectedAtomic) },
     ]);
   });

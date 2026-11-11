@@ -61,6 +61,27 @@ importers:
         specifier: 3.25.76
         version: 3.25.76
 
+  apps/gas-keeper:
+    dependencies:
+      '@hono/node-server':
+        specifier: 2.1.5
+        version: 2.1.5(hono@4.13.13)
+      '@mx/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
+      hono:
+        specifier: 4.13.13
+        version: 4.13.13
+      pino:
+        specifier: 10.4.0
+        version: 10.4.0
+      viem:
+        specifier: 2.57.10
+        version: 2.57.10(typescript@5.9.3)(zod@3.25.76)
+      zod:
+        specifier: 3.25.76
+        version: 3.25.76
+
   apps/gateway:
     dependencies:
       '@coinbase/x402':

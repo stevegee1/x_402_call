@@ -16,7 +16,7 @@ describe("tools generated from the gateway catalog", () => {
   });
 
   it("descriptions carry the live prices from the catalog", () => {
-    expect(tool("grid_intensity").description).toMatch(/^Paid: 0\.01 USDC \(x402\), £0\.008 \(credits\), 0\.01 USDC from a session\./);
+    expect(tool("grid_intensity").description).toMatch(/^Paid: 0\.012 USDC \(x402\), £0\.01 \(credits\), 0\.012 USDC from a session\./);
     expect(tool("maritime_regions").description).toMatch(/^Free\./);
   });
 

@@ -1,4 +1,4 @@
-# One image for every Node service (gateway, facilitator, reconciler, ingest, ingest-env); the start command
+# One image for every Node service (gateway, facilitator, gas-keeper, reconciler, ingest, ingest-env); the start command
 # selects the app. Pinned by digest: the base image can only change in a reviewed commit.
 FROM node:22.23.3-alpine3.24@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402
 RUN corepack enable && apk add --no-cache tini
@@ -12,6 +12,7 @@ COPY packages/policy-sdk/package.json packages/policy-sdk/
 COPY packages/reconcile/package.json packages/reconcile/
 COPY packages/shared/package.json packages/shared/
 COPY apps/facilitator/package.json apps/facilitator/
+COPY apps/gas-keeper/package.json apps/gas-keeper/
 COPY apps/gateway/package.json apps/gateway/
 COPY apps/ingest/package.json apps/ingest/
 COPY apps/ingest-env/package.json apps/ingest-env/
