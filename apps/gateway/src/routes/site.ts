@@ -51,11 +51,11 @@ section{padding:80px 0;border-top:1px solid var(--outline-v)}
 .size{background:var(--surface);border:1px solid var(--outline-v);border-radius:16px;padding:18px}
 .size b{display:block;font:400 28px/1.2 var(--font-display)}.size span{font-size:14px;color:var(--on-surface-v)}
 #try-out{min-height:110px;margin:20px 0 0;white-space:pre-wrap;overflow-wrap:anywhere}
-.guarantees{display:grid;gap:20px;grid-template-columns:repeat(4,minmax(0,1fr))}
+.guarantees{display:grid;gap:20px;grid-template-columns:repeat(5,minmax(0,1fr))}
 .guarantees>div{background:var(--surface-dim);border-radius:20px;padding:22px}
 .guarantees p{color:var(--on-surface-v);margin:6px 0 0}.guarantees h3{font-size:16px}
 .identity-note{margin:24px 0 16px}
-@media (max-width:960px){.hero{grid-template-columns:minmax(0,1fr);padding:48px 0}.steps,.guarantees{grid-template-columns:repeat(2,minmax(0,1fr))}.panel{grid-template-columns:minmax(0,1fr)}}
+@media (max-width:960px){.hero{grid-template-columns:minmax(0,1fr);padding:48px 0}.steps,.guarantees{grid-template-columns:repeat(2,minmax(0,1fr))}.guarantees>div:last-child:nth-child(odd){grid-column:1/-1}.panel{grid-template-columns:minmax(0,1fr)}}
 @media (max-width:720px){.offer,.steps,.guarantees,.sizes{grid-template-columns:minmax(0,1fr)}.fast{grid-template-columns:minmax(0,1fr)}section{padding:56px 0}}
 `;
 
@@ -239,7 +239,7 @@ function howToUse(d: AppDeps, base: string, first: { path: string } | undefined,
     `<button type="button" role="tab" id="tab-${id}" aria-controls="panel-${id}" aria-selected="${first}"${first ? "" : ' tabindex="-1"'}>${esc(label)}</button>`;
   const agent = `<div class="panel" role="tabpanel" id="panel-agent" aria-labelledby="tab-agent">
     <ol>
-      <li><b>Give your agent a wallet</b> with a little USDC on ${esc(network)}. It never needs ETH: payments are gasless signatures.</li>
+      <li><b>Give your agent a wallet</b> with a little USDC on ${esc(network)}. It never needs ETH: payments are gasless signatures, and the network fee is already in the price.</li>
       <li><b>Call any endpoint.</b> The 402 response states the exact price and where to pay.</li>
       <li><b>Sign and repeat the request.</b> The x402 client does both; the data comes back straight away.</li>
       ${d.identity ? `<li><b>Optional:</b> send an ERC-8004 <code>X-Agent-Id</code> header for a higher allowance.</li>` : ""}
@@ -375,7 +375,7 @@ ${mainnet ? "" : `<div class="banner" role="note">Test environment. Payments use
     <p class="sub">Built on <a href="https://www.x402.org/" rel="noopener">x402</a>. Your agent does it all in one exchange, without a human in the loop.</p>
     <ol class="steps">
       <li ><h3>Ask</h3><p>Your agent calls an endpoint and gets a 402 response stating the exact price.</p></li>
-      <li ><h3>Pay</h3><p>It signs a USDC payment on ${esc(network)} and repeats the request. The wallet doesn't need ETH for gas.</p></li>
+      <li ><h3>Pay</h3><p>It signs a USDC payment on ${esc(network)} and repeats the request. The wallet doesn't need ETH: we pay the network fee, and it's included in the price.</p></li>
       <li ><h3>Receive</h3><p>The data comes back straight away. Stale data or a failed request is never charged.</p></li>
       <li ><h3>Settle</h3><p>The payment settles on chain, and our books are reconciled against it.</p></li>
     </ol>
@@ -393,7 +393,7 @@ ${mainnet ? "" : `<div class="banner" role="note">Test environment. Payments use
   <section id="pricing" aria-labelledby="pricing-h">
     <span class="overline">Pricing</span>
     <h2 id="pricing-h">Products and prices</h2>
-    <p class="sub">Priced per call. USDC prices include VAT; credit prices exclude it, as VAT is charged when you top up. A dash means that way of paying isn't accepted for that endpoint.</p>
+    <p class="sub">Priced per call, and the price you see is the whole price. USDC prices include VAT and the on-chain network fee, so your wallet never needs ETH. Credit prices exclude VAT, as VAT is charged when you top up. A dash means that way of paying isn't accepted for that endpoint.</p>
     <div class="cards">${products.map((p) => productCard(d, p)).join("\n")}${sessions ? sessionsCard(sessions) : ""}</div>
   </section>
 
@@ -413,6 +413,7 @@ ${mainnet ? "" : `<div class="banner" role="note">Test environment. Payments use
     <div class="guarantees">
       <div><h3>No charge for stale data</h3><p>If a data feed is behind, paid calls return 503 and you aren't charged.</p></div>
       <div><h3>No charge for failed requests</h3><p>If a request is invalid or can't be served, you aren't charged for it.</p></div>
+      <div><h3>No gas, no extra fees</h3><p>The price in the 402 offer is everything you pay. We pay the network fee to settle it, so your wallet needs only USDC.</p></div>
       <div><h3>A payment is used once</h3><p>Each signed payment works one time, so a replay can't charge you twice.</p></div>
       <div><h3>Books checked against the chain</h3><p>Our ledger is regularly reconciled against on-chain payments.</p></div>
     </div>

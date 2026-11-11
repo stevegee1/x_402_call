@@ -109,9 +109,9 @@ describe("kernel: a second product is billed by the platform", () => {
 
     const summary = await (await env.fetch(`${BASE_URL}/admin/summary`, { headers: admin })).json();
     expect(summary.ledger_balances_gbp["revenue:acme"]).toBeCloseTo(-0.033333, 6);
-    expect(summary.ledger_balances_gbp["revenue:maritime"]).toBeCloseTo(-0.022, 6);
+    expect(summary.ledger_balances_gbp["revenue:maritime"]).toBeCloseTo(-0.023333, 6); // $0.035 x 0.8 FX / 1.2 VAT
     const vat = await (await env.fetch(`${BASE_URL}/admin/vat-summary`, { headers: admin })).json();
-    expect(vat.box6_total_sales_ex_vat_gbp).toBeCloseTo(0.033333 + 0.022, 6);
+    expect(vat.box6_total_sales_ex_vat_gbp).toBeCloseTo(0.033333 + 0.023333, 6);
     expect(verifyChain(await env.store.journal())).toEqual({ ok: true });
   });
 });

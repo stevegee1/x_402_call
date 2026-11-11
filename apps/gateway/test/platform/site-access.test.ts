@@ -49,7 +49,7 @@ describe("public site with sessions and streams", () => {
   it("shows the stream per event with a dash for credits, since only a session can pay for it", () => {
     const row = /<tr><td><code>GET \/v1\/grid\/:country\/stream<\/code>[\s\S]*?<\/tr>/.exec(html)?.[0];
     expect(row).toBeDefined();
-    expect(row).toContain("$0.01 / event");
+    expect(row).toContain("$0.012 / event");
     expect(row).toContain('title="Not payable with credits">—');
     expect(row).not.toMatch(/£\d/);
   });
@@ -112,7 +112,7 @@ describe("OpenAPI with sessions and streams", () => {
     const env = await fullEnv();
     const spec = await (await env.fetch(`${BASE_URL}/openapi.json`)).json();
     const stream = spec.paths["/v1/grid/{country}/stream"]?.get;
-    expect(stream).toMatchObject({ operationId: "grid.stream", security: [{ session: [] }], "x-session": { price_usdc_per_event: "0.01" } });
+    expect(stream).toMatchObject({ operationId: "grid.stream", security: [{ session: [] }], "x-session": { price_usdc_per_event: "0.012" } });
     expect(stream.responses["200"].content).toHaveProperty("text/event-stream");
     expect(spec.components.securitySchemes.session).toMatchObject({ type: "apiKey", in: "header", name: "Authorization" });
 

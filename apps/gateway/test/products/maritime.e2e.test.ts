@@ -25,7 +25,7 @@ describe("maritime: pre-platform paths stay served as deprecated aliases", () =>
     expect(res.headers.get("Deprecation")).toBe("true");
     expect(res.headers.get("Link")).toBe(`<${BASE_URL}/v1/maritime/dover/vessels>; rel="successor-version"`);
     const pr = decodePaymentRequiredHeader(res.headers.get("PAYMENT-REQUIRED")!);
-    expect(pr.accepts[0]!.amount).toBe("33000");
+    expect(pr.accepts[0]!.amount).toBe("35000");
     expect(pr.resource.url).toBe(`${BASE_URL}/v1/dover/vessels`); // the URL the buyer asked for, which it signs against
   });
 
@@ -41,7 +41,7 @@ describe("maritime: pre-platform paths stay served as deprecated aliases", () =>
     expect(res.status).toBe(200);
     expect(res.headers.get("Deprecation")).toBe("true");
     const [p] = await env.store.listPayments({ limit: 1 });
-    expect(p).toMatchObject({ endpoint: "maritime.queue", amountAtomic: 66_000n });
+    expect(p).toMatchObject({ endpoint: "maritime.queue", amountAtomic: 68_000n });
   });
 
   it("fills every path parameter into the successor link", async () => {

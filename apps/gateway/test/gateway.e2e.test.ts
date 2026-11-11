@@ -29,7 +29,7 @@ describe("public endpoints", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.data.map((r: { id: string }) => r.id)).toEqual(["dover", "rotterdam", "panama"]);
-    expect(body.data[0].endpoints[0]).toMatchObject({ price_usdc: "0.033", price_credits_gbp: 0.025 });
+    expect(body.data[0].endpoints[0]).toMatchObject({ price_usdc: "0.035", price_credits_gbp: 0.027 });
   });
 
   it("unknown region is a free 404", async () => {
@@ -73,10 +73,10 @@ describe("x402 rail", () => {
     expect(res.status).toBe(402);
     const pr = decodePaymentRequiredHeader(res.headers.get("PAYMENT-REQUIRED")!);
     expect(pr.x402Version).toBe(2);
-    expect(pr.accepts[0]).toMatchObject({ scheme: "exact", network: "eip155:84532", amount: "33000", payTo: PAY_TO });
+    expect(pr.accepts[0]).toMatchObject({ scheme: "exact", network: "eip155:84532", amount: "35000", payTo: PAY_TO });
     expect(pr.resource.url).toBe(`${BASE_URL}/v1/maritime/dover/vessels`);
     const body = await res.json();
-    expect(body.credits.price_gbp).toBe(0.025);
+    expect(body.credits.price_gbp).toBe(0.027);
   });
 
   it("pays via the policy SDK, serves data, settles async and books VAT-inclusive revenue", async () => {
@@ -90,7 +90,7 @@ describe("x402 rail", () => {
 
     const id = res.headers.get("X-Payment-Id")!;
     expect((await env.store.getPayment(id))?.status).toBe("verified");
-    expect((await env.store.exposure()).totalAtomic).toBe(33_000n);
+    expect((await env.store.exposure()).totalAtomic).toBe(35_000n);
 
     await settleAll(env);
     const p = await env.store.getPayment(id);
@@ -100,22 +100,22 @@ describe("x402 rail", () => {
 
     const journal = await env.store.journal();
     expect(journal).toHaveLength(1);
-    // 0.033 USD * 0.8 = £0.0264 gross; VAT = 1/6 of gross.
+    // 0.035 USD * 0.8 = £0.028 gross; VAT = 1/6 of gross, rounded to the micro.
     expect(journal[0]!.lines).toEqual([
-      { account: "asset:usdc_wallet", debit: 26_400, credit: 0 },
-      { account: "revenue:maritime", debit: 0, credit: 22_000 },
-      { account: "liability:vat_output", debit: 0, credit: 4_400 },
+      { account: "asset:usdc_wallet", debit: 28_000, credit: 0 },
+      { account: "revenue:maritime", debit: 0, credit: 23_333 },
+      { account: "liability:vat_output", debit: 0, credit: 4_667 },
     ]);
     expect(verifyChain(journal)).toEqual({ ok: true });
-    expect(client.spendLog.spentToday("USD")).toBeCloseTo(0.033);
+    expect(client.spendLog.spentToday("USD")).toBeCloseTo(0.035);
 
     const status = await (await env.fetch(`${BASE_URL}/v1/payments/${id}`)).json();
-    expect(status).toMatchObject({ status: "settled", amount_usdc: 0.033 });
+    expect(status).toMatchObject({ status: "settled", amount_usdc: 0.035 });
 
     // Operator view carries what on-chain reconciliation keys on: (payer, nonce) and the exact atomic amount.
     const admin = await (await env.fetch(`${BASE_URL}/admin/payments?status=settled`, { headers: { authorization: `Bearer ${ADMIN_TOKEN}` } })).json();
     expect(admin.data).toEqual([
-      expect.objectContaining({ id, payer: account.address.toLowerCase(), network: "eip155:84532", nonce: p!.nonce, amount_atomic: "33000", tx: p!.txHash }),
+      expect.objectContaining({ id, payer: account.address.toLowerCase(), network: "eip155:84532", nonce: p!.nonce, amount_atomic: "35000", tx: p!.txHash }),
     ]);
   });
 
@@ -149,7 +149,7 @@ describe("x402 rail", () => {
   it("a payer whose served-early payment fails can't repeat it: settled first, and the cap stays used", async () => {
     // The attack: get served before settlement, then move the funds (or cancel the authorisation)
     // so settlement fails, and go again. Settlement failing must not hand the cap back.
-    env = await createTestEnv({ EXPOSURE_CAP_USD: "0.066", EXPOSURE_CAP_PER_PAYER_USD: "0.066", EXPOSURE_CAP_PER_PAYER_IDENTIFIED_USD: "0.066", EXPOSURE_CAP_PER_PAYER_TRUSTED_USD: "0.066" });
+    env = await createTestEnv({ EXPOSURE_CAP_USD: "0.07", EXPOSURE_CAP_PER_PAYER_USD: "0.07", EXPOSURE_CAP_PER_PAYER_IDENTIFIED_USD: "0.07", EXPOSURE_CAP_PER_PAYER_TRUSTED_USD: "0.07" });
     const cheat = createPolicyClient({ policy: policy(), signer: privateKeyToAccount(generatePrivateKey()), fetch: env.fetch });
     const first = await cheat.fetch(`${BASE_URL}/v1/maritime/dover/vessels`);
     expect(first.status).toBe(200);
@@ -164,7 +164,7 @@ describe("x402 rail", () => {
     expect(decodePaymentRequiredHeader(again.headers.get("PAYMENT-REQUIRED")!).error).toMatch(/settlement_failed/);
     expect(env.deps.metrics.render()).toMatch(/x402_async_demoted_total\{tier="unknown"\} 1/);
 
-    // An honest buyer still gets one served-early read: the failed $0.033 holds half the $0.066 cap.
+    // An honest buyer still gets one served-early read: the failed $0.035 holds half the $0.07 cap.
     env.facilitator.settleFails = undefined;
     const honest = createPolicyClient({ policy: policy(), signer: account, fetch: env.fetch });
     expect((await honest.fetch(`${BASE_URL}/v1/maritime/dover/vessels`)).headers.get("X-Settlement")).toBe("pending");
@@ -311,9 +311,9 @@ describe("fiat credits rail", () => {
     const client = createPolicyClient({ policy: policy(), credits: { apiKey: key, origins: [BASE_URL] }, fetch: env.fetch });
     const res = await client.fetch(`${BASE_URL}/v1/maritime/dover/queue`);
     expect(res.status).toBe(200);
-    expect(res.headers.get("X-Credits-Charged-Gbp-Micros")).toBe("50000");
-    expect(res.headers.get("X-Credits-Balance-Gbp-Micros")).toBe(String(20_000_000 - 50_000));
-    expect(client.spendLog.spentToday("GBP")).toBeCloseTo(0.05);
+    expect(res.headers.get("X-Credits-Charged-Gbp-Micros")).toBe("52000");
+    expect(res.headers.get("X-Credits-Balance-Gbp-Micros")).toBe(String(20_000_000 - 52_000));
+    expect(client.spendLog.spentToday("GBP")).toBeCloseTo(0.052);
 
     // 404 on a missing vessel is not charged.
     const miss = await env.fetch(`${BASE_URL}/v1/maritime/dover/vessels/1`, { headers: { authorization: `Bearer ${key}` } });
@@ -372,7 +372,7 @@ describe("admin", () => {
     expect(lines[0]).toContain("fx_usdc_gbp");
     expect(lines).toHaveLength(4);
     expect(lines[1]).toContain("uk_standard_inclusive");
-    expect(lines[1]).toContain(",0.033,0.8,fixed,0x");
+    expect(lines[1]).toContain(",0.035,0.8,fixed,0x");
   });
 
   it("feeds the Panama draught limit into the queue product", async () => {

@@ -95,13 +95,13 @@
      ],
      "pay": {
       "x402": {
-       "price_usdc": "0.033"
+       "price_usdc": "0.035"
       },
       "credits": {
-       "price_gbp": 0.025
+       "price_gbp": 0.027
       },
       "session": {
-       "price_usdc": "0.033"
+       "price_usdc": "0.035"
       }
      }
     },
@@ -137,13 +137,13 @@
      ],
      "pay": {
       "x402": {
-       "price_usdc": "0.033"
+       "price_usdc": "0.035"
       },
       "credits": {
-       "price_gbp": 0.025
+       "price_gbp": 0.027
       },
       "session": {
-       "price_usdc": "0.033"
+       "price_usdc": "0.035"
       }
      }
     },
@@ -170,13 +170,13 @@
      ],
      "pay": {
       "x402": {
-       "price_usdc": "0.033"
+       "price_usdc": "0.035"
       },
       "credits": {
-       "price_gbp": 0.025
+       "price_gbp": 0.027
       },
       "session": {
-       "price_usdc": "0.033"
+       "price_usdc": "0.035"
       }
      }
     },
@@ -203,13 +203,13 @@
      ],
      "pay": {
       "x402": {
-       "price_usdc": "0.066"
+       "price_usdc": "0.068"
       },
       "credits": {
-       "price_gbp": 0.05
+       "price_gbp": 0.052
       },
       "session": {
-       "price_usdc": "0.066"
+       "price_usdc": "0.068"
       }
      }
     },
@@ -236,13 +236,13 @@
      ],
      "pay": {
       "x402": {
-       "price_usdc": "0.066"
+       "price_usdc": "0.068"
       },
       "credits": {
-       "price_gbp": 0.05
+       "price_gbp": 0.052
       },
       "session": {
-       "price_usdc": "0.066"
+       "price_usdc": "0.068"
       }
      }
     }
@@ -312,13 +312,13 @@
      ],
      "pay": {
       "x402": {
-       "price_usdc": "0.01"
+       "price_usdc": "0.012"
       },
       "credits": {
-       "price_gbp": 0.008
+       "price_gbp": 0.01
       },
       "session": {
-       "price_usdc": "0.01"
+       "price_usdc": "0.012"
       }
      }
     },
@@ -356,13 +356,13 @@
      ],
      "pay": {
       "x402": {
-       "price_usdc": "0.02"
+       "price_usdc": "0.022"
       },
       "credits": {
-       "price_gbp": 0.015
+       "price_gbp": 0.017
       },
       "session": {
-       "price_usdc": "0.02"
+       "price_usdc": "0.022"
       }
      }
     },
@@ -411,13 +411,13 @@
      ],
      "pay": {
       "x402": {
-       "price_usdc": "0.05"
+       "price_usdc": "0.052"
       },
       "credits": {
-       "price_gbp": 0.04
+       "price_gbp": 0.042
       },
       "session": {
-       "price_usdc": "0.05"
+       "price_usdc": "0.052"
       }
      }
     },
@@ -474,13 +474,13 @@
      ],
      "pay": {
       "x402": {
-       "price_usdc": "0.05"
+       "price_usdc": "0.052"
       },
       "credits": {
-       "price_gbp": 0.04
+       "price_gbp": 0.042
       },
       "session": {
-       "price_usdc": "0.05"
+       "price_usdc": "0.052"
       }
      }
     },
@@ -517,13 +517,13 @@
      ],
      "pay": {
       "x402": {
-       "price_usdc": "0.02"
+       "price_usdc": "0.022"
       },
       "credits": {
-       "price_gbp": 0.015
+       "price_gbp": 0.017
       },
       "session": {
-       "price_usdc": "0.02"
+       "price_usdc": "0.022"
       }
      }
     },
@@ -552,7 +552,7 @@
       "x402": null,
       "credits": null,
       "session": {
-       "price_usdc": "0.01"
+       "price_usdc": "0.012"
       }
      }
     }

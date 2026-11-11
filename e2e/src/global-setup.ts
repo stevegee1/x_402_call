@@ -8,9 +8,9 @@ declare module "vitest" {
 }
 
 export default async function setup(project: TestProject) {
-  // Per payer: $0.10 unknown, $0.20 identified, $0.30 trusted, i.e. 3 / 6 / 9 concurrent $0.033 payments
+  // Per payer: $0.11 unknown, $0.22 identified, $0.33 trusted, i.e. 3 / 6 / 9 concurrent $0.035 payments
   // in flight, so cap enforcement (R4) and ERC-8004 tiers are both observable.
-  const { info, stop } = await startStack({ perPayerCapUsd: 0.1, identifiedCapUsd: 0.2, trustedCapUsd: 0.3 });
+  const { info, stop } = await startStack({ perPayerCapUsd: 0.11, identifiedCapUsd: 0.22, trustedCapUsd: 0.33 });
   project.provide("stack", info);
   return stop;
 }

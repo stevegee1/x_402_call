@@ -23,3 +23,15 @@ export const CREDIT_PACKS: Record<string, CreditPack> = {
 };
 
 export const formatGbp = (micros: number) => `£${(micros / 1_000_000).toFixed(2)}`;
+
+/**
+ * Network-fee allowance built into every per-call price (USD on x402, GBP on credits so both rails
+ * keep parity). It pays for the gas our facilitator spends to settle each x402 payment; buyers
+ * still sign gasless authorisations. Measured on 2026-11-11 with `pnpm gas:cost`: one settle is
+ * ~85.7k gas, $0.00106 at Base mainnet's 0.006 gwei. x402 prices include VAT, so $0.001666 of the
+ * allowance is ours: about 1.57x today's cost. gas-keeper alerts when the live cost passes that.
+ */
+export const GAS_ALLOWANCE_USD = "0.002";
+export const GAS_ALLOWANCE_GBP_MICROS = 2_000;
+/** Gas one USDC transferWithAuthorization settle uses on Base (max of 50 measured settles). */
+export const SETTLE_GAS_UNITS = 85_752n;

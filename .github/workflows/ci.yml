@@ -55,6 +55,22 @@ jobs:
       - run: forge test -vv
         working-directory: contracts
 
+  gas-keeper-fork:
+    # The keeper's real swap on an anvil fork of Base mainnet (Uniswap v3, Circle USDC, Chainlink).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
+        with:
+          version: v1.8.5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @mx/gas-keeper test:fork
+
   e2e:
     # anvil + MockUSDC (EIP-3009) + self-hosted facilitator + four gateway replicas on Postgres 16.
     runs-on: ubuntu-latest

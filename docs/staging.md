@@ -9,6 +9,7 @@ any environment other than `staging`.
 | `@mx/gateway` | API: billing, settlement, ledger, products (maritime from live AIS, grid live) | public domain + private `mxgateway.railway.internal:8080` | `/readyz` |
 | `facilitator` | Self-hosted x402 facilitator, the gateway's **fallback** (primary: x402.org) | private only, `facilitator.railway.internal:8090` | `/healthz` |
 | `reconciler` | Ledger against chain every 15 min; alerts on persistent mismatches | private only | `/healthz` |
+| `gas-keeper` | Keeps the facilitator's gas wallet funded from a USDC float ([gas-keeper.md](gas-keeper.md)) | private only, `gas-keeper.railway.internal:8093` | `/healthz` |
 | `ingest-env` | Stores every published NESO version (point-in-time history); exits until the gateway has migrated | private only, `ingest-env.railway.internal:8091` | `/healthz` |
 | `ingest` | Live AIS from AISStream onto the bus, and position history (30 days) into Postgres | private only, `ingest.railway.internal:8092` | `/healthz` |
 | `nats` | AIS bus (`nats:2.10.29-alpine`, no persistence); ingest publishes, the gateway subscribes | private only, `nats.railway.internal:4222` | (none) |
@@ -29,6 +30,7 @@ reference them rather than copying them:
 | `SESSION_SECRET` | `@mx/gateway` | (only the gateway; signs x402 session tokens) |
 | `AUTH_TOKEN` | `facilitator` | `@mx/gateway.FALLBACK_FACILITATOR_AUTH_TOKEN` |
 | `FACILITATOR_PRIVATE_KEY` | `facilitator` | (only the facilitator) |
+| `KEEPER_PRIVATE_KEY` | `gas-keeper` | (only gas-keeper; the float wallet) |
 | `AISSTREAM_API_KEY` | `ingest` | (only ingest; from aisstream.io) |
 
 The staging wallet keys live in the operator's macOS Keychain (`pnpm staging:wallets`):
@@ -37,6 +39,7 @@ The staging wallet keys live in the operator's macOS Keychain (`pnpm staging:wal
 |---|---|---|
 | `x402-staging-pay-to` | `0x35E13c683A70fBe048CDB897cE1bAe36440fcd19` | payee (receive-only) |
 | `x402-staging-facilitator` | `0x9F03ad7f2C2c00D4668Dcead2CA3b03d1a0552f5` | facilitator gas wallet |
+| `x402-staging-gas-keeper` | printed by `pnpm staging:wallets` | gas-keeper float: test USDC + a little ETH |
 
 Never use `ctx.randomString` in `.railway/railway.ts` for secrets: it is a deterministic hash of the
 environment name and a label, so anyone can compute it.
@@ -68,6 +71,16 @@ project `authentic-rebirth`, environment `staging`).
    the facilitator deploys and serves `/healthz`, but its `/readyz` reports `gas: false` and it cannot
    settle, so the gateway uses the x402.org primary.
 6. **Redeploy:** `railway redeploy -s facilitator`, then `-s @mx/gateway`, then `-s reconciler`.
+
+## Turning on the gas-keeper (once)
+
+Follow [gas-keeper.md, Setting it up](gas-keeper.md#setting-it-up): `pnpm staging:wallets` (creates
+only the missing `x402-staging-gas-keeper` key), fund the printed address with Base Sepolia ETH
+(faucet) and test USDC (https://faucet.circle.com), set `KEEPER_PRIVATE_KEY`, seal it, then
+`railway config plan` / `apply` (adds `gas-keeper`). Then set its `ALERT_WEBHOOK_URL` (preserved by
+the file, like a secret: `railway variable set ALERT_WEBHOOK_URL --stdin -s gas-keeper`), or its alerts
+reach only its private `/readyz`. Staging uses smaller caps and a 5% slippage
+band, because the Base Sepolia pool is thin.
 
 ## Turning on the hot path and sessions (once)
 
@@ -134,7 +147,9 @@ for i in $(seq 1 21); do curl -s -o /dev/null -w '%{http_code} ' -H "Origin: htt
 - **Reconciliation alert.** The reconciler logs `"level":"error"` with `persistent` problems, which
   were seen in two consecutive runs. A single-run problem is usually a settlement in flight. Set
   `RECONCILE_ALERT_WEBHOOK_URL` (e.g. a Slack incoming webhook) in the file to be paged.
-- **Facilitator gas.** Watch `facilitator_gas_balance_wei` on `/metrics` (private) or `/readyz`.
+- **Facilitator gas.** `gas-keeper` refills it from the float wallet ([gas-keeper.md](gas-keeper.md));
+  set its `ALERT_WEBHOOK_URL` to hear when the float runs low. `facilitator_gas_balance_wei` on the
+  facilitator's `/metrics` and `/readyz` still report the balance directly.
 - **Rotating a secret.** Set the new value as in step 3, then redeploy the owner and every service
   that references it.
 - **Production** is a separate environment and is deliberately not described by this file.

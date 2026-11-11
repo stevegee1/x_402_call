@@ -41,14 +41,14 @@ describe("grid product end to end (in-process)", () => {
     expect(products.data.map((p: { id: string }) => p.id)).toEqual(["maritime", "grid"]);
     const countries = await (await env.fetch(`${G}/countries`)).json();
     expect(countries.data[0]).toMatchObject({ id: "england", fresh: true });
-    expect(countries.data[0].endpoints.map((e: { price_usdc: string }) => e.price_usdc)).toEqual(["0.01", "0.02", "0.05"]);
+    expect(countries.data[0].endpoints.map((e: { price_usdc: string }) => e.price_usdc)).toEqual(["0.012", "0.022", "0.052"]);
     expect(countries.source.attribution).toBe(ATTRIBUTION);
   });
 
   it("challenges at the grid price and serves attributed data once paid; revenue books to revenue:grid", async () => {
     const challenge = await env.fetch(`${G}/england/window?duration_h=1`);
     expect(challenge.status).toBe(402);
-    expect(decodePaymentRequiredHeader(challenge.headers.get("PAYMENT-REQUIRED")!).accepts[0]!.amount).toBe("50000");
+    expect(decodePaymentRequiredHeader(challenge.headers.get("PAYMENT-REQUIRED")!).accepts[0]!.amount).toBe("52000");
 
     const res = await paying().fetch(`${G}/england/window?duration_h=1&within_h=24`);
     expect(res.status).toBe(200);

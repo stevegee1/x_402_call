@@ -59,15 +59,15 @@ describe("grid on the version store: live view, point-in-time history, revisions
   it("lists the history resources with their prices", async () => {
     const countries = await (await env.fetch(`${G}/countries`)).json();
     expect(countries.data[0].endpoints.map((e: { id: string; price_usdc: string }) => [e.id, e.price_usdc])).toEqual([
-      ["grid.intensity", "0.01"],
-      ["grid.forecast", "0.02"],
-      ["grid.window", "0.05"],
-      ["grid.history", "0.05"],
-      ["grid.revisions", "0.02"],
+      ["grid.intensity", "0.012"],
+      ["grid.forecast", "0.022"],
+      ["grid.window", "0.052"],
+      ["grid.history", "0.052"],
+      ["grid.revisions", "0.022"],
     ]);
     const challenge = await env.fetch(`${G}/england/history?from=${iso(CUR)}`);
     expect(challenge.status).toBe(402);
-    expect(decodePaymentRequiredHeader(challenge.headers.get("PAYMENT-REQUIRED")!).accepts[0]!.amount).toBe("50000");
+    expect(decodePaymentRequiredHeader(challenge.headers.get("PAYMENT-REQUIRED")!).accepts[0]!.amount).toBe("52000");
   });
 
   it("history: latest by default, and the version known at as_of when given", async () => {
