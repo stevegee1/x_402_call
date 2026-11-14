@@ -258,12 +258,34 @@ describe("platform surfaces are generated from the catalog", () => {
     expect(acme.adminCalls).toBe(1);
   });
 
-  it("is unready when any product is unready", async () => {
-    expect((await env.fetch(`${BASE_URL}/readyz`)).status).toBe(200);
+  it("stays ready when one product is unready: it reports it, and the other products keep selling", async () => {
+    expect(await (await env.fetch(`${BASE_URL}/readyz`)).json()).toMatchObject({ ok: true, degraded: [] });
     acme.ready = false;
+    acme.fresh = false;
+    const res = await env.fetch(`${BASE_URL}/readyz`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ ok: true, db: true, products: { maritime: true, acme: false }, degraded: ["acme"] });
+    // The unready product refuses its own calls uncharged (I1)...
+    expect((await env.fetch(READING)).status).toBe(503);
+    // ...while another product still offers a sale.
+    expect((await env.fetch(`${BASE_URL}/v1/maritime/dover/vessels`)).status).toBe(402);
+    const m = await (await env.fetch(`${BASE_URL}/metrics`, { headers: admin })).text();
+    expect(m).toContain('product_ready{product="acme"} 0');
+  });
+
+  it("a lost maritime feed (the NATS bus) degrades maritime only, not the gateway", async () => {
+    const lost = await createTestEnv({}, { feedConnected: () => false, products: [new AcmeProduct()] });
+    const res = await lost.fetch(`${BASE_URL}/readyz`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ ok: true, products: { maritime: false, acme: true }, degraded: ["maritime"] });
+    expect((await lost.fetch(READING)).status).toBe(402);
+  });
+
+  it("is unready when the database is unreachable: nothing can be charged safely", async () => {
+    env.store.ping = async () => false;
     const res = await env.fetch(`${BASE_URL}/readyz`);
     expect(res.status).toBe(503);
-    expect(await res.json()).toMatchObject({ ok: false, db: true, products: { maritime: true, acme: false } });
+    expect(await res.json()).toMatchObject({ ok: false, db: false });
   });
 
   it("reports every product in /status and /metrics", async () => {

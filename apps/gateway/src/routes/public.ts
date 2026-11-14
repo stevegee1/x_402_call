@@ -53,11 +53,17 @@ export function publicRoutes(d: AppDeps) {
 
   r.get("/healthz", (c) => c.json({ ok: true }));
 
+  /**
+   * Ready = this replica can take money correctly, which needs the database (payments, replay
+   * protection, exposure caps, ledger). Product health is reported, never gating: an unready
+   * product already refuses its own calls uncharged (I1), so one product's feed outage (say, the
+   * maritime NATS bus) must not fail every deploy or make the other products look down.
+   */
   r.get("/readyz", async (c) => {
     const db = await d.store.ping();
     const products = Object.fromEntries(d.catalog.products.map((p) => [p.id, p.status().ready]));
-    const ok = db && Object.values(products).every(Boolean);
-    return c.json({ ok, db, products, facilitator_breaker: d.facilitator.breaker.state }, ok ? 200 : 503);
+    const degraded = Object.entries(products).filter(([, ready]) => !ready).map(([id]) => id);
+    return c.json({ ok: db, db, products, degraded, facilitator_breaker: d.facilitator.breaker.state }, db ? 200 : 503);
   });
 
   r.get("/status", (c) =>

@@ -116,7 +116,7 @@ before selling derived data on mainnet (`apps/ingest/src/sources/aisstream.ts`).
 ## Checks
 
 ```bash
-curl https://<gateway-domain>/readyz       # {"ok":true,"db":true,"products":{"maritime":true,"grid":true},…}
+curl https://<gateway-domain>/readyz       # {"ok":true,"db":true,"products":{"maritime":true,"grid":true},"degraded":[],…}
 curl https://<gateway-domain>/v1/products  # maritime and grid
 curl https://<gateway-domain>/v1/sessions/sizes   # usd1, usd5, usd20 (sessions on)
 curl https://<gateway-domain>/v1/grid/countries   # endpoints include grid.history, grid.revisions, grid.stream
