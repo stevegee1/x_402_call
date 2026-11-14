@@ -4,6 +4,7 @@ import { isMainnet } from "../config";
 import type { AppDeps, AppEnv } from "../context";
 import type { PricedResource, Product } from "../platform/product";
 import { viewerOf } from "../customers/web-session";
+import { bearerAuth } from "./bearer";
 import { catalogView, creditsOk, sessionOk, templatePath, type ProductView } from "./catalog-model";
 import { DOCS_HEADERS, renderCatalogPage, renderDocsPage } from "./docs-pages";
 import { renderSite, SITE_HEADERS, wantsHtml } from "./site";
@@ -100,6 +101,10 @@ export function publicRoutes(d: AppDeps) {
     return c.json({ id: p.id, status: p.status, network: p.network, resource: p.endpoint, amount_usdc: Number(p.amountAtomic) / 1e6, transaction: p.txHash, settled_at: p.settledAt?.toISOString() ?? null });
   });
 
+  // Revenue, exposure and payer counts: never public. Production always has ADMIN_TOKEN (config
+  // refuses to start without it), so this route can only be open in development.
+  const metricsToken = d.cfg.METRICS_TOKEN ?? d.cfg.ADMIN_TOKEN;
+  if (metricsToken) r.use("/metrics", bearerAuth(metricsToken));
   r.get("/metrics", async (c) => {
     // Global (all replicas): read from the payments table, not this process.
     const exposure = await d.store.exposure().catch(() => null);

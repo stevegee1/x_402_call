@@ -83,6 +83,11 @@ const schema = z
      */
     CLIENT_IP_HEADER: z.enum(["x-real-ip", "cf-connecting-ip", "x-forwarded-for-first", "x-forwarded-for-last"]).default("x-real-ip"),
     ADMIN_TOKEN: z.string().min(24, "ADMIN_TOKEN must be at least 24 chars").optional(),
+    /**
+     * Bearer token for /metrics (a Prometheus scraper's credential, so it can be rotated without
+     * touching the admin token). Unset: ADMIN_TOKEN guards it. Neither set (development): open.
+     */
+    METRICS_TOKEN: z.string().min(24, "METRICS_TOKEN must be at least 24 chars").optional(),
     /** "fixed" values every payment at FX_FALLBACK_USDC_GBP: hermetic tests only, refused in production. */
     FX_PROVIDER: z.enum(["coinbase", "fixed"]).default("coinbase"),
     FX_FALLBACK_USDC_GBP: z.coerce.number().positive().default(0.75),
