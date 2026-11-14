@@ -2,12 +2,18 @@ import type { Logger } from "../logger";
 import type { Metrics } from "../metrics";
 import type { Product, ProductStatus } from "./product";
 
-/** A product's status, or null if reading it threw: a product bug must never take the gateway down. */
-export function safeStatus(p: Product): ProductStatus | null {
+const STATUS_ERROR = "status_error";
+
+/**
+ * A product's status, never throwing: a product bug must not take a route (or the gateway) down.
+ * Every kernel caller goes through here (enforced by test/platform/boundaries.test.ts). On a throw it
+ * reports the product unready with no scopes, and marks it so degradedReason can say why.
+ */
+export function statusOf(p: Product): ProductStatus {
   try {
     return p.status();
-  } catch {
-    return null;
+  } catch (e) {
+    return { ready: false, scopes: [], detail: { [STATUS_ERROR]: (e as Error)?.message ?? String(e) } };
   }
 }
 
@@ -18,8 +24,8 @@ export function safeStatus(p: Product): ProductStatus | null {
  * One stale scope among fresh ones (Panama's sparse coverage) is not a product outage.
  */
 export function degradedReason(p: Product): "status_error" | "not_ready" | "no_fresh_scope" | null {
-  const s = safeStatus(p);
-  if (!s) return "status_error";
+  const s = statusOf(p);
+  if (s.detail && STATUS_ERROR in s.detail) return "status_error";
   if (!s.ready) return "not_ready";
   if (s.scopes.length > 0 && s.scopes.every((x) => !x.fresh)) return "no_fresh_scope";
   return null;
@@ -48,6 +54,7 @@ const duration = (ms: number) => (ms < 60_000 ? `${Math.round(ms / 1000)} s` : `
 
 interface Incident {
   since: number;
+  reason: string;
   /** The degraded alert: not yet due, logged but its webhook still to deliver, or delivered. */
   alert: "pending" | "undelivered" | "delivered";
 }
@@ -63,8 +70,8 @@ interface Incident {
  */
 export class ProductWatch {
   private readonly incidents = new Map<string, Incident>();
-  /** Recovery notices whose webhook hasn't been delivered yet. */
-  private readonly recoveries = new Map<string, string>();
+  /** Recovery notices whose webhook hasn't been delivered yet, with the incident they close. */
+  private readonly recoveries = new Map<string, { text: string; incident: Incident }>();
   private timer?: NodeJS.Timeout;
   private running = false;
   private readonly now: () => number;
@@ -108,8 +115,15 @@ export class ProductWatch {
     const where = this.o.instance ? ` on ${this.o.instance}` : "";
 
     if (reason) {
-      this.recoveries.delete(p.id); // degraded again before the recovery notice went out
-      const inc = this.incidents.get(p.id) ?? { since: now, alert: "pending" };
+      // Degraded again before its recovery notice went out: the warning the operator got is still
+      // open, so this is the same incident, not a new (unreported) one.
+      const unsent = this.recoveries.get(p.id);
+      if (unsent) {
+        this.recoveries.delete(p.id);
+        this.incidents.set(p.id, unsent.incident);
+      }
+      const inc = this.incidents.get(p.id) ?? { since: now, alert: "pending", reason };
+      inc.reason = reason;
       this.incidents.set(p.id, inc);
       const forMs = now - inc.since;
       if (inc.alert === "pending" && forMs >= this.o.alertAfterMs) {
@@ -118,7 +132,11 @@ export class ProductWatch {
         inc.alert = "undelivered";
       }
       if (inc.alert === "undelivered") {
-        const text = `:warning: ${p.displayName} (${p.id}) degraded for ${duration(forMs)}${where} (${reason}): it is not selling; calls get 503 once its data is past its age limit, never charged. Check /status.`;
+        const what =
+          reason === "status_error"
+            ? "its status can't be read (a product bug); sales are still gated by data freshness"
+            : "it can't sell: calls get 503 once its data is past its age limit, never charged";
+        const text = `:warning: ${p.displayName} (${p.id}) degraded for ${duration(forMs)}${where} (${reason}): ${what}. Check /status.`;
         if (await this.notify(text)) inc.alert = "delivered";
       }
       return;
@@ -130,11 +148,12 @@ export class ProductWatch {
       // A blip shorter than the threshold was never reported, so it needs no recovery notice.
       if (inc.alert !== "pending") {
         this.o.log.info({ product: p.id, degraded_s: Math.round((now - inc.since) / 1000) }, "product recovered");
-        this.recoveries.set(p.id, `:white_check_mark: ${p.displayName} (${p.id}) recovered${where} after ${duration(now - inc.since)}.`);
+        // Names the reason too: if the webhook was down for the whole incident, this is all they get.
+        this.recoveries.set(p.id, { text: `:white_check_mark: ${p.displayName} (${p.id}) recovered${where} after ${duration(now - inc.since)} (was ${inc.reason}).`, incident: inc });
       }
     }
     const notice = this.recoveries.get(p.id);
-    if (notice && (await this.notify(notice))) this.recoveries.delete(p.id);
+    if (notice && (await this.notify(notice.text))) this.recoveries.delete(p.id);
   }
 
   /** true once delivered (or there is nowhere to deliver). */

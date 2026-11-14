@@ -4,7 +4,7 @@ import { isMainnet } from "../config";
 import type { AppDeps, AppEnv } from "../context";
 import type { PricedResource, Product } from "../platform/product";
 import { viewerOf } from "../customers/web-session";
-import { degradedReason, safeStatus } from "../platform/product-watch";
+import { degradedReason, statusOf } from "../platform/product-watch";
 import { catalogView, creditsOk, sessionOk, templatePath, type ProductView } from "./catalog-model";
 import { DOCS_HEADERS, renderCatalogPage, renderDocsPage } from "./docs-pages";
 import { renderSite, SITE_HEADERS, wantsHtml } from "./site";
@@ -64,7 +64,7 @@ export function publicRoutes(d: AppDeps) {
   r.get("/readyz", async (c) => {
     const db = await d.store.ping();
     // A product whose status throws is reported, not propagated: readiness is about the database.
-    const products = Object.fromEntries(d.catalog.products.map((p) => [p.id, safeStatus(p)?.ready ?? false]));
+    const products = Object.fromEntries(d.catalog.products.map((p) => [p.id, statusOf(p).ready]));
     const degraded = d.catalog.products.filter((p) => degradedReason(p) !== null).map((p) => p.id);
     return c.json({ ok: db, db, products, degraded, facilitator_breaker: d.facilitator.breaker.state }, db ? 200 : 503);
   });
@@ -73,7 +73,7 @@ export function publicRoutes(d: AppDeps) {
     c.json({
       uptime_s: Math.round((Date.now() - d.startedAt) / 1000),
       products: d.catalog.products.map((p) => {
-        const s = p.status();
+        const s = statusOf(p);
         return { id: p.id, name: p.displayName, ready: s.ready, scopes: s.scopes, ...s.detail };
       }),
       payments: { network: d.cfg.X402_NETWORK, settlement_mode: d.cfg.SETTLEMENT_MODE, facilitator_breaker: d.facilitator.breaker.state },
@@ -97,7 +97,7 @@ export function publicRoutes(d: AppDeps) {
       return p ? c.body(null, 302, { location: `/catalog#${p.id}`, vary: "Accept" }) : c.body(renderCatalogPage(d), 404, htmlHeaders());
     }
     if (!p) return c.json({ error: "unknown_product", products: d.catalog.products.map((x) => x.id) }, 404);
-    return c.json({ ...productSummary(p, d.cfg.PUBLIC_BASE_URL, viewOf(p)), status: p.status(), docs: docsLinks() });
+    return c.json({ ...productSummary(p, d.cfg.PUBLIC_BASE_URL, viewOf(p)), status: statusOf(p), docs: docsLinks() });
   });
 
   // Public payment status lookup (ids are unguessable UUIDs returned only to the payer).
@@ -117,8 +117,14 @@ export function publicRoutes(d: AppDeps) {
       d.metrics.set("x402_exposure_payers", exposure.payers);
     }
     for (const p of d.catalog.products) {
-      d.metrics.set("product_ready", p.status().ready ? 1 : 0, { product: p.id });
-      p.collectMetrics?.(d.metrics);
+      d.metrics.set("product_ready", statusOf(p).ready ? 1 : 0, { product: p.id });
+      try {
+        p.collectMetrics?.(d.metrics);
+      } catch (e) {
+        // One product's metrics bug must not blank the whole scrape (the degraded gauges live here).
+        d.metrics.inc("product_metrics_errors_total", { product: p.id });
+        d.log.warn({ err: e, product: p.id }, "product metrics failed");
+      }
     }
     return c.text(d.metrics.render(), 200, { "content-type": "text/plain; version=0.0.4" });
   });

@@ -1,3 +1,4 @@
+import { statusOf } from "../platform/product-watch";
 import { createHash } from "node:crypto";
 import { isMainnet } from "../config";
 import type { Viewer } from "../customers/web-session";
@@ -131,7 +132,7 @@ const accessProduct = (d: AppDeps) => d.catalog.products.find((p) => p.kind === 
 
 /** Honest, live status for a data product: anything not live and fresh says so. */
 function statusChip(p: Product): string {
-  const scopes = p.status().scopes;
+  const scopes = statusOf(p).scopes;
   if (scopes.some((s) => s.mode !== "live")) return `<span class="chip warn">Simulated data</span>`;
   if (scopes.some((s) => !s.fresh)) return `<span class="chip warn">Data delayed: calls are not charged</span>`;
   return `<span class="chip ok"><span class="dot"></span>Live data</span>`;
@@ -170,7 +171,7 @@ function sessionsCard(p: Product): string {
 
 /** A concrete, callable URL for a product: its first resource that needs only one path value. */
 function sampleFor(p: Product): { label: string; path: string; id: string } | null {
-  const scope = p.status().scopes[0]?.scope;
+  const scope = statusOf(p).scopes[0]?.scope;
   if (!scope) return null;
   for (const r of p.resources) {
     const pathParams = r.path.match(/:[a-z_]+/gi) ?? [];
@@ -234,7 +235,7 @@ function howToUse(d: AppDeps, base: string, first: { path: string } | undefined,
   const target = `${base}${first?.path ?? "/v1/products"}`;
   const sessions = accessProduct(d);
   const stream = d.catalog.streams[0];
-  const streamUrl = stream ? `${base}${stream.path.replace(/:[a-z_]+/i, stream.product.status().scopes[0]?.scope ?? "england")}` : "";
+  const streamUrl = stream ? `${base}${stream.path.replace(/:[a-z_]+/i, statusOf(stream.product).scopes[0]?.scope ?? "england")}` : "";
   const tab = (id: string, label: string, first: boolean) =>
     `<button type="button" role="tab" id="tab-${id}" aria-controls="panel-${id}" aria-selected="${first}"${first ? "" : ' tabindex="-1"'}>${esc(label)}</button>`;
   const agent = `<div class="panel" role="tabpanel" id="panel-agent" aria-labelledby="tab-agent">

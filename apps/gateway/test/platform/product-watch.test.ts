@@ -196,3 +196,44 @@ describe("ProductWatch never takes the gateway down, and never loses or doubles 
   });
 });
 
+describe("ProductWatch keeps every warning closed, even when the product flaps", () => {
+  it("a product that degrades again before its recovery notice went out resumes the same incident", async () => {
+    const { acme, watch, posts, advance } = setup();
+    acme.ready = false;
+    await watch.tick();
+    advance(5 * MIN);
+    await watch.tick();
+    expect(posts).toHaveLength(1); // warning delivered
+
+    const w = watch as unknown as { post: (u: string, b: unknown) => Promise<void> };
+    const real = w.post;
+    let down = true;
+    w.post = async (u, b) => {
+      if (down) throw new Error("egress down");
+      return real(u, b);
+    };
+    acme.ready = true;
+    await watch.tick(); // recovery notice fails
+    acme.ready = false;
+    advance(30_000);
+    await watch.tick(); // flaps back: the same incident, still warned
+    acme.ready = true;
+    down = false;
+    advance(30_000);
+    await watch.tick(); // recovers for good: the warning is closed
+    expect(posts).toHaveLength(2);
+    expect(posts[1]).toMatch(/recovered after 6 min \(was not_ready\)/);
+  });
+
+  it("a status bug is reported as such, not as 'not selling'", async () => {
+    const { acme, watch, posts, advance } = setup();
+    acme.status = () => {
+      throw new Error("status bug");
+    };
+    await watch.tick();
+    advance(5 * MIN);
+    await watch.tick();
+    expect(posts[0]).toMatch(/\(status_error\): its status can't be read/);
+  });
+});
+

@@ -71,3 +71,14 @@ describe("module boundaries", () => {
     expect(bad).toEqual([]);
   });
 });
+
+describe("product status is read safely", () => {
+  it("kernel code reads a product's status only through statusOf (a throwing status() must not 500 a route)", () => {
+    const offenders = all
+      .filter((f) => !rel(f).startsWith("products/") && rel(f) !== "platform/product-watch.ts")
+      .flatMap((f) => [...readFileSync(f, "utf8").matchAll(/\b[\w.]+\.status\(\)/g)].map((m) => `${rel(f)}: ${m[0]}`))
+      .filter((hit) => !/\b(c\.res|res|conn|history)\.status\(\)/.test(hit));
+    expect(offenders).toEqual([]);
+  });
+});
+

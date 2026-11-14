@@ -305,6 +305,11 @@ describe("platform surfaces are generated from the catalog", () => {
     const res = await env.fetch(`${BASE_URL}/readyz`);
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ ok: true, products: { acme: false }, degraded: ["acme"] });
+    // ...and no other route goes down with it.
+    expect((await env.fetch(`${BASE_URL}/status`)).status).toBe(200);
+    expect((await env.fetch(`${BASE_URL}/metrics`, { headers: admin })).status).toBe(200);
+    expect((await env.fetch(`${BASE_URL}/v1/products`)).status).toBe(200);
+    expect((await env.fetch(`${BASE_URL}/`, { headers: { accept: "text/html" } })).status).toBe(200);
   });
 
   it("is unready when the database is unreachable: nothing can be charged safely", async () => {

@@ -117,7 +117,9 @@ before selling derived data on mainnet (`apps/ingest/src/sources/aisstream.ts`).
 
 `/readyz` is the deploy healthcheck and gates on the **database only**: a replica that can record
 payments takes traffic. A product whose feed is down (NATS, NESO) no longer fails deploys. It is
-listed in `degraded` (unready, or no fresh scope), and its calls are refused with `503`, uncharged.
+listed in `degraded` (unready, or no fresh scope), and once its data is past its age limit (120 s
+for Dover and Rotterdam, 300 s for Panama) its calls are refused with `503`, uncharged. Right after
+every deploy maritime answers `503 data_stale` (uncharged) until the new replica has heard from NATS.
 So a deploy with a broken product config (a wrong `NATS_URL`, say) **goes live**. The gateway's
 product watch logs `product degraded` at error level and posts to the gateway's `ALERT_WEBHOOK_URL`
 once a product has been degraded for `PRODUCT_ALERT_AFTER_MS` (5 min), and again when it recovers.
