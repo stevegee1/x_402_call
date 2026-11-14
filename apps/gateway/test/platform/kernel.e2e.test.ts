@@ -260,12 +260,79 @@ describe("platform surfaces are generated from the catalog", () => {
     expect(acme.adminCalls).toBe(1);
   });
 
-  it("is unready when any product is unready", async () => {
-    expect((await env.fetch(`${BASE_URL}/readyz`)).status).toBe(200);
+  it("stays ready when one product is unready: it reports it, and the other products keep selling", async () => {
+    expect(await (await env.fetch(`${BASE_URL}/readyz`)).json()).toMatchObject({ ok: true, degraded: [] });
     acme.ready = false;
+    acme.fresh = false;
+    const res = await env.fetch(`${BASE_URL}/readyz`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ ok: true, db: true, products: { maritime: true, acme: false }, degraded: ["acme"] });
+    // Its stale scope (fresh=false, not ready=false) refuses its calls uncharged (I1)...
+    expect((await env.fetch(READING)).status).toBe(503);
+    expect(await env.store.listPayments({ limit: 10 })).toHaveLength(0);
+    // ...while another product still offers a sale.
+    expect((await env.fetch(`${BASE_URL}/v1/maritime/dover/vessels`)).status).toBe(402);
+    const m = await (await env.fetch(`${BASE_URL}/metrics`, { headers: admin })).text();
+    expect(m).toContain('product_ready{product="acme"} 0');
+  });
+
+  it("a lost maritime feed (the NATS bus) degrades maritime only, not the gateway", async () => {
+    const lost = await createTestEnv({}, { feedConnected: () => false, products: [new AcmeProduct()] });
+    const res = await lost.fetch(`${BASE_URL}/readyz`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ ok: true, products: { maritime: false, acme: true }, degraded: ["maritime"] });
+    expect((await lost.fetch(READING)).status).toBe(402); // the other product keeps selling
+
+    // Readiness never gates a sale; freshness does. Within its age budget (120 s for Dover) the last
+    // data received is still sold...
+    const DOVER = `${BASE_URL}/v1/maritime/dover/vessels`;
+    expect((await lost.fetch(DOVER)).status).toBe(402);
+    // ...and once the feed has been silent past it, every call is refused, uncharged.
+    lost.world.regions.get("dover")!.lastMessageAt = Date.now() - 121_000;
+    lost.engine.buildAll();
+    const stale = await lost.fetch(DOVER);
+    expect(stale.status).toBe(503);
+    expect((await stale.json()).error).toBe("data_stale");
+    expect(await lost.store.listPayments({ limit: 10 })).toHaveLength(0);
+  });
+
+  it("a product that can't sell anything is degraded even if it calls itself ready", async () => {
+    acme.fresh = false; // ready, but its only scope is stale: every call 503s
+    expect(await (await env.fetch(`${BASE_URL}/readyz`)).json()).toMatchObject({ ok: true, products: { acme: true }, degraded: ["acme"] });
+  });
+
+  it("a product whose status() throws is reported degraded; readiness still answers", async () => {
+    acme.status = () => {
+      throw new Error("status bug");
+    };
+    const res = await env.fetch(`${BASE_URL}/readyz`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ ok: true, products: { acme: false }, degraded: ["acme"] });
+    // ...and no other route goes down with it.
+    expect((await env.fetch(`${BASE_URL}/status`)).status).toBe(200);
+    expect((await env.fetch(`${BASE_URL}/metrics`, { headers: admin })).status).toBe(200);
+    expect((await env.fetch(`${BASE_URL}/v1/products`)).status).toBe(200);
+    const site = await env.fetch(`${BASE_URL}/`, { headers: { accept: "text/html" } });
+    expect(site.status).toBe(200);
+    expect(await site.text()).toContain("Status unavailable"); // never a green "Live data" chip
+  });
+
+  it("a product whose metrics throw doesn't blank the scrape", async () => {
+    (acme as unknown as { collectMetrics: () => void }).collectMetrics = () => {
+      throw new Error("metrics bug");
+    };
+    const res = await env.fetch(`${BASE_URL}/metrics`, { headers: admin });
+    expect(res.status).toBe(200);
+    const m = await res.text();
+    expect(m).toContain('product_metrics_errors_total{product="acme"} 1');
+    expect(m).toContain('product_ready{product="maritime"} 1');
+  });
+
+  it("is unready when the database is unreachable: nothing can be charged safely", async () => {
+    env.store.ping = async () => false;
     const res = await env.fetch(`${BASE_URL}/readyz`);
     expect(res.status).toBe(503);
-    expect(await res.json()).toMatchObject({ ok: false, db: true, products: { maritime: true, acme: false } });
+    expect(await res.json()).toMatchObject({ ok: false, db: false });
   });
 
   it("reports every product in /status and /metrics", async () => {

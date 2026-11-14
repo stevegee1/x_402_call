@@ -115,8 +115,35 @@ before selling derived data on mainnet (`apps/ingest/src/sources/aisstream.ts`).
 
 ## Checks
 
+`/readyz` is the deploy healthcheck and gates on the **database only**: a replica that can record
+payments takes traffic. A product whose feed is down (NATS, NESO) no longer fails deploys. It is
+listed in `degraded` (unready, or no fresh scope), and once its data is past its age limit (120 s
+for Dover and Rotterdam, 300 s for Panama) its calls are refused with `503`, uncharged. Right after
+every deploy maritime answers `503 data_stale` (uncharged) until the new replica has heard from NATS.
+So a deploy with a broken product config (a wrong `NATS_URL`, say) **goes live**. The gateway's
+product watch logs `product degraded` at error level and posts to the gateway's `ALERT_WEBHOOK_URL`
+once a product has been degraded for `PRODUCT_ALERT_AFTER_MS` (5 min), and again when it recovers.
+Set the webhook (sealed, like the other secrets) so that reaches a person:
+
 ```bash
-curl https://<gateway-domain>/readyz       # {"ok":true,"db":true,"products":{"maritime":true,"grid":true},…}
+printf %s "$SLACK_WEBHOOK" | railway variable set ALERT_WEBHOOK_URL --stdin -s @mx/gateway
+```
+
+What to expect from those alerts:
+
+- **Per replica, in memory.** Each gateway replica watches and alerts on its own, and the message
+  names it (`staging/<replica id>`). With two replicas you get two alerts per incident.
+- **Restarts re-alert.** During a long outage, every deploy alerts again 5 minutes after boot. An
+  incident that recovers in the first 5 minutes of a new process gets no "recovered" message,
+  because that process never alerted; `/readyz` `degraded` and the `product_degraded` gauge are
+  the source of truth.
+- **One dead region is not an outage.** A product counts as degraded only when it is unready or
+  none of its scopes is fresh, so Panama's sparse coverage alone never alerts.
+- **Sessions are always ready.** Buying a session balance works even while every data product is
+  degraded; each read is still refused uncharged while the data is stale.
+
+```bash
+curl https://<gateway-domain>/readyz       # {"ok":true,"db":true,"products":{"maritime":true,"grid":true},"degraded":[],…}
 curl https://<gateway-domain>/v1/products  # maritime and grid
 curl https://<gateway-domain>/v1/sessions/sizes   # usd1, usd5, usd20 (sessions on)
 curl https://<gateway-domain>/v1/grid/countries   # endpoints include grid.history, grid.revisions, grid.stream

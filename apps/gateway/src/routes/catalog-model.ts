@@ -1,3 +1,4 @@
+import { statusOf } from "../platform/product-watch";
 import type { AppDeps } from "../context";
 import type { PricedResource, Product, ResourceParameter } from "../platform/product";
 
@@ -80,7 +81,7 @@ function exampleFor(path: string, params: ResourceParameter[], coverage: ScopeVi
 }
 
 function scopesOf(p: Product): ScopeView[] {
-  return p.status().scopes.map((s) => {
+  return statusOf(p).scopes.map((s) => {
     const x = s as typeof s & { name?: string; vessels?: number; data_age_s?: number | null };
     return {
       id: s.scope,
@@ -123,6 +124,6 @@ export function catalogView(d: AppDeps, now = new Date()): ProductView[] {
         example: exampleFor(route.path, res.parameters ?? [], coverage, now),
       });
     }
-    return { id: p.id, name: p.displayName, description: p.description, kind, ready: p.status().ready, coverage, endpoints };
+    return { id: p.id, name: p.displayName, description: p.description, kind, ready: statusOf(p).ready, coverage, endpoints };
   });
 }

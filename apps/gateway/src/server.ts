@@ -8,6 +8,7 @@ import { CustomerAccounts } from "./customers/service";
 import { CreditsService } from "./credits/service";
 import { CoinbaseFx, FixedFx } from "./ledger/fx";
 import { createLogger } from "./logger";
+import { ProductWatch } from "./platform/product-watch";
 import { Metrics } from "./metrics";
 import { createPublicClient, getAddress, http } from "viem";
 import { base, baseSepolia } from "viem/chains";
@@ -210,6 +211,18 @@ const deps: AppDeps = {
   startedAt: Date.now(),
 };
 
+// /readyz never fails on a product, so this is how a product outage or a bad deploy gets noticed.
+const productWatch = new ProductWatch({
+  products: catalog.products,
+  alertAfterMs: cfg.PRODUCT_ALERT_AFTER_MS,
+  webhookUrl: cfg.ALERT_WEBHOOK_URL,
+  // Railway sets these; each replica watches on its own, so alerts say which one.
+  instance: [process.env.RAILWAY_ENVIRONMENT_NAME, process.env.RAILWAY_REPLICA_ID?.slice(0, 8)].filter(Boolean).join("/") || undefined,
+  log,
+  metrics,
+});
+productWatch.start();
+
 const server = serve({ fetch: createApp(deps).fetch, port: cfg.PORT }, (info) =>
   log.info({ port: info.port, network: cfg.X402_NETWORK, products: catalog.products.map((p) => p.id), dataSource: cfg.DATA_SOURCE, settlement: cfg.SETTLEMENT_MODE }, "gateway listening"),
 );
@@ -217,6 +230,7 @@ const server = serve({ fetch: createApp(deps).fetch, port: cfg.PORT }, (info) =>
 async function shutdown(signal: string) {
   log.info({ signal }, "shutting down");
   server.close();
+  productWatch.stop();
   engine.stop();
   gridFeed?.stop();
   await envFollower?.stop();

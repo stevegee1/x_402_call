@@ -62,7 +62,7 @@ describe("stack", () => {
   it("every gateway replica is ready and serving maritime", async () => {
     for (const url of Object.values(gw)) {
       const r = await (await fetch(`${url}/readyz`)).json();
-      expect(r).toEqual({ ok: true, db: true, products: { maritime: true, grid: true, sessions: true }, facilitator_breaker: "closed" });
+      expect(r).toEqual({ ok: true, db: true, products: { maritime: true, grid: true, sessions: true }, degraded: [], facilitator_breaker: "closed" });
     }
   });
 
