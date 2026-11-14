@@ -86,7 +86,7 @@ const schema = z
     /** Incoming webhook (Slack-style) for operator alerts: a product degraded for PRODUCT_ALERT_AFTER_MS. */
     // An empty value (a variable cleared in the dashboard) means "no webhook", not a boot failure.
     ALERT_WEBHOOK_URL: z.preprocess((v) => (v === "" ? undefined : v), z.string().url().optional()),
-    PRODUCT_ALERT_AFTER_MS: z.coerce.number().int().positive().default(300_000),
+    PRODUCT_ALERT_AFTER_MS: z.preprocess((v) => (v === "" ? undefined : v), z.coerce.number().int().positive().default(300_000)),
     /** "fixed" values every payment at FX_FALLBACK_USDC_GBP: hermetic tests only, refused in production. */
     FX_PROVIDER: z.enum(["coinbase", "fixed"]).default("coinbase"),
     FX_FALLBACK_USDC_GBP: z.coerce.number().positive().default(0.75),

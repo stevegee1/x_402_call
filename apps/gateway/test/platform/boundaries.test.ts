@@ -73,12 +73,26 @@ describe("module boundaries", () => {
 });
 
 describe("product status is read safely", () => {
+  /** Any call of a `status` member: dotted, optional, computed, wrapped across lines, or via call/apply. */
+  const STATUS_CALL = /(?:\.\s*status|\[\s*["'`]status["'`]\s*\])\s*(?:\?\.\s*)?(?:\(|\.\s*(?:call|apply)\s*\()/;
+  /** Members named status that are not a product's: an HTTP response's status, an iterator over NATS status. */
+  const NOT_A_PRODUCT = /\b(?:c\.res|res|response|conn|this\.history|history)\s*\.\s*status\s*\(/;
+
+  it("the pattern catches every way of calling it", () => {
+    for (const hit of ["p.status()", "p?.status()", "products[0].status()", "find(x)!.status()", "(p as Product).status()", "p\n  .status()", 'p["status"]()', "p.status?.()", "p.status.call(p)"]) expect(STATUS_CALL.test(hit), hit).toBe(true);
+    for (const miss of ["c.res.status", "res.status === 200", "statusOf(p)", "p.statusText"]) expect(STATUS_CALL.test(miss), miss).toBe(false);
+  });
+
   it("kernel code reads a product's status only through statusOf (a throwing status() must not 500 a route)", () => {
     const offenders = all
       .filter((f) => !rel(f).startsWith("products/") && rel(f) !== "platform/product-watch.ts")
-      .flatMap((f) => [...readFileSync(f, "utf8").matchAll(/\b[\w.]+\.status\(\)/g)].map((m) => `${rel(f)}: ${m[0]}`))
-      .filter((hit) => !/\b(c\.res|res|conn|history)\.status\(\)/.test(hit));
+      .flatMap((f) => {
+        const src = readFileSync(f, "utf8");
+        return [...src.matchAll(new RegExp(STATUS_CALL.source, "g"))]
+          .map((m) => src.slice(Math.max(0, m.index! - 40), m.index! + m[0].length))
+          .filter((ctx) => !NOT_A_PRODUCT.test(ctx))
+          .map((ctx) => `${rel(f)}: ...${ctx.replace(/\s+/g, " ")}`);
+      });
     expect(offenders).toEqual([]);
   });
 });
-

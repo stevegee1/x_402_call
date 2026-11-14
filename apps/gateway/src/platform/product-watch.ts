@@ -23,8 +23,14 @@ export function statusOf(p: Product): ProductStatus {
  * Freshness, not readiness, gates each sale (billing.ts resolveForSale); this is the operator's view.
  * One stale scope among fresh ones (Panama's sparse coverage) is not a product outage.
  */
-export function degradedReason(p: Product): "status_error" | "not_ready" | "no_fresh_scope" | null {
-  const s = statusOf(p);
+export function degradedReason(p: Product): DegradedReason | null {
+  return degradedReasonOf(statusOf(p));
+}
+
+export type DegradedReason = "status_error" | "not_ready" | "no_fresh_scope";
+
+/** degradedReason from a status already read (one read per product per request). */
+export function degradedReasonOf(s: ProductStatus): DegradedReason | null {
   if (s.detail && STATUS_ERROR in s.detail) return "status_error";
   if (!s.ready) return "not_ready";
   if (s.scopes.length > 0 && s.scopes.every((x) => !x.fresh)) return "no_fresh_scope";
@@ -66,7 +72,10 @@ interface Incident {
  * when it recovers. Webhook posts that fail are retried on later ticks, the recovery included.
  *
  * State is per process and in memory: each replica alerts on its own (the message names it), and
- * a restart during a long outage alerts again alertAfterMs after boot.
+ * a restart during a long outage alerts again alertAfterMs after boot. Delivery is at least once (a
+ * webhook slower than its 10 s timeout may have delivered before it is retried). An incident closes
+ * on the first healthy sample, so a product that flaps faster than the threshold never alerts; its
+ * product_degraded gauge shows the flapping.
  */
 export class ProductWatch {
   private readonly incidents = new Map<string, Incident>();

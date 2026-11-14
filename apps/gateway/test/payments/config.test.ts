@@ -102,6 +102,7 @@ describe("product alert config", () => {
     expect(loadConfig({ ...base, ALERT_WEBHOOK_URL: "https://hooks.slack.test/x" }).ALERT_WEBHOOK_URL).toBe("https://hooks.slack.test/x");
     expect(loadConfig(base).PRODUCT_ALERT_AFTER_MS).toBe(300_000);
     expect(() => loadConfig({ ...base, PRODUCT_ALERT_AFTER_MS: "0" })).toThrow(/PRODUCT_ALERT_AFTER_MS/);
+    expect(loadConfig({ ...base, PRODUCT_ALERT_AFTER_MS: "" }).PRODUCT_ALERT_AFTER_MS).toBe(300_000);
   });
 });
 

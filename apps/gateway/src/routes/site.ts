@@ -132,7 +132,9 @@ const accessProduct = (d: AppDeps) => d.catalog.products.find((p) => p.kind === 
 
 /** Honest, live status for a data product: anything not live and fresh says so. */
 function statusChip(p: Product): string {
-  const scopes = statusOf(p).scopes;
+  const status = statusOf(p);
+  const scopes = status.scopes;
+  if (!status.ready || scopes.length === 0) return `<span class="chip warn">Status unavailable: calls are not charged unless served</span>`;
   if (scopes.some((s) => s.mode !== "live")) return `<span class="chip warn">Simulated data</span>`;
   if (scopes.some((s) => !s.fresh)) return `<span class="chip warn">Data delayed: calls are not charged</span>`;
   return `<span class="chip ok"><span class="dot"></span>Live data</span>`;

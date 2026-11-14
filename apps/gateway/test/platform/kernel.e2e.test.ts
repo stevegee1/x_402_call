@@ -265,8 +265,9 @@ describe("platform surfaces are generated from the catalog", () => {
     const res = await env.fetch(`${BASE_URL}/readyz`);
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ ok: true, db: true, products: { maritime: true, acme: false }, degraded: ["acme"] });
-    // The unready product refuses its own calls uncharged (I1)...
+    // Its stale scope (fresh=false, not ready=false) refuses its calls uncharged (I1)...
     expect((await env.fetch(READING)).status).toBe(503);
+    expect(await env.store.listPayments({ limit: 10 })).toHaveLength(0);
     // ...while another product still offers a sale.
     expect((await env.fetch(`${BASE_URL}/v1/maritime/dover/vessels`)).status).toBe(402);
     const m = await (await env.fetch(`${BASE_URL}/metrics`, { headers: admin })).text();
@@ -309,7 +310,20 @@ describe("platform surfaces are generated from the catalog", () => {
     expect((await env.fetch(`${BASE_URL}/status`)).status).toBe(200);
     expect((await env.fetch(`${BASE_URL}/metrics`, { headers: admin })).status).toBe(200);
     expect((await env.fetch(`${BASE_URL}/v1/products`)).status).toBe(200);
-    expect((await env.fetch(`${BASE_URL}/`, { headers: { accept: "text/html" } })).status).toBe(200);
+    const site = await env.fetch(`${BASE_URL}/`, { headers: { accept: "text/html" } });
+    expect(site.status).toBe(200);
+    expect(await site.text()).toContain("Status unavailable"); // never a green "Live data" chip
+  });
+
+  it("a product whose metrics throw doesn't blank the scrape", async () => {
+    (acme as unknown as { collectMetrics: () => void }).collectMetrics = () => {
+      throw new Error("metrics bug");
+    };
+    const res = await env.fetch(`${BASE_URL}/metrics`, { headers: admin });
+    expect(res.status).toBe(200);
+    const m = await res.text();
+    expect(m).toContain('product_metrics_errors_total{product="acme"} 1');
+    expect(m).toContain('product_ready{product="maritime"} 1');
   });
 
   it("is unready when the database is unreachable: nothing can be charged safely", async () => {
