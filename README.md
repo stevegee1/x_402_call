@@ -187,5 +187,7 @@ built in (`src/identity/registries.ts`); `pnpm erc8004:probe` checks them read-o
 Implement `Product` ([platform/product.ts](apps/gateway/src/platform/product.ts)) under
 `apps/gateway/src/products/<id>/`, declare its priced resources, and add it to the `Catalog` in
 [server.ts](apps/gateway/src/server.ts). The catalog validates it at boot. Billing, settlement,
-the ledger (`revenue:<id>`), OpenAPI, `/status` and `/readyz` come from the kernel. Products may
+the ledger (`revenue:<id>`), OpenAPI, `/status`, `/readyz` and degraded-product alerts come from the
+kernel. Each scope's `fresh` gates its sales; `ready` only reports the product's feed (`/readyz`
+itself gates on the database alone). Products may
 not import kernel internals (enforced by `test/platform/boundaries.test.ts`).

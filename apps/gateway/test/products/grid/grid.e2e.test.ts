@@ -123,7 +123,7 @@ describe("grid product end to end (in-process)", () => {
     vi.setSystemTime(T0 + 60 * 60_000);
     await feed.poll();
     const ready = await (await env.fetch(`${BASE_URL}/readyz`)).json();
-    expect(ready).toMatchObject({ ok: true, products: { maritime: true, grid: true } });
+    expect(ready).toMatchObject({ ok: true, products: { maritime: true, grid: true }, degraded: ["grid"] });
     const status = await (await env.fetch(`${BASE_URL}/status`)).json();
     const grid = status.products.find((p: { id: string }) => p.id === "grid");
     expect(grid.scopes[0]).toMatchObject({ scope: "england", fresh: false, reason: "fetch_stale" });

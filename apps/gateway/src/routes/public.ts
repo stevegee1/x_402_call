@@ -4,6 +4,7 @@ import { isMainnet } from "../config";
 import type { AppDeps, AppEnv } from "../context";
 import type { PricedResource, Product } from "../platform/product";
 import { viewerOf } from "../customers/web-session";
+import { degradedReason } from "../platform/product-watch";
 import { catalogView, creditsOk, sessionOk, templatePath, type ProductView } from "./catalog-model";
 import { DOCS_HEADERS, renderCatalogPage, renderDocsPage } from "./docs-pages";
 import { renderSite, SITE_HEADERS, wantsHtml } from "./site";
@@ -55,14 +56,15 @@ export function publicRoutes(d: AppDeps) {
 
   /**
    * Ready = this replica can take money correctly, which needs the database (payments, replay
-   * protection, exposure caps, ledger). Product health is reported, never gating: an unready
-   * product already refuses its own calls uncharged (I1), so one product's feed outage (say, the
-   * maritime NATS bus) must not fail every deploy or make the other products look down.
+   * protection, exposure caps, ledger). Products never gate it: each sale is gated by its scope's
+   * freshness (resolveForSale, 503 uncharged), so one product's feed outage (say, the maritime NATS
+   * bus) must not fail every deploy or make the other products look down. `degraded` lists products
+   * that can't sell right now; ProductWatch alerts when one stays degraded (a bad deploy included).
    */
   r.get("/readyz", async (c) => {
     const db = await d.store.ping();
     const products = Object.fromEntries(d.catalog.products.map((p) => [p.id, p.status().ready]));
-    const degraded = Object.entries(products).filter(([, ready]) => !ready).map(([id]) => id);
+    const degraded = d.catalog.products.filter((p) => degradedReason(p) !== null).map((p) => p.id);
     return c.json({ ok: db, db, products, degraded, facilitator_breaker: d.facilitator.breaker.state }, db ? 200 : 503);
   });
 

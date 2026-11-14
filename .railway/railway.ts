@@ -101,6 +101,8 @@ export default defineRailway((ctx) => {
       PUBLIC_BASE_URL: "https://${{RAILWAY_PUBLIC_DOMAIN}}",
       DATABASE_URL: db.env.DATABASE_URL,
       ADMIN_TOKEN: preserve(),
+      // Slack-style incoming webhook, set out of band: a product degraded for 5 min (outage or bad deploy).
+      ALERT_WEBHOOK_URL: preserve(),
       // Railway's edge overwrites X-Real-IP with the caller's address; verified on staging by
       // forging it (docs/staging.md). Never X-Forwarded-For here: its last hop is an edge node.
       CLIENT_IP_HEADER: "x-real-ip",

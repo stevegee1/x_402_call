@@ -278,7 +278,24 @@ describe("platform surfaces are generated from the catalog", () => {
     const res = await lost.fetch(`${BASE_URL}/readyz`);
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ ok: true, products: { maritime: false, acme: true }, degraded: ["maritime"] });
-    expect((await lost.fetch(READING)).status).toBe(402);
+    expect((await lost.fetch(READING)).status).toBe(402); // the other product keeps selling
+
+    // Readiness never gates a sale; freshness does. Within its age budget (120 s for Dover) the last
+    // data received is still sold...
+    const DOVER = `${BASE_URL}/v1/maritime/dover/vessels`;
+    expect((await lost.fetch(DOVER)).status).toBe(402);
+    // ...and once the feed has been silent past it, every call is refused, uncharged.
+    lost.world.regions.get("dover")!.lastMessageAt = Date.now() - 121_000;
+    lost.engine.buildAll();
+    const stale = await lost.fetch(DOVER);
+    expect(stale.status).toBe(503);
+    expect((await stale.json()).error).toBe("data_stale");
+    expect(await lost.store.listPayments({ limit: 10 })).toHaveLength(0);
+  });
+
+  it("a product that can't sell anything is degraded even if it calls itself ready", async () => {
+    acme.fresh = false; // ready, but its only scope is stale: every call 503s
+    expect(await (await env.fetch(`${BASE_URL}/readyz`)).json()).toMatchObject({ ok: true, products: { acme: true }, degraded: ["acme"] });
   });
 
   it("is unready when the database is unreachable: nothing can be charged safely", async () => {

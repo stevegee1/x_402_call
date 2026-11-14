@@ -115,6 +115,18 @@ before selling derived data on mainnet (`apps/ingest/src/sources/aisstream.ts`).
 
 ## Checks
 
+`/readyz` is the deploy healthcheck and gates on the **database only**: a replica that can record
+payments takes traffic. A product whose feed is down (NATS, NESO) no longer fails deploys. It is
+listed in `degraded` (unready, or no fresh scope), and its calls are refused with `503`, uncharged.
+So a deploy with a broken product config (a wrong `NATS_URL`, say) **goes live**. The gateway's
+product watch logs `product degraded` at error level and posts to the gateway's `ALERT_WEBHOOK_URL`
+once a product has been degraded for `PRODUCT_ALERT_AFTER_MS` (5 min), and again when it recovers.
+Set the webhook (sealed, like the other secrets) so that reaches a person:
+
+```bash
+printf %s "$SLACK_WEBHOOK" | railway variable set ALERT_WEBHOOK_URL --stdin -s @mx/gateway
+```
+
 ```bash
 curl https://<gateway-domain>/readyz       # {"ok":true,"db":true,"products":{"maritime":true,"grid":true},"degraded":[],…}
 curl https://<gateway-domain>/v1/products  # maritime and grid
