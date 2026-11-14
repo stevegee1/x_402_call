@@ -1,14 +1,25 @@
 import type { Logger } from "../logger";
 import type { Metrics } from "../metrics";
-import type { Product } from "./product";
+import type { Product, ProductStatus } from "./product";
+
+/** A product's status, or null if reading it threw: a product bug must never take the gateway down. */
+export function safeStatus(p: Product): ProductStatus | null {
+  try {
+    return p.status();
+  } catch {
+    return null;
+  }
+}
 
 /**
- * A product is degraded when it can't sell: it says it isn't ready (its feed is down), or it has
- * scopes and none of them is fresh (every call would be refused with 503, uncharged). Freshness, not
- * readiness, is what gates each sale (billing.ts resolveForSale); this is the operator's view of it.
+ * A product is degraded when it can't sell: its status can't be read, it says it isn't ready (its
+ * feed is down), or it has scopes and none of them is fresh (every call is refused, uncharged).
+ * Freshness, not readiness, gates each sale (billing.ts resolveForSale); this is the operator's view.
+ * One stale scope among fresh ones (Panama's sparse coverage) is not a product outage.
  */
-export function degradedReason(p: Product): string | null {
-  const s = p.status();
+export function degradedReason(p: Product): "status_error" | "not_ready" | "no_fresh_scope" | null {
+  const s = safeStatus(p);
+  if (!s) return "status_error";
   if (!s.ready) return "not_ready";
   if (s.scopes.length > 0 && s.scopes.every((x) => !x.fresh)) return "no_fresh_scope";
   return null;
@@ -20,6 +31,8 @@ export interface ProductWatchOptions {
   alertAfterMs: number;
   /** Optional incoming webhook (Slack-style `{ text }`); the log line is written either way. */
   webhookUrl?: string;
+  /** Names this process in alerts: each replica watches (and alerts) on its own. */
+  instance?: string;
   log: Logger;
   metrics: Metrics;
   now?: () => number;
@@ -31,16 +44,29 @@ const postJson = async (url: string, body: unknown) => {
   if (!res.ok) throw new Error(`webhook answered ${res.status}`);
 };
 
+const duration = (ms: number) => (ms < 60_000 ? `${Math.round(ms / 1000)} s` : `${Math.round(ms / 60_000)} min`);
+
+interface Incident {
+  since: number;
+  /** The degraded alert: not yet due, logged but its webhook still to deliver, or delivered. */
+  alert: "pending" | "undelivered" | "delivered";
+}
+
 /**
  * Replaces the deploy-time readiness gate as the signal that a product is down (wrong NATS_URL,
  * upstream outage, a product that never becomes ready). /readyz no longer fails on a product, so a
  * bad deploy goes live: this tells the operator within alertAfterMs, once per incident, and again
- * when it recovers. A webhook that fails is retried on the next tick.
+ * when it recovers. Webhook posts that fail are retried on later ticks, the recovery included.
+ *
+ * State is per process and in memory: each replica alerts on its own (the message names it), and
+ * a restart during a long outage alerts again alertAfterMs after boot.
  */
 export class ProductWatch {
-  private readonly since = new Map<string, number>();
-  private readonly alerted = new Map<string, boolean>(); // product -> alert delivered
+  private readonly incidents = new Map<string, Incident>();
+  /** Recovery notices whose webhook hasn't been delivered yet. */
+  private readonly recoveries = new Map<string, string>();
   private timer?: NodeJS.Timeout;
+  private running = false;
   private readonly now: () => number;
   private readonly post: (url: string, body: unknown) => Promise<void>;
 
@@ -50,7 +76,14 @@ export class ProductWatch {
   }
 
   start(intervalMs = 30_000) {
-    this.timer = setInterval(() => void this.tick(), intervalMs);
+    const run = () =>
+      this.tick().catch((e) => {
+        // Never an unhandled rejection: that would exit the process and take payments down with it.
+        this.o.metrics.inc("product_watch_errors_total");
+        this.o.log.error({ err: e }, "product watch tick failed");
+      });
+    void run(); // the gauges exist from boot, not 30 s later
+    this.timer = setInterval(run, intervalMs);
     this.timer.unref();
   }
 
@@ -59,30 +92,49 @@ export class ProductWatch {
   }
 
   async tick() {
+    if (this.running) return; // a slow webhook must not let two ticks post the same alert
+    this.running = true;
+    try {
+      for (const p of this.o.products) await this.check(p);
+    } finally {
+      this.running = false;
+    }
+  }
+
+  private async check(p: Product) {
     const now = this.now();
-    for (const p of this.o.products) {
-      const reason = degradedReason(p);
-      this.o.metrics.set("product_degraded", reason ? 1 : 0, { product: p.id });
-      if (reason) {
-        const since = this.since.get(p.id) ?? now;
-        this.since.set(p.id, since);
-        const forMs = now - since;
-        if (forMs >= this.o.alertAfterMs && this.alerted.get(p.id) !== true) {
-          if (!this.alerted.has(p.id)) {
-            this.o.log.error({ product: p.id, reason, degraded_s: Math.round(forMs / 1000) }, "product degraded: calls are refused uncharged");
-            this.o.metrics.inc("product_degraded_alerts_total", { product: p.id });
-          }
-          this.alerted.set(p.id, await this.notify(`:warning: ${p.displayName} (${p.id}) degraded for ${Math.round(forMs / 60_000)} min (${reason}): calls are refused, uncharged. Check /status.`));
-        }
-      } else if (this.since.has(p.id)) {
-        if (this.alerted.has(p.id)) {
-          this.o.log.info({ product: p.id }, "product recovered");
-          await this.notify(`:white_check_mark: ${p.displayName} (${p.id}) recovered.`);
-        }
-        this.since.delete(p.id);
-        this.alerted.delete(p.id);
+    const reason = degradedReason(p);
+    this.o.metrics.set("product_degraded", reason ? 1 : 0, { product: p.id });
+    const where = this.o.instance ? ` on ${this.o.instance}` : "";
+
+    if (reason) {
+      this.recoveries.delete(p.id); // degraded again before the recovery notice went out
+      const inc = this.incidents.get(p.id) ?? { since: now, alert: "pending" };
+      this.incidents.set(p.id, inc);
+      const forMs = now - inc.since;
+      if (inc.alert === "pending" && forMs >= this.o.alertAfterMs) {
+        this.o.log.error({ product: p.id, reason, degraded_s: Math.round(forMs / 1000) }, "product degraded: it is not selling");
+        this.o.metrics.inc("product_degraded_alerts_total", { product: p.id });
+        inc.alert = "undelivered";
+      }
+      if (inc.alert === "undelivered") {
+        const text = `:warning: ${p.displayName} (${p.id}) degraded for ${duration(forMs)}${where} (${reason}): it is not selling; calls get 503 once its data is past its age limit, never charged. Check /status.`;
+        if (await this.notify(text)) inc.alert = "delivered";
+      }
+      return;
+    }
+
+    const inc = this.incidents.get(p.id);
+    if (inc) {
+      this.incidents.delete(p.id);
+      // A blip shorter than the threshold was never reported, so it needs no recovery notice.
+      if (inc.alert !== "pending") {
+        this.o.log.info({ product: p.id, degraded_s: Math.round((now - inc.since) / 1000) }, "product recovered");
+        this.recoveries.set(p.id, `:white_check_mark: ${p.displayName} (${p.id}) recovered${where} after ${duration(now - inc.since)}.`);
       }
     }
+    const notice = this.recoveries.get(p.id);
+    if (notice && (await this.notify(notice))) this.recoveries.delete(p.id);
   }
 
   /** true once delivered (or there is nowhere to deliver). */

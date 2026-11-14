@@ -4,7 +4,7 @@ import { isMainnet } from "../config";
 import type { AppDeps, AppEnv } from "../context";
 import type { PricedResource, Product } from "../platform/product";
 import { viewerOf } from "../customers/web-session";
-import { degradedReason } from "../platform/product-watch";
+import { degradedReason, safeStatus } from "../platform/product-watch";
 import { catalogView, creditsOk, sessionOk, templatePath, type ProductView } from "./catalog-model";
 import { DOCS_HEADERS, renderCatalogPage, renderDocsPage } from "./docs-pages";
 import { renderSite, SITE_HEADERS, wantsHtml } from "./site";
@@ -63,7 +63,8 @@ export function publicRoutes(d: AppDeps) {
    */
   r.get("/readyz", async (c) => {
     const db = await d.store.ping();
-    const products = Object.fromEntries(d.catalog.products.map((p) => [p.id, p.status().ready]));
+    // A product whose status throws is reported, not propagated: readiness is about the database.
+    const products = Object.fromEntries(d.catalog.products.map((p) => [p.id, safeStatus(p)?.ready ?? false]));
     const degraded = d.catalog.products.filter((p) => degradedReason(p) !== null).map((p) => p.id);
     return c.json({ ok: db, db, products, degraded, facilitator_breaker: d.facilitator.breaker.state }, db ? 200 : 503);
   });

@@ -212,7 +212,15 @@ const deps: AppDeps = {
 };
 
 // /readyz never fails on a product, so this is how a product outage or a bad deploy gets noticed.
-const productWatch = new ProductWatch({ products: catalog.products, alertAfterMs: cfg.PRODUCT_ALERT_AFTER_MS, webhookUrl: cfg.ALERT_WEBHOOK_URL, log, metrics });
+const productWatch = new ProductWatch({
+  products: catalog.products,
+  alertAfterMs: cfg.PRODUCT_ALERT_AFTER_MS,
+  webhookUrl: cfg.ALERT_WEBHOOK_URL,
+  // Railway sets these; each replica watches on its own, so alerts say which one.
+  instance: [process.env.RAILWAY_ENVIRONMENT_NAME, process.env.RAILWAY_REPLICA_ID?.slice(0, 8)].filter(Boolean).join("/") || undefined,
+  log,
+  metrics,
+});
 productWatch.start();
 
 const server = serve({ fetch: createApp(deps).fetch, port: cfg.PORT }, (info) =>

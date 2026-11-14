@@ -298,6 +298,15 @@ describe("platform surfaces are generated from the catalog", () => {
     expect(await (await env.fetch(`${BASE_URL}/readyz`)).json()).toMatchObject({ ok: true, products: { acme: true }, degraded: ["acme"] });
   });
 
+  it("a product whose status() throws is reported degraded; readiness still answers", async () => {
+    acme.status = () => {
+      throw new Error("status bug");
+    };
+    const res = await env.fetch(`${BASE_URL}/readyz`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ ok: true, products: { acme: false }, degraded: ["acme"] });
+  });
+
   it("is unready when the database is unreachable: nothing can be charged safely", async () => {
     env.store.ping = async () => false;
     const res = await env.fetch(`${BASE_URL}/readyz`);

@@ -8,7 +8,7 @@
  * and our self-hosted facilitator is the fallback, reachable only on the private network.
  *
  * Secrets are never in this file. They appear as preserve() and are set out of band
- * (docs/staging.md): ADMIN_TOKEN and SESSION_SECRET on the gateway, FACILITATOR_PRIVATE_KEY and AUTH_TOKEN on the
+ * (docs/staging.md): ADMIN_TOKEN, SESSION_SECRET and ALERT_WEBHOOK_URL (optional) on the gateway, FACILITATOR_PRIVATE_KEY and AUTH_TOKEN on the
  * facilitator, KEEPER_PRIVATE_KEY on gas-keeper, AISSTREAM_API_KEY on ingest. Services that need a secret reference the owner's variable instead of copying it.
  * Do NOT use ctx.randomString for secrets: it is a deterministic hash of the environment and label.
  *

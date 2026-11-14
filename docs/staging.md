@@ -127,6 +127,19 @@ Set the webhook (sealed, like the other secrets) so that reaches a person:
 printf %s "$SLACK_WEBHOOK" | railway variable set ALERT_WEBHOOK_URL --stdin -s @mx/gateway
 ```
 
+What to expect from those alerts:
+
+- **Per replica, in memory.** Each gateway replica watches and alerts on its own, and the message
+  names it (`staging/<replica id>`). With two replicas you get two alerts per incident.
+- **Restarts re-alert.** During a long outage, every deploy alerts again 5 minutes after boot. An
+  incident that recovers in the first 5 minutes of a new process gets no "recovered" message,
+  because that process never alerted; `/readyz` `degraded` and the `product_degraded` gauge are
+  the source of truth.
+- **One dead region is not an outage.** A product counts as degraded only when it is unready or
+  none of its scopes is fresh, so Panama's sparse coverage alone never alerts.
+- **Sessions are always ready.** Buying a session balance works even while every data product is
+  degraded; each read is still refused uncharged while the data is stale.
+
 ```bash
 curl https://<gateway-domain>/readyz       # {"ok":true,"db":true,"products":{"maritime":true,"grid":true},"degraded":[],…}
 curl https://<gateway-domain>/v1/products  # maritime and grid
