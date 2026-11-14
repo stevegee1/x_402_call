@@ -377,7 +377,10 @@ export function describeStoreContract(name: string, make: () => Promise<StoreHar
     describe("customer accounts", () => {
       const user = (email = `ops-${randomUUID()}@acme.test`) => ({ email, passwordHash: "scrypt$14$8$5$c2FsdA$aGFzaA" });
       const key = () => ({ hash: keyHash(), prefix: "mk_test_abcd" });
-      const NOW = new Date("2026-11-08T12:00:00Z");
+      // Relative to the real clock, never a calendar date: PgStore prunes sessions that expired over a
+      // day ago against the database's own now(), so a pinned date became "long expired" two days
+      // after it was written and the session tests started failing on 2026-11-10.
+      const NOW = new Date();
 
       it("creates the account, its first key and its user together", async () => {
         const k = key();
