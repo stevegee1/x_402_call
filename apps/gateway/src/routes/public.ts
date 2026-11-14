@@ -4,6 +4,8 @@ import { isMainnet } from "../config";
 import type { AppDeps, AppEnv } from "../context";
 import type { PricedResource, Product } from "../platform/product";
 import { viewerOf } from "../customers/web-session";
+import { bearerAuth } from "./bearer";
+import { degradedReasonOf, statusOf } from "../platform/product-watch";
 import { catalogView, creditsOk, sessionOk, templatePath, type ProductView } from "./catalog-model";
 import { DOCS_HEADERS, renderCatalogPage, renderDocsPage } from "./docs-pages";
 import { renderSite, SITE_HEADERS, wantsHtml } from "./site";
@@ -53,18 +55,27 @@ export function publicRoutes(d: AppDeps) {
 
   r.get("/healthz", (c) => c.json({ ok: true }));
 
+  /**
+   * Ready = this replica can take money correctly, which needs the database (payments, replay
+   * protection, exposure caps, ledger). Products never gate it: each sale is gated by its scope's
+   * freshness (resolveForSale, 503 uncharged), so one product's feed outage (say, the maritime NATS
+   * bus) must not fail every deploy or make the other products look down. `degraded` lists products
+   * that can't sell right now; ProductWatch alerts when one stays degraded (a bad deploy included).
+   */
   r.get("/readyz", async (c) => {
     const db = await d.store.ping();
-    const products = Object.fromEntries(d.catalog.products.map((p) => [p.id, p.status().ready]));
-    const ok = db && Object.values(products).every(Boolean);
-    return c.json({ ok, db, products, facilitator_breaker: d.facilitator.breaker.state }, ok ? 200 : 503);
+    // A product whose status throws is reported, not propagated: readiness is about the database.
+    const statuses = d.catalog.products.map((p) => [p.id, statusOf(p)] as const);
+    const products = Object.fromEntries(statuses.map(([id, s]) => [id, s.ready]));
+    const degraded = statuses.filter(([, s]) => degradedReasonOf(s) !== null).map(([id]) => id);
+    return c.json({ ok: db, db, products, degraded, facilitator_breaker: d.facilitator.breaker.state }, db ? 200 : 503);
   });
 
   r.get("/status", (c) =>
     c.json({
       uptime_s: Math.round((Date.now() - d.startedAt) / 1000),
       products: d.catalog.products.map((p) => {
-        const s = p.status();
+        const s = statusOf(p);
         return { id: p.id, name: p.displayName, ready: s.ready, scopes: s.scopes, ...s.detail };
       }),
       payments: { network: d.cfg.X402_NETWORK, settlement_mode: d.cfg.SETTLEMENT_MODE, facilitator_breaker: d.facilitator.breaker.state },
@@ -88,7 +99,7 @@ export function publicRoutes(d: AppDeps) {
       return p ? c.body(null, 302, { location: `/catalog#${p.id}`, vary: "Accept" }) : c.body(renderCatalogPage(d), 404, htmlHeaders());
     }
     if (!p) return c.json({ error: "unknown_product", products: d.catalog.products.map((x) => x.id) }, 404);
-    return c.json({ ...productSummary(p, d.cfg.PUBLIC_BASE_URL, viewOf(p)), status: p.status(), docs: docsLinks() });
+    return c.json({ ...productSummary(p, d.cfg.PUBLIC_BASE_URL, viewOf(p)), status: statusOf(p), docs: docsLinks() });
   });
 
   // Public payment status lookup (ids are unguessable UUIDs returned only to the payer).
@@ -100,6 +111,10 @@ export function publicRoutes(d: AppDeps) {
     return c.json({ id: p.id, status: p.status, network: p.network, resource: p.endpoint, amount_usdc: Number(p.amountAtomic) / 1e6, transaction: p.txHash, settled_at: p.settledAt?.toISOString() ?? null, data_owed: p.status === "settled" && p.owedSince !== null });
   });
 
+  // Revenue, exposure and payer counts: never public. Production always has ADMIN_TOKEN (config
+  // refuses to start without it), so this route can only be open in development.
+  const metricsToken = d.cfg.METRICS_TOKEN ?? d.cfg.ADMIN_TOKEN;
+  if (metricsToken) r.use("/metrics", bearerAuth(metricsToken));
   r.get("/metrics", async (c) => {
     // Global (all replicas): read from the payments table, not this process.
     const exposure = await d.store.exposure().catch(() => null);
@@ -108,8 +123,14 @@ export function publicRoutes(d: AppDeps) {
       d.metrics.set("x402_exposure_payers", exposure.payers);
     }
     for (const p of d.catalog.products) {
-      d.metrics.set("product_ready", p.status().ready ? 1 : 0, { product: p.id });
-      p.collectMetrics?.(d.metrics);
+      d.metrics.set("product_ready", statusOf(p).ready ? 1 : 0, { product: p.id });
+      try {
+        p.collectMetrics?.(d.metrics);
+      } catch (e) {
+        // One product's metrics bug must not blank the whole scrape (the degraded gauges live here).
+        d.metrics.inc("product_metrics_errors_total", { product: p.id });
+        d.log.warn({ err: e, product: p.id }, "product metrics failed");
+      }
     }
     return c.text(d.metrics.render(), 200, { "content-type": "text/plain; version=0.0.4" });
   });

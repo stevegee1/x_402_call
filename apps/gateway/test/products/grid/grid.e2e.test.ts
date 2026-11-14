@@ -7,6 +7,8 @@ import { GridFeed } from "../../../src/products/grid/feed";
 import { ADMIN_TOKEN, BASE_URL, createTestEnv, type TestEnv } from "../../helpers";
 import { FakeSource, periods, T0 } from "./fixtures";
 
+const ADMIN = { headers: { authorization: `Bearer ${ADMIN_TOKEN}` } };
+
 const policy = (): Policy => ({
   agentId: "grid-test",
   maxPricePerRequestUsd: 0.1,
@@ -123,7 +125,7 @@ describe("grid product end to end (in-process)", () => {
     vi.setSystemTime(T0 + 60 * 60_000);
     await feed.poll();
     const ready = await (await env.fetch(`${BASE_URL}/readyz`)).json();
-    expect(ready).toMatchObject({ ok: true, products: { maritime: true, grid: true } });
+    expect(ready).toMatchObject({ ok: true, products: { maritime: true, grid: true }, degraded: ["grid"] });
     const status = await (await env.fetch(`${BASE_URL}/status`)).json();
     const grid = status.products.find((p: { id: string }) => p.id === "grid");
     expect(grid.scopes[0]).toMatchObject({ scope: "england", fresh: false, reason: "fetch_stale" });
@@ -131,7 +133,7 @@ describe("grid product end to end (in-process)", () => {
   });
 
   it("publishes freshness gauges", async () => {
-    const m = await (await env.fetch(`${BASE_URL}/metrics`)).text();
+    const m = await (await env.fetch(`${BASE_URL}/metrics`, ADMIN)).text();
     expect(m).toMatch(/grid_fresh\{country="england"\} 1/);
     expect(m).toMatch(/grid_horizon_hours\{country="england"\} 47\.8/);
   });

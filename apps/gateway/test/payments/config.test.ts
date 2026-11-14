@@ -102,3 +102,15 @@ describe("on-chain settlement check", () => {
     expect(() => loadConfig({ ...prod, FACILITATOR: "x402org" })).not.toThrow();
   });
 });
+
+describe("product alert config", () => {
+  it("treats an empty ALERT_WEBHOOK_URL as unset, refuses a malformed one, defaults the threshold to 5 min", () => {
+    expect(loadConfig({ ...base, ALERT_WEBHOOK_URL: "" }).ALERT_WEBHOOK_URL).toBeUndefined();
+    expect(() => loadConfig({ ...base, ALERT_WEBHOOK_URL: "not a url" })).toThrow(/ALERT_WEBHOOK_URL/);
+    expect(loadConfig({ ...base, ALERT_WEBHOOK_URL: "https://hooks.slack.test/x" }).ALERT_WEBHOOK_URL).toBe("https://hooks.slack.test/x");
+    expect(loadConfig(base).PRODUCT_ALERT_AFTER_MS).toBe(300_000);
+    expect(() => loadConfig({ ...base, PRODUCT_ALERT_AFTER_MS: "0" })).toThrow(/PRODUCT_ALERT_AFTER_MS/);
+    expect(loadConfig({ ...base, PRODUCT_ALERT_AFTER_MS: "" }).PRODUCT_ALERT_AFTER_MS).toBe(300_000);
+  });
+});
+

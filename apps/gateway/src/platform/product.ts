@@ -73,7 +73,11 @@ export interface ScopeStatus extends ResolvedScope {
 }
 
 export interface ProductStatus {
-  /** Contributes to /readyz: false makes the gateway unready. */
+  /**
+   * The product's own feed is up. Reported on /readyz and /status, and false marks the product
+   * degraded (ProductWatch alerts), but it never makes the gateway unready and never gates a sale:
+   * each scope's `fresh` does that (refused with 503, uncharged).
+   */
   ready: boolean;
   scopes: ScopeStatus[];
   detail?: Record<string, unknown>;
