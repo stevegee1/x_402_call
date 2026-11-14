@@ -114,7 +114,7 @@ export interface Product {
 
 The kernel builds the route table, the 402 advertisement, OpenAPI, `/v1/status`, the console and the ERC-8004 agent card from `Product.resources`. Prices stay in config, as the plan requires. `PricedResource` values are loaded from each product's config, not hard-coded.
 
-**What stays the same for every product, with no extra code:** I1 (no charge for stale data), I2 (no simulated data on mainnet), I3 (replay protection), I4 (bounded exposure), I5 (no charge on failure), I6 (facilitator outage → 503), I8 (ledger integrity), I9 (credits never negative). The existing e2e tests become kernel tests run against a small fake product, plus product tests for maritime.
+**What stays the same for every product, with no extra code:** I1 (no charge for stale data), I2 (no simulated data on mainnet), I3 (replay protection), I4 (bounded exposure), I5 (no charge on failure), I6 (facilitator outage → 503), I8 (ledger integrity), I9 (credits never negative), I14 (paid means delivered: in sync mode the handler runs before the settle and its response is released only once paid, so a handler failure is never charged; a settled payment whose response never reached the buyer is owed from admission and served once when the buyer resends the same signature). The existing e2e tests become kernel tests run against a small fake product, plus product tests for maritime.
 
 ---
 

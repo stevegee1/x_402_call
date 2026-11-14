@@ -39,6 +39,15 @@ export class FakeFacilitator implements FacilitatorClient {
   settled: string[] = [];
   down = false;
   settleFails?: string;
+  /** Throw from settle (a timeout or dropped connection): the outcome is unknown to the gateway. */
+  settleThrows?: string;
+  /**
+   * Broadcast, then give up waiting for the receipt: the nonce IS spent (the tx mines) but the
+   * answer is @x402/evm's `{ success: false, errorReason: "settlement_pending", transaction }`.
+   */
+  settlePendingAfterBroadcast?: boolean;
+  /** Called inside settle before it answers (a slow chain): lets a test act mid-settlement. */
+  onSettle?: () => void | Promise<void>;
   /** Fail this many settles with this reason, then behave normally (a flaky facilitator). */
   flaky?: { times: number; reason: string };
   settleCalls = 0;
@@ -80,6 +89,8 @@ export class FakeFacilitator implements FacilitatorClient {
     if (this.down) throw new Error("ECONNREFUSED");
     const a = (payload.payload as { authorization: { from: string; nonce: string } }).authorization;
     this.settleCalls++;
+    if (this.settleThrows) throw new Error(this.settleThrows);
+    await this.onSettle?.();
     if (this.settleFails) return { success: false, errorReason: this.settleFails, transaction: "", network: req.network };
     if (this.flaky && this.flaky.times > 0) {
       this.flaky.times--;
@@ -87,6 +98,11 @@ export class FakeFacilitator implements FacilitatorClient {
     }
     if (this.usedNonces.has(a.nonce)) return { success: false, errorReason: "invalid_exact_evm_nonce_used", transaction: "", network: req.network };
     this.usedNonces.add(a.nonce);
+    if (this.settlePendingAfterBroadcast) {
+      const tx = `0x${randomBytes(32).toString("hex")}`;
+      this.settled.push(tx);
+      return { success: false, errorReason: "settlement_pending", transaction: tx, network: req.network, payer: a.from };
+    }
     const tx = `0x${randomBytes(32).toString("hex")}`;
     this.settled.push(tx);
     return { success: true, transaction: tx, network: req.network, payer: a.from };
@@ -128,6 +144,8 @@ export interface TestEnvOptions {
   sellerIdentity?: AppDeps["sellerIdentity"];
   /** x402 sessions: true for defaults, or options to override. Timers are not started (tests flush explicitly). */
   sessions?: boolean | Partial<SessionOptions>;
+  /** On-chain EIP-3009 nonce check used to resolve indeterminate settlements (production requires one). */
+  checker?: import("../src/payments/onchain").AuthorizationChecker;
   /** Customer sign-in policy (session lifetime, lockout). */
   customerPolicy?: CustomerPolicy;
 }
@@ -169,7 +187,7 @@ export async function createTestEnv(overrides: Partial<Record<keyof Config, stri
   const resourceServer = createResourceServer(failover, cfg.X402_NETWORK);
   await resourceServer.initialize();
   const requirements = new RequirementsCache(resourceServer, { payTo: PAY_TO, network: cfg.X402_NETWORK, maxTimeoutSeconds: cfg.MAX_TIMEOUT_SECONDS });
-  const settler = new Settler(store, resourceServer, log, metrics, undefined, 500, async () => {}); // instant inline retries
+  const settler = new Settler(store, resourceServer, log, metrics, opts.checker, 500, async () => {}); // instant inline retries
   const checkout = new FakeCheckout();
   const sanctions = new SanctionsService({ failClosed: false });
   const credits = new CreditsService(store, checkout, { publicBaseUrl: BASE_URL, keyEnv: "test" });
@@ -198,3 +216,7 @@ export async function createTestEnv(overrides: Partial<Record<keyof Config, stri
   const f = ((input: string | URL | Request, init?: RequestInit) => app.fetch(new Request(input, init))) as typeof fetch;
   return { app, deps, store, facilitator, checkout, world, engine, maritime, fetch: f };
 }
+
+/** A chain view backed by the fake facilitator's spent nonces: how production resolves unknown outcomes. */
+export const chainOf = (f: FakeFacilitator) => ({ isUsed: async (_asset: string, _from: string, nonce: string) => f.usedNonces.has(nonce) });
+

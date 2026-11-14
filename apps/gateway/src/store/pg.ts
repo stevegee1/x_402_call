@@ -48,6 +48,8 @@ function rowToPayment(r: Record<string, any>): PaymentRow {
     error: r.error,
     createdAt: r.created_at,
     settledAt: r.settled_at,
+    owedSince: r.owed_since ?? null,
+    armedAt: r.armed_at ?? null,
   };
 }
 
@@ -144,10 +146,10 @@ export class PgStore implements Store {
 
   private async insertRow(q: Q, p: NewPayment): Promise<boolean> {
     const r = await q.query(
-      `insert into x402_payments (id, network, payer, nonce, amount_atomic, endpoint, resource, status, settle_mode, payload, requirements, valid_before, fx_usdc_gbp, fx_source, next_attempt_at)
-       values ($1, $2, lower($3), $4, $5, $6, $7, 'verified', $8, $9, $10, $11, $12, $13, $14)
+      `insert into x402_payments (id, network, payer, nonce, amount_atomic, endpoint, resource, status, settle_mode, payload, requirements, valid_before, fx_usdc_gbp, fx_source, next_attempt_at, owed_since, armed_at)
+       values ($1, $2, lower($3), $4, $5, $6, $7, 'verified', $8, $9, $10, $11, $12, $13, $14, case when $15 then now() end, case when $8 = 'sync' then null else now() end)
        on conflict (network, payer, nonce) do nothing`,
-      [p.id, p.network, p.payer, p.nonce, p.amountAtomic.toString(), p.endpoint, p.resource, p.settleMode ?? "async", JSON.stringify(p.payload), JSON.stringify(p.requirements), p.validBefore, p.fxRate, p.fxSource, p.nextAttemptAt],
+      [p.id, p.network, p.payer, p.nonce, p.amountAtomic.toString(), p.endpoint, p.resource, p.settleMode ?? "async", JSON.stringify(p.payload), JSON.stringify(p.requirements), p.validBefore, p.fxRate, p.fxSource, p.nextAttemptAt, p.owed === true],
     );
     return r.rowCount === 1;
   }
@@ -158,7 +160,7 @@ export class PgStore implements Store {
 
   async admitPayment(p: Omit<NewPayment, "nextAttemptAt" | "settleMode">, o: AdmitOptions): Promise<Admission> {
     const insert = async (q: Q, mode: SettleMode, syncReason?: SyncReason): Promise<Admission> => {
-      const inserted = await this.insertRow(q, { ...p, settleMode: mode, nextAttemptAt: mode === "async" ? o.asyncAttemptAt : o.syncAttemptAt });
+      const inserted = await this.insertRow(q, { ...p, settleMode: mode, owed: mode === "sync", nextAttemptAt: mode === "async" ? o.asyncAttemptAt : o.syncAttemptAt });
       if (!inserted) return { result: "duplicate" };
       return syncReason ? { result: "inserted", mode, syncReason } : { result: "inserted", mode };
     };
@@ -253,6 +255,38 @@ export class PgStore implements Store {
 
   async cancelPayment(id: string, reason: string) {
     await this.pool.query("update x402_payments set status = 'cancelled', error = $2 where id = $1 and status = 'verified'", [id, reason]);
+  }
+
+  async armPayment(id: string, at: Date) {
+    await this.pool.query("update x402_payments set next_attempt_at = $2, armed_at = coalesce(armed_at, now()) where id = $1 and status = 'verified'", [id, at]);
+  }
+
+  async paymentByNonce(network: string, payer: string, nonce: string) {
+    const r = await this.pool.query("select * from x402_payments where network = $1 and payer = lower($2) and nonce = $3", [network, payer, nonce]);
+    return r.rows[0] ? rowToPayment(r.rows[0]) : null;
+  }
+
+  async claimOwed(id: string, leaseMs: number) {
+    // One statement: the row lock serialises concurrent claims and the loser re-checks the lease.
+    // Time is the database's, so replicas with skewed clocks agree on whose lease has expired.
+    const r = await this.pool.query<{ redeem_token: string }>(
+      `update x402_payments
+       set redeem_token = gen_random_uuid(), redeem_lease_until = now() + make_interval(secs => $2::double precision / 1000)
+       where id = $1 and status = 'settled' and owed_since is not null
+         and (redeem_lease_until is null or redeem_lease_until <= now())
+       returning redeem_token`,
+      [id, leaseMs],
+    );
+    return r.rows[0]?.redeem_token ?? null;
+  }
+
+  async finishOwed(id: string, token: string, delivered: boolean) {
+    await this.pool.query(
+      `update x402_payments
+       set owed_since = case when $3 then null else owed_since end, redeem_token = null, redeem_lease_until = null
+       where id = $1 and redeem_token = $2::uuid`,
+      [id, token, delivered],
+    );
   }
 
   async walletActivity(payer: string, limit: number) {

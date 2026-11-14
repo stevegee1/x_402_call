@@ -123,18 +123,25 @@ describe("x402: async settlement", () => {
     countSettled();
   });
 
-  it("a replay after settlement is refused at verify (nonce used on chain), and nothing moves", async () => {
+  it("a replay after settlement is refused from the shared payments table, before the facilitator, and nothing moves", async () => {
     const { res, header } = await pay(buyer, `${gw.async}${VESSELS}`);
     expect(res.status).toBe(200);
     await waitPayment(gw.async, res.headers.get("X-Payment-Id")!);
     countSettled();
     const balance = await usdcBalance(stack.rpcUrl, buyer.address);
 
+    const verifies = async () => {
+      const m = await (await fetch(`${stack.facilitator.url}/metrics`)).text();
+      return [...m.matchAll(/^facilitator_verify_total\{[^}]*\} (\d+)$/gm)].reduce((n, x) => n + Number(x[1]), 0);
+    };
+    const before = await verifies();
     for (const url of [gw.async, gw.sync, gw.failover]) {
       const replay = await sendSigned(`${url}${VESSELS}`, header);
       expect(replay.status).toBe(402);
-      expect((await replay.json()).error).toBe("invalid_exact_evm_nonce_already_used");
+      // The data was delivered, so nothing is owed (I14): an ordinary replay, on every replica.
+      expect((await replay.json()).error).toBe("payment_already_used");
     }
+    expect(await verifies()).toBe(before);
     expect(await usdcBalance(stack.rpcUrl, buyer.address)).toBe(balance);
   });
 });

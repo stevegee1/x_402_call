@@ -10,7 +10,7 @@ import { SpendLog } from "./spend-log";
 export interface PolicyEvent {
   ts: number;
   agentId: string;
-  type: "denied" | "paid" | "credits_charged";
+  type: "denied" | "paid" | "credits_charged" | "owed_dropped";
   rail: "x402" | "credits";
   url: string;
   code?: DenyCode;
@@ -49,7 +49,38 @@ export interface PolicyClientOptions {
   report?: { url: string; apiKey: string };
   onEvent?: (e: PolicyEvent) => void;
   fetch?: typeof fetch;
+  /**
+   * When a paid x402 call answers "settlement pending" or "paid, data owed" (X-Payment-Owed), resend
+   * the SAME signed payment rather than paying again: the seller delivers the data once, with no
+   * second charge. attempts: resends after the first try (default 4; 0 turns it off). Each waits the
+   * seller's Retry-After, capped at maxDelayMs (default 10 s).
+   */
+  owedResend?: { attempts?: number; maxDelayMs?: number; sleep?: (ms: number) => Promise<void> };
 }
+
+/**
+ * What a paid answer means for the signed payment behind it:
+ *   retry: the seller has (or may have) the money and can deliver on a resend of the same signature
+ *          soon (settling, another delivery in flight, a transient 5xx while owed);
+ *   stuck: owed, but refused with a 4xx that a resend won't change (say the vessel left the area):
+ *          only the seller's operator can make it right;
+ *   done:  nothing is owed (delivered, refused before any charge, or failed and not charged).
+ */
+async function owedState(res: Response): Promise<"retry" | "stuck" | "done"> {
+  if (res.headers.get("x-payment-owed") === "true") return res.status >= 500 || res.status === 409 ? "retry" : "stuck";
+  if (res.status !== 503 && res.status !== 409) return "done";
+  try {
+    const error = ((await res.clone().json()) as { error?: unknown }).error;
+    return error === "settlement_pending" || error === "redemption_in_progress" ? "retry" : "done";
+  } catch {
+    return "done";
+  }
+}
+
+const retryAfterMs = (res: Response, maxMs: number) => {
+  const s = Number(res.headers.get("retry-after"));
+  return Math.min(maxMs, Number.isFinite(s) && s > 0 ? s * 1000 : 1000);
+};
 
 export interface PolicyClient {
   fetch: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
@@ -113,7 +144,96 @@ export function createPolicyClient(opts: PolicyClientOptions): PolicyClient {
     return res;
   }
 
+  const resend = {
+    attempts: opts.owedResend?.attempts ?? 4,
+    maxDelayMs: opts.owedResend?.maxDelayMs ?? 10_000,
+    sleep: opts.owedResend?.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms))),
+  };
+  /**
+   * Signed payments the seller still owes data for, oldest first per request: the next call to the
+   * same URL resends the oldest instead of paying again. Bounded; a debt dropped for room is reported.
+   */
+  const owed = new Map<string, Headers[]>();
+  let owedCount = 0;
+  const MAX_OWED = 100;
+  const owedKey = (req: Request) => `${req.method} ${req.url}`;
+
+  const dropOwed = (key: string, headers: Headers, reason: string) => {
+    const q = owed.get(key);
+    const i = q?.indexOf(headers) ?? -1;
+    if (!q || i < 0) return;
+    q.splice(i, 1);
+    owedCount--;
+    if (q.length === 0) owed.delete(key);
+    emit({ ts: Date.now(), agentId: policy.agentId, type: "owed_dropped", rail: "x402", url: key.slice(key.indexOf(" ") + 1), reason });
+  };
+  const forget = (key: string, headers: Headers) => {
+    const q = owed.get(key);
+    const i = q?.indexOf(headers) ?? -1;
+    if (!q || i < 0) return;
+    q.splice(i, 1);
+    owedCount--;
+    if (q.length === 0) owed.delete(key);
+  };
+  const remember = (key: string, headers: Headers) => {
+    const q = owed.get(key) ?? [];
+    if (q.includes(headers)) return;
+    q.push(headers);
+    owed.set(key, q);
+    owedCount++;
+    while (owedCount > MAX_OWED) {
+      const [oldestKey, oldestQ] = owed.entries().next().value!;
+      dropOwed(oldestKey, oldestQ[0]!, "too_many_owed_payments");
+    }
+  };
+
+  /** Resends one signed payment while the seller says it is coming. Never throws: keeps the last answer. */
+  async function resendOwed(req: Request, headers: Headers, res: Response): Promise<Response> {
+    for (let i = 0; i < resend.attempts && (await owedState(res)) === "retry"; i++) {
+      await resend.sleep(retryAfterMs(res, resend.maxDelayMs));
+      try {
+        const next = await baseFetch(new Request(req, { headers }));
+        await res.body?.cancel().catch(() => {});
+        res = next;
+      } catch {
+        break; // network trouble: the debt is remembered and retried on the next call
+      }
+    }
+    return res;
+  }
+
+  /** After any x402 answer: remember or forget the signature, so the next call can't pay twice. */
+  async function settleOwed(req: Request, headers: Headers, res: Response) {
+    const key = owedKey(req);
+    const state = await owedState(res);
+    if (state === "retry") remember(key, headers);
+    else if (state === "stuck") {
+      remember(key, headers);
+      dropOwed(key, headers, `seller owes data but refused with ${res.status}; contact the seller with payment ${res.headers.get("x-payment-id") ?? "?"}`);
+    } else forget(key, headers);
+  }
+
   async function viaX402(req: Request, url: URL): Promise<Response> {
+    // Payments this request already made but weren't delivered: resend them, oldest first, before
+    // ever signing a new one.
+    for (let pending = req.method === "GET" ? owed.get(owedKey(req))?.[0] : undefined; pending; pending = owed.get(owedKey(req))?.[0]) {
+      // A network error here propagates and the debt stays remembered for the next call.
+      let res = await baseFetch(new Request(req, { headers: pending }));
+      res = await resendOwed(req, pending, res);
+      const state = await owedState(res);
+      await settleOwed(req, pending, res);
+      breakers.recordOutcome(url.origin, res.status < 400);
+      // Delivered, still coming, or stuck (the seller owes it but can't deliver: reported via
+      // owed_dropped): the answer belongs to a payment already made, so return it. Only a refusal
+      // that owes nothing (a replay of a delivered payment, or one never charged) moves on.
+      if (res.status < 400 || state !== "done") {
+        emit({ ts: Date.now(), agentId: policy.agentId, type: "paid", rail: "x402", url: url.href, status: res.status, paymentId: res.headers.get("x-payment-id") ?? undefined });
+        return res;
+      }
+      forget(owedKey(req), pending);
+      await res.body?.cancel().catch(() => {});
+    }
+
     const first = await baseFetch(req.clone());
     if (first.status !== 402 || !http) return first;
 
@@ -161,7 +281,23 @@ export function createPolicyClient(opts: PolicyClientOptions): PolicyClient {
 
     // Count the spend as soon as we sign: conservative for budgets even if the seller later fails.
     breakers.recordPayment(url.href, priceUsd);
-    const paid = await baseFetch(new Request(req, { headers }));
+    let paid: Response;
+    try {
+      paid = await baseFetch(new Request(req, { headers }));
+    } catch (e) {
+      // The request died in flight (timeout, reset, abort) after we signed: the seller may well
+      // have settled it. Count the spend and keep the signature, so the next call resends it.
+      if (req.method === "GET") remember(owedKey(req), headers);
+      spendLog.add({ ts: Date.now(), agentId: policy.agentId, costCentre: policy.costCentre, rail: "x402", url: url.href, origin: url.origin, amount: priceUsd, currency: "USD", network: requirement.network, payTo: requirement.payTo, status: 0 });
+      breakers.recordOutcome(url.origin, false);
+      throw e;
+    }
+    // Same signature, same payment: a resend can never be charged twice (the nonce is single-use).
+    // Only GET: sellers deliver owed data only to a GET, and a consumed body can't be sent again.
+    if (req.method === "GET") {
+      paid = await resendOwed(req, headers, paid);
+      await settleOwed(req, headers, paid);
+    }
     breakers.recordOutcome(url.origin, paid.status < 400);
 
     let transaction: string | undefined;

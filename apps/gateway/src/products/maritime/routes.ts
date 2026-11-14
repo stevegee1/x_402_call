@@ -62,7 +62,7 @@ export function maritimeRoutes(r: ProductRoutes<RegionSnapshot>, p: MaritimeProd
     (c, s) => {
       const mmsi = Number(c.req.param("mmsi"));
       const v = s.byMmsi.get(mmsi);
-      if (!v) return c.json({ error: "vessel_not_found" }, 404); // evicted between precheck and handler: billing refunds/cancels
+      if (!v) return c.json({ error: "vessel_not_found" }, 404); // evicted between precheck and handler: billing refunds credits and cancels x402 (sync runs the handler before settling) (I5)
       const track = p.engine.track(s.region, mmsi).map((x) => ({ ts: new Date(x.ts).toISOString(), lat: x.lat, lon: x.lon, sog: x.sog ?? null, cog: x.cog ?? null }));
       return json(envelope(s, { ...v, track }), s.etag);
     },

@@ -20,7 +20,7 @@ import type { AdmitOptions, Admission, ApiKeyInfo, CreditAccount, CustomerUser, 
  */
 export class MemoryStore implements Store {
   private payments = new Map<string, PaymentRow>();
-  private nonces = new Set<string>();
+  private nonces = new Map<string, string>();
   private accounts = new Map<string, CreditAccount>();
   private keys = new Map<string, string>();
   private keyInfo = new Map<string, ApiKeyInfo & { hash: string; accountId: string }>();
@@ -48,9 +48,10 @@ export class MemoryStore implements Store {
   async insertPayment(p: NewPayment) {
     const k = `${p.network}|${p.payer.toLowerCase()}|${p.nonce}`;
     if (this.nonces.has(k)) return "duplicate" as const;
-    this.nonces.add(k);
+    this.nonces.set(k, p.id);
     const now = new Date();
-    this.payments.set(p.id, { ...p, payer: p.payer.toLowerCase(), status: "verified", settleMode: p.settleMode ?? "async", attempts: 0, txHash: null, error: null, createdAt: now, settledAt: null });
+    const { owed, ...row } = p;
+    this.payments.set(p.id, { ...row, payer: p.payer.toLowerCase(), status: "verified", settleMode: p.settleMode ?? "async", attempts: 0, txHash: null, error: null, createdAt: now, settledAt: null, owedSince: owed ? now : null, armedAt: (p.settleMode ?? "async") === "sync" ? null : now });
     return "inserted" as const;
   }
 
@@ -87,6 +88,40 @@ export class MemoryStore implements Store {
   async cancelPayment(id: string, reason: string) {
     const p = this.payments.get(id);
     if (p?.status === "verified") Object.assign(p, { status: "cancelled", error: reason });
+  }
+
+  private leases = new Map<string, { token: string; until: number }>();
+
+  async armPayment(id: string, at: Date) {
+    const p = this.payments.get(id);
+    if (p?.status === "verified") {
+      p.nextAttemptAt = at;
+      p.armedAt ??= new Date();
+    }
+  }
+
+  async paymentByNonce(network: string, payer: string, nonce: string) {
+    const id = this.nonces.get(`${network}|${payer.toLowerCase()}|${nonce}`);
+    const p = id ? this.payments.get(id) : undefined;
+    return p ? { ...p } : null;
+  }
+
+  // Single-threaded: check and lease happen with no await between them, mirroring PgStore's row lock.
+  async claimOwed(id: string, leaseMs: number) {
+    const p = this.payments.get(id);
+    if (!p || p.status !== "settled" || !p.owedSince) return null;
+    const held = this.leases.get(id);
+    if (held && held.until > Date.now()) return null;
+    const token = randomUUID();
+    this.leases.set(id, { token, until: Date.now() + leaseMs });
+    return token;
+  }
+
+  async finishOwed(id: string, token: string, delivered: boolean) {
+    if (this.leases.get(id)?.token !== token) return;
+    this.leases.delete(id);
+    const p = this.payments.get(id);
+    if (p && delivered) p.owedSince = null;
   }
 
   async walletActivity(payer: string, limit: number) {
@@ -143,7 +178,7 @@ export class MemoryStore implements Store {
         else syncReason = "cap";
       }
     }
-    const r = await this.insertPayment({ ...p, settleMode: mode, nextAttemptAt: mode === "async" ? o.asyncAttemptAt : o.syncAttemptAt });
+    const r = await this.insertPayment({ ...p, settleMode: mode, owed: mode === "sync", nextAttemptAt: mode === "async" ? o.asyncAttemptAt : o.syncAttemptAt });
     if (r === "duplicate") return { result: "duplicate" };
     return syncReason ? { result: "inserted", mode, syncReason } : { result: "inserted", mode };
   }

@@ -137,6 +137,8 @@ const schema = z
       if (c.FX_PROVIDER === "fixed") ctx.addIssue({ code: "custom", path: ["FX_PROVIDER"], message: "fixed FX is for tests; production values crypto at spot" });
       if (!c.DATABASE_URL) ctx.addIssue({ code: "custom", path: ["DATABASE_URL"], message: "required in production" });
       if (!c.ADMIN_TOKEN) ctx.addIssue({ code: "custom", path: ["ADMIN_TOKEN"], message: "required in production" });
+      // Without it a settle that timed out but mined can be written off as "failed, not charged" (I14).
+      if (!c.BASE_RPC_URL) ctx.addIssue({ code: "custom", path: ["BASE_RPC_URL"], message: "required in production: indeterminate settlements are resolved on chain" });
     }
   });
 

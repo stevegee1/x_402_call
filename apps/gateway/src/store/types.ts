@@ -26,6 +26,13 @@ export interface PaymentRow {
   error: string | null;
   createdAt: Date;
   settledAt: Date | null;
+  /**
+   * Set from admission for sync payments (I14): the data is owed until a response carrying it has
+   * been produced. Cleared on delivery. Async payments are served before they settle: never owed.
+   */
+  owedSince: Date | null;
+  /** When the request path handed it to the facilitator (async: at admission). Null: never submitted. */
+  armedAt: Date | null;
 }
 
 export type NewPayment = Pick<
@@ -36,6 +43,8 @@ export type NewPayment = Pick<
   nextAttemptAt: Date;
   /** Default "async" (conservative: counts as exposure while unsettled). */
   settleMode?: SettleMode;
+  /** Owe the data from admission (sync payments, I14). */
+  owed?: boolean;
 };
 
 /** Caps on value served against unsettled payments, across every replica. */
@@ -173,6 +182,25 @@ export interface Store {
   /** final=false schedules a retry at nextAttemptAt. */
   failPayment(id: string, error: string, final: boolean, nextAttemptAt?: Date): Promise<void>;
   cancelPayment(id: string, reason: string): Promise<void>;
+  /**
+   * Marks a verified payment armed (handed to the facilitator) and due to the settlement worker at `at`. Sync payments are admitted
+   * unarmed (never due): only once the request path is about to hand them to the facilitator are
+   * they armed, so a request that dies before that never gets charged by the worker later.
+   */
+  armPayment(id: string, at: Date): Promise<void>;
+  /** The payment for an authorization, if one was recorded (payer matched lowercase). */
+  paymentByNonce(network: string, payer: string, nonce: string): Promise<PaymentRow | null>;
+  /**
+   * Starts delivering an owed payment. Returns a redemption token only if the payment is settled,
+   * still owed, and no other redemption holds an unexpired lease (judged by the store's own clock,
+   * never a replica's). Exactly one concurrent caller wins, across replicas.
+   */
+  claimOwed(id: string, leaseMs: number): Promise<string | null>;
+  /**
+   * Ends the redemption holding `token`: delivered=true clears the debt, false releases the lease.
+   * A no-op if the token no longer holds it (its lease expired and another redemption took over).
+   */
+  finishOwed(id: string, token: string, delivered: boolean): Promise<void>;
   /**
    * Newest first, ordered by (created_at, id). Keyset pagination: pass the last row's id as `before`
    * for the next page (stable under concurrent inserts, unlike offsets). The comparison uses the

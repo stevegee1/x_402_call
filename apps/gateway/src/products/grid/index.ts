@@ -77,7 +77,7 @@ const versionBody = (o: VersionFields) => ({
 });
 const periodVersion = (o: VersionFields & { validFrom: number }) => ({ from: iso(o.validFrom), ...versionBody(o) });
 
-/** History older than the memory window lives in Postgres; if that read fails, say so and refund. */
+/** History older than the memory window lives in Postgres; if that read fails, say so (billing makes the buyer whole). */
 function unavailable(c: ProductContext) {
   c.header("Retry-After", "15");
   return c.json({ error: "history_unavailable", detail: "history is temporarily unavailable; you have not been charged" }, 503);
@@ -160,7 +160,7 @@ export class GridProduct implements Product<GridState> {
       "grid.intensity",
       (c, s) => {
         const cur = current(s.periods, s.country, s.now);
-        return cur ? c.json(this.envelope(s, cur)) : c.json({ error: "no_current_period" }, 503); // 503 after charge: billing refunds/cancels (I5)
+        return cur ? c.json(this.envelope(s, cur)) : c.json({ error: "no_current_period" }, 503); // 503: billing refunds credits and cancels x402 (sync runs the handler before settling) (I5)
       },
       { precheck: (c, s) => (current(s.periods, s.country, s.now) ? null : c.json({ error: "data_unavailable", detail: "no value for this half-hour; you have not been charged" }, 503)) },
     );
@@ -225,7 +225,7 @@ export class GridProduct implements Product<GridState> {
       async (c, s) => {
         const p = historyParams(c, s.now) as HistoryParams; // validated in the precheck
         const read = await history.history(s.country, p.from, p.to, p.asOf).catch(() => null);
-        if (!read) return unavailable(c); // after charge: billing refunds or cancels (I5)
+        if (!read) return unavailable(c); // billing refunds credits and cancels x402 (sync runs the handler before settling) (I5)
         const { rows } = read;
         return c.json(
           this.envelope(s, {

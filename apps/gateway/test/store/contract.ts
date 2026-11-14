@@ -59,6 +59,8 @@ export function describeStoreContract(name: string, make: () => Promise<StoreHar
           txHash: null,
           error: null,
           settledAt: null,
+          owedSince: null,
+          armedAt: expect.any(Date), // a plain insert is async: armed at admission
         });
         expect(row!.validBefore.getTime()).toBe(p.validBefore.getTime());
         expect(row!.nextAttemptAt.getTime()).toBe(p.nextAttemptAt.getTime());
@@ -67,6 +69,114 @@ export function describeStoreContract(name: string, make: () => Promise<StoreHar
 
       it("returns null for an unknown payment", async () => {
         expect(await s.getPayment(randomUUID())).toBeNull();
+      });
+
+      describe("owed delivery (I14)", () => {
+        /** A settled payment, owed as sync admission records it. */
+        const owedSettled = async () => {
+          const p = newPayment({ owed: true });
+          await s.insertPayment(p);
+          await s.settlePayment(p.id, "0xtx", settlementJournal(p.id));
+          return p;
+        };
+        const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+        it("finds a payment by its authorization, matching the payer case-insensitively", async () => {
+          const p = newPayment({ payer: "0xABCDEF0000000000000000000000000000000009" });
+          await s.insertPayment(p);
+          expect((await s.paymentByNonce(p.network, "0xabcdef0000000000000000000000000000000009", p.nonce))?.id).toBe(p.id);
+          expect(await s.paymentByNonce("eip155:8453", p.payer, p.nonce)).toBeNull();
+          expect(await s.paymentByNonce(p.network, p.payer, `0x${"00".repeat(32)}`)).toBeNull();
+        });
+
+        it("owes only what admission marked owed: sync admissions, never async or plain inserts", async () => {
+          const plain = newPayment();
+          await s.insertPayment(plain);
+          expect((await s.getPayment(plain.id))!.owedSince).toBeNull();
+          const owed = newPayment({ owed: true });
+          await s.insertPayment(owed);
+          expect((await s.getPayment(owed.id))!.owedSince).toBeInstanceOf(Date);
+
+          const o = { caps: { totalAtomic: 100_000n, perPayerAtomic: 66_000n }, failures: { holdMs: 1, demoteMs: 1 }, now: new Date(), asyncAttemptAt: new Date(), syncAttemptAt: new Date() };
+          const sync = newPayment();
+          expect(await s.admitPayment(sync, { ...o, wantAsync: false })).toMatchObject({ mode: "sync" });
+          expect((await s.getPayment(sync.id))!.owedSince).toBeInstanceOf(Date);
+          const capped = newPayment({ amountAtomic: 66_001n });
+          expect(await s.admitPayment(capped, { ...o, wantAsync: true })).toMatchObject({ mode: "sync", syncReason: "cap" });
+          expect((await s.getPayment(capped.id))!.owedSince).toBeInstanceOf(Date);
+          const early = newPayment();
+          expect(await s.admitPayment(early, { ...o, wantAsync: true })).toMatchObject({ mode: "async" });
+          expect((await s.getPayment(early.id))!.owedSince).toBeNull();
+        });
+
+        it("an unarmed payment is never due to the worker until armed; arming a settled one does nothing", async () => {
+          const now = new Date();
+          const p = newPayment({ owed: true, nextAttemptAt: new Date(now.getTime() + 365 * 86_400_000) });
+          await s.insertPayment(p);
+          expect(await s.claimDuePayments(new Date(now.getTime() + 86_400_000), 10, 30_000)).toHaveLength(0);
+          const far = new Date(now.getTime() + 400 * 86_400_000);
+          const sync = newPayment({ settleMode: "sync", owed: true, nextAttemptAt: far });
+          await s.insertPayment(sync);
+          expect((await s.getPayment(sync.id))!.armedAt).toBeNull(); // sync: unarmed at admission
+          await s.armPayment(sync.id, far);
+          expect((await s.getPayment(sync.id))!.armedAt).toBeInstanceOf(Date);
+          await s.armPayment(p.id, new Date(now.getTime() - 1));
+          expect((await s.claimDuePayments(now, 10, 30_000)).map((x) => x.id)).toEqual([p.id]);
+          await s.settlePayment(p.id, "0xtx", settlementJournal(p.id));
+          await s.armPayment(p.id, new Date(now.getTime() - 1));
+          expect(await s.claimDuePayments(new Date(now.getTime() + 86_400_000), 10, 30_000)).toHaveLength(0);
+        });
+
+        it("claims only a settled payment that is owed", async () => {
+          const notOwed = newPayment();
+          await s.insertPayment(notOwed);
+          await s.settlePayment(notOwed.id, "0xtx", settlementJournal(notOwed.id));
+          expect(await s.claimOwed(notOwed.id, 30_000)).toBeNull();
+
+          const pending = newPayment({ owed: true });
+          await s.insertPayment(pending);
+          expect(await s.claimOwed(pending.id, 30_000)).toBeNull(); // still verified: not charged yet
+          await s.failPayment(pending.id, "x", true);
+          expect(await s.claimOwed(pending.id, 30_000)).toBeNull(); // failed: nothing was charged
+
+          expect(await s.claimOwed(randomUUID(), 30_000)).toBeNull();
+        });
+
+        it("lets exactly one concurrent claim win", async () => {
+          const p = await owedSettled();
+          const tokens = await Promise.all(Array.from({ length: 8 }, () => s.claimOwed(p.id, 30_000)));
+          expect(tokens.filter((t) => t !== null)).toHaveLength(1);
+        });
+
+        it("an expired lease (a dead replica) can be taken over, and the old holder can then neither release nor clear it", async () => {
+          const p = await owedSettled();
+          const a = (await s.claimOwed(p.id, 50))!;
+          expect(await s.claimOwed(p.id, 30_000)).toBeNull();
+          await sleep(120);
+          const b = (await s.claimOwed(p.id, 30_000))!;
+          expect(b).not.toBeNull();
+          expect(b).not.toBe(a);
+
+          await s.finishOwed(p.id, a, false); // A comes back and fails: must not free B's lease
+          expect(await s.claimOwed(p.id, 30_000)).toBeNull();
+          await s.finishOwed(p.id, a, true); // ...or succeeds: must not clear the debt B is serving
+          expect((await s.getPayment(p.id))!.owedSince).not.toBeNull();
+
+          await s.finishOwed(p.id, b, true);
+          expect((await s.getPayment(p.id))!.owedSince).toBeNull();
+        });
+
+        it("a released claim can be taken again; a delivered one never", async () => {
+          const p = await owedSettled();
+          const t1 = (await s.claimOwed(p.id, 30_000))!;
+          await s.finishOwed(p.id, t1, false);
+          expect((await s.getPayment(p.id))!.owedSince).not.toBeNull();
+          const t2 = (await s.claimOwed(p.id, 30_000))!;
+          expect(t2).not.toBeNull();
+          await s.finishOwed(p.id, t2, true);
+          expect((await s.getPayment(p.id))!.owedSince).toBeNull();
+          expect(await s.claimOwed(p.id, 30_000)).toBeNull();
+        });
       });
 
       it("rejects a replayed authorisation (same network, payer, nonce), case-insensitively on payer (I3)", async () => {
