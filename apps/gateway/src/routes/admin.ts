@@ -1,23 +1,14 @@
-import { timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Hono, type MiddlewareHandler } from "hono";
+import { Hono } from "hono";
 import type { AppDeps, AppEnv } from "../context";
 import { CreditsError } from "../credits/service";
 import { ACCOUNTS, REVENUE_PREFIX, verifyChain } from "../ledger/journal";
+import { bearerAuth } from "./bearer";
 import type { PaymentStatus } from "../store/types";
 
 const CONSOLE_HTML = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../console/index.html"), "utf8");
-
-function adminAuth(token: string | undefined): MiddlewareHandler<AppEnv> {
-  const expected = token ? Buffer.from(token) : undefined;
-  return async (c, next) => {
-    const got = Buffer.from((c.req.header("authorization") ?? "").replace(/^Bearer /, ""));
-    if (!expected || got.length !== expected.length || !timingSafeEqual(got, expected)) return c.json({ error: "unauthorized" }, 401);
-    await next();
-  };
-}
 
 const gbp = (micros: number) => (micros / 1e6).toFixed(6);
 
@@ -26,7 +17,7 @@ export function adminRoutes(d: AppDeps) {
   r.get("/console", (c) => c.html(CONSOLE_HTML));
 
   const a = new Hono<AppEnv>();
-  a.use("*", adminAuth(d.cfg.ADMIN_TOKEN));
+  a.use("*", bearerAuth(d.cfg.ADMIN_TOKEN));
   a.onError((err, c) => {
     if (err instanceof CreditsError) return c.json({ error: err.code, detail: err.message }, err.status);
     throw err;

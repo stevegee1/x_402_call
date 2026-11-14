@@ -86,6 +86,8 @@ billed by the platform kernel on both rails. `GET /v1/products` lists them with 
 `/v1/{region}/…`) are still served as deprecated aliases with `Deprecation: true` and a
 `Link: <…>; rel="successor-version"` header. Credits endpoints are under `/v1/credits/*`.
 Operators use `/console`; product operator routes are under `/admin/{product}/…`.
+`/metrics` (Prometheus) needs `Authorization: Bearer $METRICS_TOKEN`, or `$ADMIN_TOKEN` when no
+scraper token is set; it is open only in development with neither set.
 
 ### Grid carbon product (`/v1/grid`)
 

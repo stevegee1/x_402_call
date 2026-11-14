@@ -6,6 +6,8 @@ import { verifyChain } from "../../src/ledger/journal";
 import { ADMIN_TOKEN, BASE_URL, createTestEnv, PAY_TO, type TestEnv } from "../helpers";
 import { AcmeProduct } from "./fake-product";
 
+const ADMIN = { headers: { authorization: `Bearer ${ADMIN_TOKEN}` } };
+
 /**
  * Kernel invariants, proven against a product that is not maritime. If one of these fails, a new
  * product could charge for stale data, sell simulated data on mainnet, or charge for failures.
@@ -273,7 +275,7 @@ describe("platform surfaces are generated from the catalog", () => {
       ["acme", true],
     ]);
     expect(status.products[1].scopes[0]).toMatchObject({ scope: "north", fresh: true, mode: "live" });
-    const metrics = await (await env.fetch(`${BASE_URL}/metrics`)).text();
+    const metrics = await (await env.fetch(`${BASE_URL}/metrics`, ADMIN)).text();
     expect(metrics).toContain('product_ready{product="acme"} 1');
     expect(metrics).toContain('region_vessels{product="maritime",region="dover"}');
   });

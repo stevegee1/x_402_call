@@ -11,6 +11,8 @@ import { ADMIN_TOKEN, BASE_URL, createTestEnv, type TestEnv } from "../../helper
 import { CUR, T0 } from "./fixtures";
 import { FakeStore, storeRows } from "./store-fixtures";
 
+const ADMIN = { headers: { authorization: `Bearer ${ADMIN_TOKEN}` } };
+
 const H = 3_600_000;
 const P = 30 * 60_000;
 const DAY = 24 * H;
@@ -171,7 +173,7 @@ describe("grid on the version store: live view, point-in-time history, revisions
     const status = await (await env.fetch(`${BASE_URL}/status`)).json();
     const grid = status.products.find((p: { id: string }) => p.id === "grid");
     expect(grid.history).toMatchObject({ cached_versions: 600, window_start: iso(T0 - 7 * DAY), reads: { memory: 1, store: 0 } });
-    const m = await (await env.fetch(`${BASE_URL}/metrics`)).text();
+    const m = await (await env.fetch(`${BASE_URL}/metrics`, ADMIN)).text();
     expect(m).toMatch(/grid_history_cache_versions 600/);
     expect(m).toMatch(/grid_history_reads\{path="memory"\} 1/);
   });
