@@ -74,6 +74,50 @@ describe("public site", () => {
     expect(stale.slice(stale.indexOf(">Acme Telemetry<"))).toContain("Data delayed");
   });
 
+  it("names only the kinds of data this server sells, in the hero and the meta description", async () => {
+    const { env, html } = await page();
+    expect(env.deps.catalog.products.map((p) => p.id)).not.toContain("grid");
+    expect(html).not.toMatch(/energy-grid/i);
+    expect(html).not.toContain("trading systems");
+    expect(html).toContain('<meta name="description" content="Maritime and acme telemetry intelligence for AI agents, sold per request.');
+    expect(html).toContain('<p class="lede">Maritime and acme telemetry data, cleaned and ready for models.');
+  });
+
+  it("/docs and openapi.json name only the kinds of data this server sells", async () => {
+    const { env } = await page();
+    const docs = await (await env.fetch(`${BASE_URL}/docs`, { headers: { accept: BROWSER } })).text();
+    expect(docs).toContain('<p class="lede">Maritime and acme telemetry intelligence over plain HTTPS GET.');
+    const spec = await (await env.fetch(`${BASE_URL}/openapi.json?format=json`)).json();
+    expect(spec.info.description).toMatch(/^Maritime and acme telemetry intelligence, sold per request\./);
+    expect(JSON.stringify(spec.info)).not.toMatch(/energy-grid/);
+  });
+
+  it("a ready data product with no scopes shows the same chip on both pages", async () => {
+    const acme = new AcmeProduct();
+    acme.status = () => ({ ready: true, scopes: [] });
+    const { env, html } = await page({}, [acme]);
+    expect(html.slice(html.indexOf(">Acme Telemetry<"))).toContain("Status unavailable");
+    const catalog = await (await env.fetch(`${BASE_URL}/catalog`, { headers: { accept: BROWSER } })).text();
+    expect(catalog.slice(catalog.indexOf(">Acme Telemetry<"))).toContain("Status unavailable");
+  });
+
+  it("claims no history, push or sessions when this server doesn't sell them", async () => {
+    const { html } = await page();
+    for (const claim of ["Point-in-time", "In memory", "history?", "live push stream", "Backtest without look-ahead"]) expect(html).not.toContain(claim);
+    expect(html).toContain("<b>No sign-up</b>");
+  });
+
+  it("labels partial coverage the same way on the home page and the catalog", async () => {
+    const acme = new AcmeProduct();
+    acme.status = () => ({ ready: true, scopes: [{ scope: "north", fresh: true, mode: "live", sourceTs: null }, { scope: "south", fresh: false, mode: "live", sourceTs: null }] });
+    const { env, html } = await page({}, [acme]);
+    const card = html.slice(html.indexOf(">Acme Telemetry<"));
+    expect(card).toContain("Live in 1 of 2");
+    expect(card.slice(0, card.indexOf("</article>"))).not.toContain("Data delayed");
+    const catalog = await (await env.fetch(`${BASE_URL}/catalog`, { headers: { accept: BROWSER } })).text();
+    expect(catalog.slice(catalog.indexOf(">Acme Telemetry<"))).toContain("Live in 1 of 2");
+  });
+
   it("the test environment is labelled and not indexed; mainnet is neither", async () => {
     const { res, html } = await page();
     expect(html).toContain("Test environment");

@@ -14,7 +14,8 @@ import { FacilitatorUnavailableError } from "./facilitator";
 import { EXPIRY_GRACE_MS, type SettleOutcome } from "./settlement";
 
 /** Async mode: give the request path this long to serve or cancel before the worker may settle. */
-const ASYNC_SETTLE_DELAY_MS = 2_000;
+/** An async x402 payment can be settled this long after admission: a handler must answer well inside it. */
+export const ASYNC_SETTLE_DELAY_MS = 2_000;
 /** If the authorization expires sooner than this, settle inline rather than queueing. */
 const MIN_ASYNC_VALIDITY_MS = 30_000;
 /**
@@ -304,7 +305,9 @@ async function chargeX402(c: Context<AppEnv>, next: () => Promise<void>, resourc
     c.res.headers.set("X-Settlement", "settled");
     if (!delivered) c.res.headers.set(PAYMENT_OWED_HEADER, "true");
   } else {
-    c.set("payment", { id, payer });
+    // Async: the worker may settle from this moment. A handler that can be slow must answer (and so
+    // let a >= 400 cancel) before it; see GridHistory's store-read budget.
+    c.set("payment", { id, payer, settleNotBefore: now + ASYNC_SETTLE_DELAY_MS });
     await next();
     if (c.res.status >= 400) {
       // Cancelling also releases the exposure: it is derived from verified async rows.

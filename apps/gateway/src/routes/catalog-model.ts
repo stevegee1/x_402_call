@@ -127,3 +127,14 @@ export function catalogView(d: AppDeps, now = new Date()): ProductView[] {
     return { id: p.id, name: p.displayName, description: p.description, kind, ready: statusOf(p).ready, coverage, endpoints };
   });
 }
+
+/**
+ * "Maritime and energy-grid", "Maritime", ...: the kinds of data this server sells, for every page
+ * that names them (home, /docs, openapi), so none can claim a product that is switched off.
+ */
+export function offeredSubject(products: readonly Product[]): string {
+  const known: Record<string, string> = { maritime: "maritime", grid: "energy-grid" };
+  const parts = products.filter((p) => (p.kind ?? "data") === "data").map((p) => known[p.id] ?? p.displayName.toLowerCase());
+  const text = parts.length === 0 ? "data" : parts.length === 1 ? parts[0]! : `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}`;
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}

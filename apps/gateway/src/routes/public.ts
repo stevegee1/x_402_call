@@ -6,7 +6,7 @@ import type { PricedResource, Product } from "../platform/product";
 import { viewerOf } from "../customers/web-session";
 import { bearerAuth } from "./bearer";
 import { degradedReasonOf, statusOf } from "../platform/product-watch";
-import { catalogView, creditsOk, sessionOk, templatePath, type ProductView } from "./catalog-model";
+import { catalogView, creditsOk, offeredSubject, sessionOk, templatePath, type ProductView } from "./catalog-model";
 import { DOCS_HEADERS, renderCatalogPage, renderDocsPage } from "./docs-pages";
 import { renderSite, SITE_HEADERS, wantsHtml } from "./site";
 
@@ -166,7 +166,7 @@ export function openapi(d: AppDeps) {
         responses: {
           "200": { description: "Data envelope", content: { "application/json": { schema: { $ref: "#/components/schemas/Envelope" } } } },
           "402": { description: "Payment required: x402 PAYMENT-REQUIRED header, and the price in the body (credits alternative included); not charged", content: { "application/json": { schema: { $ref: "#/components/schemas/PaymentRequired" } } } },
-          "404": { description: "Unknown scope or resource; not charged", content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } } },
+          "404": { description: "Unknown scope or resource, or (grid history and revisions) no recorded data for the request: error no_history, with history_from; not charged", content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } } },
           "503": { description: "Data stale, not for sale on this network, or payments unavailable; not charged", content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } } },
         },
       },
@@ -204,7 +204,7 @@ export function openapi(d: AppDeps) {
       title: "wearebase data API",
       version: "0.3.0",
       description: [
-        "Maritime and energy-grid intelligence, sold per request.",
+        `${offeredSubject(d.catalog.products)} intelligence, sold per request.`,
         "",
         "Three ways to pay for a paid endpoint:",
         "- x402 (no account): call it, get 402 with a USDC price, sign the payment with your wallet and repeat the call with the PAYMENT-SIGNATURE header.",

@@ -86,11 +86,23 @@ const iso = (ms: number) => new Date(ms).toISOString();
 export class PgEnvStore {
   private readonly pool: pg.Pool;
 
+  /**
+   * @param timeouts for readers that must not hang on a slow or unreachable database (the gateway):
+   * a server-side statement timeout, a client-side query timeout (covers a dead TCP connection),
+   * and a limit on waiting for a pool connection. Unset by default.
+   */
   constructor(
     private readonly databaseUrl: string,
     poolMax = 4,
+    timeouts: { statementMs?: number; queryMs?: number; connectMs?: number } = {},
   ) {
-    this.pool = new pg.Pool({ connectionString: databaseUrl, max: poolMax });
+    this.pool = new pg.Pool({
+      connectionString: databaseUrl,
+      max: poolMax,
+      ...(timeouts.statementMs ? { statement_timeout: timeouts.statementMs } : {}),
+      ...(timeouts.queryMs ? { query_timeout: timeouts.queryMs } : {}),
+      ...(timeouts.connectMs ? { connectionTimeoutMillis: timeouts.connectMs } : {}),
+    });
   }
 
   async close(): Promise<void> {
@@ -130,6 +142,7 @@ export class PgEnvStore {
     const publishedAt = w.publishedAt !== null && w.publishedAt <= w.ingestedAt ? w.publishedAt : null;
     const obs = w.observations;
     const client = await this.pool.connect();
+    let failed: unknown;
     try {
       await client.query("begin");
       // Serialises writers of one dataset, so two replicas can't both append the same change.
@@ -179,9 +192,11 @@ export class PgEnvStore {
       return changed;
     } catch (e) {
       await client.query("rollback").catch(() => {});
+      failed = e;
       throw e;
     } finally {
-      client.release();
+      // A failed (possibly timed-out, possibly dead) connection is destroyed, never reused.
+      client.release(failed as Error | undefined);
     }
   }
 
@@ -211,6 +226,15 @@ export class PgEnvStore {
       [q.dataset, q.region, iso(q.from), iso(q.to), q.asOf === undefined ? null : iso(q.asOf), limit],
     );
     return r.rows.map(toStored);
+  }
+
+  /**
+   * The earliest period we hold for one series, or null if none: where its history begins. Reads
+   * the primary key (dataset, region, valid_from, …), so it costs one index probe.
+   */
+  async firstPeriod(dataset: string, region: string): Promise<number | null> {
+    const r = await this.pool.query<{ t: Date | null }>("select min(valid_from) as t from env_observation where dataset = $1 and region = $2", [dataset, region]);
+    return r.rows[0]?.t?.getTime() ?? null;
   }
 
   /** Every version of one period, oldest first: how the source's view of it changed. */
@@ -249,6 +273,7 @@ export class PgEnvStore {
    */
   async snapshot(dataset: string, regions: readonly string[], validFromMin: number): Promise<{ rows: ChangeRow[]; maxSeq: number }> {
     const client = await this.pool.connect();
+    let failed: unknown;
     try {
       await client.query("begin transaction isolation level repeatable read read only");
       const max = await client.query<{ s: string | null }>("select max(seq)::text as s from env_observation where dataset = $1", [dataset]);
@@ -267,9 +292,11 @@ export class PgEnvStore {
       return { rows, maxSeq: Number(max.rows[0]?.s ?? 0) };
     } catch (e) {
       await client.query("rollback").catch(() => {});
+      failed = e;
       throw e;
     } finally {
-      client.release();
+      // A failed (possibly timed-out, possibly dead) connection is destroyed, never reused.
+      client.release(failed as Error | undefined);
     }
   }
 

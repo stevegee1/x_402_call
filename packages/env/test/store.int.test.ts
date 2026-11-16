@@ -186,6 +186,48 @@ describe("PgEnvStore", () => {
     expect(n.rows[0]).toEqual({ o: 0, f: 0 });
   });
 
+  it("applies the reader timeouts it is given, and none by default", async () => {
+    type Pool = { query: (q: string) => Promise<{ rows: Array<Record<string, string>> }> };
+    const timed = new PgEnvStore(db.url, 2, { statementMs: 300, queryMs: 2_000, connectMs: 1_500 });
+    try {
+      const pool = (timed as unknown as { pool: Pool & { options: Record<string, unknown> } }).pool;
+      // Client-side guards (a dead TCP connection, a full pool) reach pg's pool as configured.
+      expect(pool.options).toMatchObject({ query_timeout: 2_000, connectionTimeoutMillis: 1_500, statement_timeout: 300 });
+      expect((await pool.query("show statement_timeout")).rows[0]!.statement_timeout).toBe("300ms");
+      await expect(pool.query("select pg_sleep(1)")).rejects.toThrow(/statement timeout/);
+    } finally {
+      await timed.close();
+    }
+    const plain = (store as unknown as { pool: Pool }).pool;
+    expect((await plain.query("show statement_timeout")).rows[0]!.statement_timeout).toBe("0");
+  });
+
+  it("destroys a connection whose transaction failed instead of reusing it", async () => {
+    const pool = (store as unknown as { pool: { totalCount: number; idleCount: number } }).pool;
+    // A value/quality mismatch violates the table's check constraint, so the transaction fails.
+    const bad: Observation = { region: "england", validFrom: T0, value: null, quality: "ok", rawValue: null };
+    await expect(store.writeVersion(write(T0, [bad]))).rejects.toThrow();
+    expect(pool.totalCount).toBe(0); // released with the error: gone, not back in the idle set
+    expect(await store.writeVersion(write(T0, [ok("england", T0, 200)]))).toBe(1); // a fresh connection works
+  });
+
+  it("destroys a connection whose snapshot read failed instead of reusing it", async () => {
+    const pool = (store as unknown as { pool: { totalCount: number } }).pool;
+    await expect(store.snapshot(DS, ["england"], Number.NaN)).rejects.toThrow(); // fails inside the read transaction
+    expect(pool.totalCount).toBe(0);
+    expect((await store.snapshot(DS, ["england"], T0)).rows).toEqual([]);
+  });
+
+  it("reports where each series' history begins, per region, or null when there is none", async () => {
+    expect(await store.firstPeriod(DS, "england")).toBeNull();
+    await store.writeVersion(write(T0, [ok("england", T0 + P, 210), ok("wales", T0, 300)]));
+    await store.writeVersion(write(T0 + 10 * MIN, [ok("england", T0, 200)]));
+    expect(await store.firstPeriod(DS, "england")).toBe(T0);
+    expect(await store.firstPeriod(DS, "wales")).toBe(T0);
+    expect(await store.firstPeriod(DS, "scotland")).toBeNull();
+    expect(await store.firstPeriod("neso.other", "england")).toBeNull();
+  });
+
   it("validates as-of arguments and caps the row count", async () => {
     const q = { dataset: DS, region: "england", from: T0, to: T0 };
     await expect(store.asOf(q)).rejects.toThrow(RangeError);

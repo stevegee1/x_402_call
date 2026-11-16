@@ -26,7 +26,7 @@ import { Catalog } from "./platform/catalog";
 import type { Product } from "./platform/product";
 import { natsFeed, simulatorFeed } from "./products/maritime/feed";
 import { GridFeed } from "./products/grid/feed";
-import { GridHistory } from "./products/grid/history";
+import { GATEWAY_ENV_POOL, GridHistory } from "./products/grid/history";
 import { GridUpdates } from "./products/grid/updates";
 import { StoreGridSource } from "./products/grid/store-source";
 import { GridProduct } from "./products/grid";
@@ -72,7 +72,10 @@ let envFollower: EnvFollower | undefined;
 if (cfg.GRID_ENABLED && cfg.GRID_SOURCE === "store") {
   // Versions written by ingest-env, followed in memory: the live view updates the moment a new
   // version commits (LISTEN/NOTIFY), and history reads for the recent window never touch Postgres.
-  envStore = new PgEnvStore(cfg.DATABASE_URL!);
+  // Reads only (history, revisions, the live view's follower). Paid reads have their own 1.2 s
+  // deadline (STORE_READ_DEADLINE_MS) inside the async settle window; these pool timeouts free the
+  // connection behind an abandoned query. 8 connections, so a few abandoned queries can't starve paid reads.
+  envStore = new PgEnvStore(cfg.DATABASE_URL!, GATEWAY_ENV_POOL.max, GATEWAY_ENV_POOL.timeouts);
   if (!(await envStore.schemaReady())) throw new Error("env tables missing after migrations");
   const cache = new EnvCache(envStore, { dataset: CARBON_INTENSITY.id, regions: CARBON_INTENSITY.regions, windowMs: cfg.GRID_HISTORY_MEMORY_DAYS * 86_400_000 });
   envFollower = new EnvFollower(envStore, cache, log);

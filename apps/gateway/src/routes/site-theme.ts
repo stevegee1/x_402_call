@@ -107,3 +107,17 @@ export const BRAND_MARK = `<svg width="28" height="28" viewBox="0 0 32 32" aria-
 export const FAVICON = `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="9" fill="#0b57d0"/><path d="M9 10l14 12M23 10L9 22" stroke="#fff" stroke-width="3" stroke-linecap="round"/><circle cx="16" cy="16" r="2.6" fill="#c2e7ff"/></svg>')}`;
 
 export const esc = (v: string) => v.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+
+/**
+ * One status chip for a data product, from its coverage, used by the home page and the catalog so
+ * they always agree. Simulated anywhere wins; then all live, some live ("Live in 2 of 3"), or none.
+ */
+export function coverageChip(scopes: ReadonlyArray<{ mode: string; fresh: boolean }>, ready = true): string {
+  if (!ready) return `<span class="chip warn">Status unavailable: calls are not charged unless served</span>`;
+  if (scopes.length === 0) return "";
+  if (scopes.some((s) => s.mode !== "live")) return `<span class="chip warn">Simulated data</span>`;
+  const fresh = scopes.filter((s) => s.fresh).length;
+  if (fresh === scopes.length) return `<span class="chip ok"><span class="dot"></span>Live data</span>`;
+  if (fresh === 0) return `<span class="chip warn">Data delayed: calls are not charged</span>`;
+  return `<span class="chip ok"><span class="dot"></span>Live in ${fresh} of ${scopes.length}</span>`;
+}

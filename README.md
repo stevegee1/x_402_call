@@ -1,6 +1,6 @@
 # Maritime x402 Gateway
 
-Live maritime data for the Dover Strait, the Port of Rotterdam and the Panama Canal. It is sold per request to AI agents and businesses:
+Maritime data for the Dover Strait (live), with the Port of Rotterdam and Panama Canal approaches in beta, and GB grid carbon data with point-in-time history. It is sold per request to AI agents and businesses:
 
 - **x402**: account-free, USDC on Base, 0.012–0.068 USDC per call. Buyers sign gasless payments; the
   price includes a $0.002 network-fee allowance that pays our facilitator's gas ([docs/gas-keeper.md](docs/gas-keeper.md))
@@ -170,7 +170,11 @@ values that changed to `env_observation`, stamped with `ingested_at` (the as-of 
   | `GET /v1/grid/{country}/history?from=&to=&as_of=` | $0.052 | £0.042 | Each half-hour in `[from, to)` (up to 7 days) as known at `as_of` (default now), with `known_at` and `published_at` |
   | `GET /v1/grid/{country}/revisions?period=` | $0.022 | £0.017 | Every version of one half-hour, oldest first |
 
-  Times are ISO 8601 with a zone. Older history comes from Postgres, with the same answers. Grid goes
+  Times are ISO 8601 with a zone. Older history comes from Postgres, with the same answers. A read
+  that finds nothing (a range before history began, beyond any forecast, or with nothing known at
+  `as_of`) is refused with 404 `no_history` and never charged, on any rail (a read from Postgres that would
+  take over 1.2 s is cut off as a 503, so it ends before an async payment can settle); the body and
+  `GET /v1/grid/countries` (`history_from`, free) say where each country's history starts. Grid goes
   stale (503, never charged) if the store stops refreshing for 2 min or ingest hasn't fetched for 20 min.
 - **Latency budgets.** `pnpm test:latency` runs the hot path through the whole gateway in-process and
   fails above 5 ms p99. It runs alone in CI so other tests don't compete for the CPU.

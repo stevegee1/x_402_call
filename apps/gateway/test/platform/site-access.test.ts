@@ -21,6 +21,33 @@ async function fullEnv(): Promise<TestEnv> {
   return createTestEnv({}, { products: [new GridProduct(feed, Date.now, new GridHistory(cache, store), new GridUpdates())], sessions: true });
 }
 
+describe("public site with a partial grid offer", () => {
+  afterEach(() => vi.useRealTimers());
+  const render = async (history: boolean) => {
+    vi.useFakeTimers({ now: T0, toFake: ["Date"] });
+    const store = new FakeStore(storeRows());
+    const cache = new EnvCache(store, { dataset: "neso.carbon_intensity", regions: ["england", "scotland", "wales"], windowMs: 7 * 86_400_000 });
+    await cache.refresh();
+    const feed = new GridFeed(new StoreGridSource(cache, { lastRefreshAt: () => cache.lastRefreshAt, ingestLastSuccessAt: () => T0 }), { warn: () => {}, info: () => {} });
+    await feed.poll();
+    const env = await createTestEnv({}, { products: [new GridProduct(feed, Date.now, history ? new GridHistory(cache, store) : undefined)] });
+    return (await (await env.fetch(`${BASE_URL}/`, { headers: { accept: BROWSER } })).text()) as string;
+  };
+
+  it("history without push or sessions: claims history and revisions, never push or sessions", async () => {
+    const html = await render(true);
+    expect(html).toContain("Point-in-time history");
+    expect(html).toContain("Every revision of a forecast period");
+    for (const claim of ["A live push stream of new versions", "Reads from memory with prepaid sessions", "<b>In memory</b>", "live push (server-sent events)"]) expect(html).not.toContain(claim);
+  });
+
+  it("live grid only: a scheduling pitch, no history, revisions, push or trading claims", async () => {
+    const html = await render(false);
+    expect(html).toContain("Grid carbon intelligence");
+    for (const claim of ["Point-in-time", "Every revision", "live push stream", "trading systems", "Intelligence for AI trading platforms"]) expect(html).not.toContain(claim);
+  });
+});
+
 describe("public site with sessions and streams", () => {
   let env: TestEnv;
   let html: string;
@@ -97,6 +124,23 @@ describe("public site with sessions and streams", () => {
     expect(css).not.toContain("reveal");
     expect(css).toContain(".scene.paused *{animation-play-state:paused");
     expect(css).toContain("prefers-reduced-motion:reduce");
+  });
+
+  it("advertises history, revisions, push and sessions because this server sells them", () => {
+    const offer = section("offer");
+    expect(offer).toContain("Intelligence for AI trading platforms");
+    for (const f of ["Point-in-time history", "Every revision of a forecast period", "A live push stream of new versions", "Reads from memory with prepaid sessions"]) expect(offer).toContain(f);
+    expect(html).toContain("<b>Point-in-time</b>");
+    expect(html).toContain("<b>In memory</b>");
+  });
+
+  it("the backtest example asks for yesterday as known at its start, never a fixed date before history began", () => {
+    const day = 86_400_000;
+    const y = new Date(Math.floor(T0 / day) * day - day).toISOString().slice(0, 10);
+    const n = new Date(Math.floor(T0 / day) * day).toISOString().slice(0, 10);
+    expect(html).toContain(`/v1/grid/england/history?from=${y}T00:00Z&amp;to=${n}T00:00Z&amp;as_of=${y}T00:00Z`);
+    expect(html).not.toContain("2026-11-01T00:00Z");
+    expect(html).toContain("A range with no recorded data is refused and not charged");
   });
 
   it("the NESO attribution is on the page", () => {

@@ -47,7 +47,7 @@ export const GRID_HISTORY_RESOURCES: readonly PricedResource[] = [
   {
     id: "grid.history",
     path: "/:country/history",
-    summary: "Point-in-time history: for each half-hour in a range, the forecast as it stood at as_of (default now), with when we first knew it",
+    summary: "Point-in-time history: for each half-hour in a range, the forecast as it stood at as_of (default now), with when we first knew it. A range with no recorded data is refused (404 no_history) and not charged",
     pricing: { kind: "fixed", priceUsd: "0.052", creditsGbpMicros: 42_000 },
     parameters: [
       country,
@@ -59,7 +59,7 @@ export const GRID_HISTORY_RESOURCES: readonly PricedResource[] = [
   {
     id: "grid.revisions",
     path: "/:country/revisions",
-    summary: "Every version of one half-hour's forecast, oldest first: how the forecast for that period changed",
+    summary: "Every version of one half-hour's forecast, oldest first: how the forecast for that period changed. A period with no recorded version is refused (404 no_history) and not charged",
     pricing: { kind: "fixed", priceUsd: "0.022", creditsGbpMicros: 17_000 },
     parameters: [
       country,

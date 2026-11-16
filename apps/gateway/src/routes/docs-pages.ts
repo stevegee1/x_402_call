@@ -1,10 +1,10 @@
 import { createHash } from "node:crypto";
 import { isMainnet } from "../config";
 import type { AppDeps } from "../context";
-import { catalogView, type EndpointView, type ProductView, type ScopeView } from "./catalog-model";
+import { catalogView, offeredSubject, type EndpointView, type ProductView, type ScopeView } from "./catalog-model";
 import type { Viewer } from "../customers/web-session";
 import { headerActs } from "./site";
-import { BRAND_MARK, esc, FAVICON, THEME_CSS } from "./site-theme";
+import { BRAND_MARK, coverageChip, esc, FAVICON, THEME_CSS } from "./site-theme";
 
 /**
  * Human pages for what agents read as JSON: the data catalog (/catalog, and /v1/products in a
@@ -167,14 +167,7 @@ function age(s: ScopeView): string {
   return parts.join(" · ");
 }
 
-function productChip(v: ProductView): string {
-  if (v.coverage.some((s) => s.mode !== "live")) return `<span class="chip warn">Simulated data</span>`;
-  if (!v.coverage.length) return "";
-  const fresh = v.coverage.filter((s) => s.fresh).length;
-  if (fresh === v.coverage.length) return `<span class="chip ok"><span class="dot"></span>Live data</span>`;
-  if (fresh === 0) return `<span class="chip warn">Data delayed: calls are not charged</span>`;
-  return `<span class="chip ok"><span class="dot"></span>Live in ${fresh} of ${v.coverage.length}</span>`;
-}
+const productChip = (v: ProductView) => coverageChip(v.coverage, v.ready && (v.kind !== "data" || v.coverage.length > 0));
 
 const methodBadge = (e: EndpointView) => (e.kind === "stream" ? '<span class="method sse">SSE</span>' : e.kind === "free" ? '<span class="method free">FREE</span>' : '<span class="method">GET</span>');
 
@@ -308,7 +301,7 @@ ${views.map((v) => `<li><a class="grp" href="#ref-${esc(v.id)}">${esc(v.name)}</
 <section id="overview" aria-labelledby="overview-h">
   <span class="overline">API reference</span>
   <h1 id="overview-h">${esc(spec.info.title)}</h1>
-  <p class="lede">Maritime and energy-grid intelligence over plain HTTPS GET. JSON responses, priced per call, with no SDK required.</p>
+  <p class="lede">${esc(offeredSubject(d.catalog.products))} intelligence over plain HTTPS GET. JSON responses, priced per call, with no SDK required.</p>
   <h4>Base URL</h4><pre><code>${esc(base)}</code></pre>
   <div class="actions"><a class="btn tonal" href="/openapi.json?format=json" download="openapi.json">Download openapi.json</a><a class="btn outlined" href="/catalog">Catalog and live coverage</a></div>
 </section>

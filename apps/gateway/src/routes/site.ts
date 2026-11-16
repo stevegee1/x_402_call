@@ -5,7 +5,8 @@ import type { Viewer } from "../customers/web-session";
 import type { AppDeps } from "../context";
 import type { PricedResource, Product } from "../platform/product";
 import { agentsScene, maritimeScene, paymentScene, SCENES_CSS, tradingScene } from "./site-scenes";
-import { BRAND_MARK, esc, FAVICON, THEME_CSS } from "./site-theme";
+import { offeredSubject } from "./catalog-model";
+import { BRAND_MARK, coverageChip, esc, FAVICON, THEME_CSS } from "./site-theme";
 
 /**
  * The public site, served at `/` to browsers (agents keep getting JSON there). Rendered from the
@@ -134,10 +135,27 @@ const accessProduct = (d: AppDeps) => d.catalog.products.find((p) => p.kind === 
 function statusChip(p: Product): string {
   const status = statusOf(p);
   const scopes = status.scopes;
-  if (!status.ready || scopes.length === 0) return `<span class="chip warn">Status unavailable: calls are not charged unless served</span>`;
-  if (scopes.some((s) => s.mode !== "live")) return `<span class="chip warn">Simulated data</span>`;
-  if (scopes.some((s) => !s.fresh)) return `<span class="chip warn">Data delayed: calls are not charged</span>`;
-  return `<span class="chip ok"><span class="dot"></span>Live data</span>`;
+  // A data product with no scopes can't show its status; otherwise the same chip as /catalog.
+  return coverageChip(scopes, status.ready && scopes.length > 0);
+}
+
+/** What this server actually sells, so the page never advertises a feature that is switched off. */
+function offers(d: AppDeps) {
+  const has = (id: string) => d.catalog.paid.some((r) => r.resource.id === id) || d.catalog.streams.some((r) => r.resource.id === id);
+  // History and revisions are one resource set (GRID_HISTORY_RESOURCES): sold together or not at all.
+  return { history: has("grid.history"), stream: has("grid.stream"), sessions: accessProduct(d) !== undefined };
+}
+
+/**
+ * A history example that returns data: yesterday (UTC) as known at its start. It answers once
+ * ingest has run since before yesterday 00:00 UTC (24-48 h of history); before that the call is
+ * refused and not charged.
+ */
+export function historyExample(now: number): { from: string; to: string; asOf: string } {
+  const day = 86_400_000;
+  const from = Math.floor(now / day) * day - day;
+  const z = (t: number) => new Date(t).toISOString().replace(":00.000Z", "Z");
+  return { from: z(from), to: z(from + day), asOf: z(from) };
 }
 
 const gbp = (micros: number) => `£${(micros / 1e6).toFixed(3)}`;
@@ -169,6 +187,28 @@ function sessionsCard(p: Product): string {
     .map((r) => `<div class="size"><b>$${esc(r.pricing.priceUsd)}</b><span>${esc(r.summary)}</span><br><code>GET /v1/${esc(p.id)}${esc(r.path)}</code></div>`)
     .join("")}</div>
 </article>`;
+}
+
+/** The home page's grid card: trading features listed only when this server sells them. */
+function gridCard(grid: Product, o: ReturnType<typeof offers>): string {
+  const items = [
+    o.history ? "Point-in-time history: the data as it was known, for backtests without look-ahead" : "",
+    o.history ? "Every revision of a forecast period" : "",
+    o.stream ? "A live push stream of new versions" : "",
+    o.sessions ? "Reads from memory with prepaid sessions" : "",
+  ].filter(Boolean);
+  const trading = o.history || o.stream;
+  const intro = o.history
+    ? "GB grid carbon intensity from the system operator, with every published version kept:"
+    : trading
+      ? "GB grid carbon intensity from the system operator, pushed as each new version lands:"
+      : "GB grid carbon intensity from the system operator, for carbon-aware scheduling:";
+  const list = trading ? items : ["Carbon intensity now and the next half-hour", "A half-hourly forecast up to 48 h ahead", "The cleanest window to run a job"];
+  // The trading illustration shows history and a live stream, so it appears only when they are sold.
+  return `<article class="card ">${trading ? `<div class="art">${tradingScene()}</div>` : ""}
+        <div class="card-head"><h3>${trading ? "Intelligence for AI trading platforms" : "Grid carbon intelligence"}</h3>${statusChip(grid)}</div>
+        <p>${intro}</p>
+        <ul>${list.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></article>`;
 }
 
 /** A concrete, callable URL for a product: its first resource that needs only one path value. */
@@ -236,6 +276,8 @@ function identitySection(d: AppDeps): string {
 function howToUse(d: AppDeps, base: string, first: { path: string } | undefined, network: string): string {
   const target = `${base}${first?.path ?? "/v1/products"}`;
   const sessions = accessProduct(d);
+  const o = offers(d);
+  const h = historyExample(Date.now());
   const stream = d.catalog.streams[0];
   const streamUrl = stream ? `${base}${stream.path.replace(/:[a-z_]+/i, statusOf(stream.product).scopes[0]?.scope ?? "england")}` : "";
   const tab = (id: string, label: string, first: boolean) =>
@@ -256,7 +298,7 @@ function howToUse(d: AppDeps, base: string, first: { path: string } | undefined,
       <li><b>Buy a session once</b> with x402: ${sessions.resources.map((r) => `$${esc(r.pricing.priceUsd)}`).join(", ")}. It settles on chain before the token is issued.</li>
       <li><b>Read at memory speed.</b> Send <code>Authorization: Session &lt;token&gt;</code>; each read takes its price off the balance, with no payment round trip.</li>
       ${streamUrl ? `<li><b>Subscribe to the live stream.</b> Each new version is pushed the moment it lands, charged per event.</li>` : ""}
-      <li><b>Backtest without look-ahead.</b> <code>history?as_of=</code> returns the data exactly as it was known then; <code>revisions</code> shows every version.</li>
+      ${o.history ? `<li><b>Backtest without look-ahead.</b> <code>history?as_of=</code> returns the data exactly as it was known then; <code>revisions</code> shows every version. A range with no recorded data is refused and not charged; <code>/v1/grid/countries</code> says where history starts.</li>` : ""}
     </ol>
     <div><pre tabindex="0"><code># 1. buy a session (any x402 client), keep session_token
 GET ${esc(base)}/v1/sessions${esc(sessions.resources[0]!.path)}
@@ -265,9 +307,13 @@ GET ${esc(base)}/v1/sessions${esc(sessions.resources[0]!.path)}
 curl -H "Authorization: Session $TOKEN" \\
   ${esc(target)}
 ${streamUrl ? `\n# 3. live push (server-sent events)\ncurl -N -H "Authorization: Session $TOKEN" \\\n  ${esc(streamUrl)}\n` : ""}
-# point-in-time history for backtests
+${
+      o.history
+        ? `# point-in-time history for backtests: yesterday, as known at its start
 curl -H "Authorization: Session $TOKEN" \\
-  "${esc(base)}/v1/grid/england/history?from=2026-11-01T00:00Z&amp;to=2026-11-02T00:00Z&amp;as_of=2026-11-01T00:00Z"</code></pre></div>
+  "${esc(base)}/v1/grid/england/history?from=${h.from}&amp;to=${h.to}&amp;as_of=${h.asOf}"`
+        : ""
+    }</code></pre></div>
   </div>`
     : "";
   const business = `<div class="panel" role="tabpanel" id="panel-business" aria-labelledby="tab-business">
@@ -307,7 +353,10 @@ export function renderSite(d: AppDeps, viewer?: Viewer | null): string {
   const first = samples[0];
   const prices = products.flatMap((p) => p.resources.map((r) => Number(r.pricing.priceUsd)));
   const from = prices.length ? Math.min(...prices) : 0;
-  const description = `Maritime and energy-grid intelligence for AI agents and trading systems, sold per request. Agents pay from $${from} in USDC with x402; businesses can prepay in GBP.`;
+  const o = offers(d);
+  const subject = offeredSubject(products);
+  // "Trading systems" only when this server sells what they buy: history or the live stream.
+  const description = `${subject} intelligence for AI agents${o.history || o.stream ? " and trading systems" : ""}, sold per request. Agents pay from $${from} in USDC with x402; businesses can prepay in GBP.`;
   const maritime = products.find((p) => p.id === "maritime");
   const grid = products.find((p) => p.id === "grid");
 
@@ -335,12 +384,12 @@ ${mainnet ? "" : `<div class="banner" role="note">Test environment. Payments use
     <div>
       <span class="overline">x402${d.identity ? " · ERC-8004" : ""} · USDC on ${esc(network)}</span>
       <h1>Intelligence your AI can buy, one request at a time.</h1>
-      <p class="lede">Maritime and energy-grid data, cleaned and ready for models. Your agent sees the price, pays in USDC with x402 and gets the answer, with no sign-up or contract. Businesses can prepay in GBP.</p>
+      <p class="lede">${esc(subject)} data, cleaned and ready for models. Your agent sees the price, pays in USDC with x402 and gets the answer, with no sign-up or contract. Businesses can prepay in GBP.</p>
       <div class="actions"><a class="btn filled lg" href="#how-to-use">Start building</a><a class="btn tonal lg" href="#how">See how it works</a></div>
       <ul class="stats">
         <li><b>$${from}</b><span>from, per request</span></li>
-        <li><b>In memory</b><span>reads with x402 sessions</span></li>
-        <li><b>Point-in-time</b><span>history for backtests</span></li>
+        ${o.sessions ? "<li><b>In memory</b><span>reads with x402 sessions</span></li>" : "<li><b>No sign-up</b><span>pay in the request</span></li>"}
+        ${o.history ? "<li><b>Point-in-time</b><span>history for backtests</span></li>" : "<li><b>Never charged</b><span>for stale data</span></li>"}
       </ul>
     </div>
     <div class="hero-art">${paymentScene(String(from), network)}</div>
@@ -365,10 +414,7 @@ ${mainnet ? "" : `<div class="banner" role="note">Test environment. Payments use
         <div class="card-head"><h3>Maritime intelligence</h3>${maritime ? statusChip(maritime) : ""}</div>
         <p>AIS vessel positions turned into signals a model can use:</p>
         <ul><li>Live vessel snapshots and tracks</li><li>Traffic density on an H3 grid</li><li>Anchorage queues and wait times</li><li>Anomalies: vessels going dark, jumps, loitering</li></ul></article>
-      <article class="card "><div class="art">${tradingScene()}</div>
-        <div class="card-head"><h3>Intelligence for AI trading platforms</h3>${grid ? statusChip(grid) : ""}</div>
-        <p>GB grid carbon intensity from the system operator, with every published version kept:</p>
-        <ul><li>Point-in-time history: the data as it was known, for backtests without look-ahead</li><li>Every revision of a forecast period</li><li>A live push stream of new versions</li><li>Reads from memory with prepaid sessions</li></ul></article>
+      ${grid ? gridCard(grid, o) : ""}
     </div>
   </section>
 

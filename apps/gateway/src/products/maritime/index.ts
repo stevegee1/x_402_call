@@ -1,4 +1,4 @@
-import { isRegionId, REGIONS, REGION_IDS } from "@mx/shared";
+import { isRegionId, type Region, REGIONS, REGION_IDS } from "@mx/shared";
 import type { Metrics } from "../../metrics";
 import type { Product, ProductContext, ProductRoutes, ProductStatus, Resolution } from "../../platform/product";
 import type { Store } from "../../store/types";
@@ -21,7 +21,8 @@ export interface MaritimeOptions {
 export class MaritimeProduct implements Product<RegionSnapshot> {
   readonly id = "maritime";
   readonly displayName = "Maritime";
-  readonly description = "AIS vessel data and derived signals (density, anchorage queues, anomalies) for the Dover Strait, Port of Rotterdam and Panama Canal.";
+  /** Built from the region config, so the copy can never claim coverage a region's status doesn't back. */
+  readonly description = maritimeDescription();
   readonly resources = MARITIME_RESOURCES;
   readonly engine: SnapshotEngine;
 
@@ -84,4 +85,14 @@ export class MaritimeProduct implements Product<RegionSnapshot> {
     }
     m.set("snapshot_build_ms", this.engine.lastBuildMs, { product: this.id });
   }
+}
+
+/** "… for the Dover Strait, with the Port of Rotterdam approaches and Panama Canal approaches in beta." */
+export function maritimeDescription(regions: readonly Region[] = Object.values(REGIONS)): string {
+  const list = (names: string[]) => (names.length <= 1 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`);
+  const live = regions.filter((r) => r.status === "live").map((r) => r.name);
+  const beta = regions.filter((r) => r.status === "beta").map((r) => r.name);
+  const base = "AIS vessel data and derived signals (density, anchorage queues, anomalies)";
+  if (live.length === 0) return `${base}, in beta for the ${list(beta)}. Beta regions depend on AIS reception and may have no data; calls are never charged when they don't.`;
+  return `${base} for the ${list(live)}${beta.length ? `, with the ${list(beta)} in beta. Beta regions depend on AIS reception and may have no data; calls are never charged when they don't` : ""}.`;
 }

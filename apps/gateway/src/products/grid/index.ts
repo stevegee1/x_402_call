@@ -83,6 +83,21 @@ function unavailable(c: ProductContext) {
   return c.json({ error: "history_unavailable", detail: "history is temporarily unavailable; you have not been charged" }, 503);
 }
 
+/**
+ * A history read that found nothing is refused, so it is never charged (billing cancels or refunds
+ * any response >= 400, I5): a buyer pays only for data. The body says where history begins
+ * (the earliest period we hold; a version is known from when we first recorded it).
+ */
+function noHistory(c: ProductContext, country: Country, from: number | null | undefined, what: string) {
+  const where =
+    from === undefined
+      ? `where ${country}'s history starts is not known right now (see /v1/grid/countries)`
+      : from === null
+        ? `no history is recorded for ${country} yet`
+        : `history for ${country} starts at ${iso(from)}`;
+  return c.json({ error: "no_history", detail: `${what}; ${where}; you have not been charged`, history_from: from ? iso(from) : null }, 404);
+}
+
 const bad = (c: ProductContext, detail: string) => c.json({ error: "invalid_parameters", detail: `${detail}; you have not been charged` }, 400);
 
 /**
@@ -92,8 +107,7 @@ const bad = (c: ProductContext, detail: string) => c.json({ error: "invalid_para
 export class GridProduct implements Product<GridState> {
   readonly id = "grid";
   readonly displayName = "Grid carbon";
-  readonly description =
-    "GB grid carbon intensity signals for carbon-aware scheduling: now, a half-hourly forecast, and the cleanest window to run a job. Supported by National Energy SO Open Data. Not provided or endorsed by NESO.";
+  readonly description: string;
   readonly resources: readonly PricedResource[];
 
   /**
@@ -108,6 +122,16 @@ export class GridProduct implements Product<GridState> {
     private readonly updates?: GridUpdates,
   ) {
     this.resources = [...GRID_RESOURCES, ...(history ? GRID_HISTORY_RESOURCES : []), ...(updates ? GRID_STREAM_RESOURCES : [])];
+    // Describe exactly what this instance sells: history and push exist only with the version store.
+    this.description = [
+      "GB grid carbon intensity signals for carbon-aware scheduling: now, a half-hourly forecast, and the cleanest window to run a job.",
+      history ? "Point-in-time history of every published forecast and each period's revisions, for backtests without look-ahead." : "",
+      updates ? "A live push stream of each new version." : "",
+      "Supported by National Energy SO Open Data. Not provided or endorsed by NESO.",
+    ]
+      .filter(Boolean)
+      .join(" ");
+    void history?.warm(COUNTRIES);
   }
 
   resolve(c: ProductContext): Resolution<GridState> | Response {
@@ -134,14 +158,20 @@ export class GridProduct implements Product<GridState> {
   }
 
   routes(r: ProductRoutes<GridState>): void {
-    r.free("/countries", (c) =>
-      c.json({
-        data: COUNTRIES.map((id) => {
+    r.free("/countries", async (c) => {
+      const history = this.history;
+      const starts = history ? await Promise.all(COUNTRIES.map((id) => history.historyFrom(id))) : [];
+      return c.json({
+        data: COUNTRIES.map((id, i) => {
           const s = this.feed.state(id);
+          const from = starts[i];
           return {
             id,
             fresh: s.fresh,
             forecast_until: s.horizonEnd ? iso(s.horizonEnd) : null,
+            // Only with the version store: the first half-hour any history read can return.
+            // null when there is none or it isn't known right now (the store is slow or down).
+            ...(history ? { history_from: typeof from === "number" ? iso(from) : null } : {}),
             endpoints: this.resources.map((e) => ({
               id: e.id,
               path: `/v1/${this.id}${e.path.replace(":country", id)}`,
@@ -152,9 +182,8 @@ export class GridProduct implements Product<GridState> {
           };
         }),
         source: SOURCE,
-      }),
-      { summary: "Countries covered, with forecast freshness and the paid endpoints for each" },
-    );
+      });
+    }, { summary: "Countries covered, with forecast freshness, where history begins, and the paid endpoints for each" });
 
     r.paid(
       "grid.intensity",
@@ -224,9 +253,11 @@ export class GridProduct implements Product<GridState> {
       "grid.history",
       async (c, s) => {
         const p = historyParams(c, s.now) as HistoryParams; // validated in the precheck
-        const read = await history.history(s.country, p.from, p.to, p.asOf).catch(() => null);
+        const read = await history.history(s.country, p.from, p.to, p.asOf, history.budget(c.get("payment")?.settleNotBefore)).catch(() => null);
         if (!read) return unavailable(c); // billing refunds credits and cancels x402 (sync runs the handler before settling) (I5)
         const { rows } = read;
+        // From the cache only: an extra store round trip here could outlast the async settle delay.
+        if (rows.length === 0) return noHistory(c, s.country, history.cachedHistoryFrom(s.country), p.asOf === undefined ? "no half-hour in this range has a recorded version" : "no half-hour in this range had a recorded version at as_of (a version counts from when we first recorded it)");
         return c.json(
           this.envelope(s, {
             from: iso(p.from),
@@ -249,9 +280,10 @@ export class GridProduct implements Product<GridState> {
       "grid.revisions",
       async (c, s) => {
         const period = revisionPeriod(c) as number;
-        const read = await history.revisions(s.country, period).catch(() => null);
+        const read = await history.revisions(s.country, period, history.budget(c.get("payment")?.settleNotBefore)).catch(() => null);
         if (!read) return unavailable(c);
         const { rows } = read;
+        if (rows.length === 0) return noHistory(c, s.country, history.cachedHistoryFrom(s.country), "this half-hour has no recorded version");
         return c.json(this.envelope(s, { period: iso(period), count: rows.length, revisions: rows.map(versionBody) }));
       },
       {
@@ -286,6 +318,7 @@ export class GridProduct implements Product<GridState> {
       const h = this.history.status();
       m.set("grid_history_cache_versions", h.cached_versions);
       for (const path of ["memory", "store"] as const) m.set("grid_history_reads", this.history.reads[path], { path });
+      m.set("grid_history_store_timeouts", this.history.storeTimeouts);
     }
   }
 }

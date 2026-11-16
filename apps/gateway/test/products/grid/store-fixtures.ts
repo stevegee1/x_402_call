@@ -24,6 +24,10 @@ export function storeRows(): ChangeRow[] {
 export class FakeStore implements CacheSource, HistoryStore {
   calls: string[] = [];
   down = false;
+  /** When set, asOf and revisions wait this long before answering: a slow database. */
+  readDelayMs = 0;
+  /** When set, firstPeriod waits on this before answering: a slow or hung store. */
+  firstPeriodGate?: Promise<void>;
   constructor(public rows: ChangeRow[]) {}
   async snapshot(_d: string, regions: readonly string[], min: number) {
     return { rows: this.rows.filter((r) => regions.includes(r.region) && r.validFrom >= min), maxSeq: this.rows.length };
@@ -34,6 +38,7 @@ export class FakeStore implements CacheSource, HistoryStore {
   // Same semantics as PgEnvStore.asOf / revisions (those are tested against Postgres in packages/env).
   async asOf(q: AsOfQuery): Promise<StoredObservation[]> {
     this.calls.push("asOf");
+    if (this.readDelayMs) await new Promise((r) => setTimeout(r, this.readDelayMs));
     if (this.down) throw new Error("db down");
     const best = new Map<number, ChangeRow>();
     for (const r of this.rows) {
@@ -44,8 +49,16 @@ export class FakeStore implements CacheSource, HistoryStore {
     }
     return [...best.values()].sort((a, b) => a.validFrom - b.validFrom).map(({ seq: _, ...o }) => o);
   }
+  async firstPeriod(_d: string, region: string): Promise<number | null> {
+    this.calls.push("firstPeriod");
+    if (this.firstPeriodGate) await this.firstPeriodGate;
+    if (this.down) throw new Error("db down");
+    const starts = this.rows.filter((r) => r.region === region).map((r) => r.validFrom);
+    return starts.length ? Math.min(...starts) : null;
+  }
   async revisions(_d: string, region: string, validFrom: number): Promise<StoredObservation[]> {
     this.calls.push("revisions");
+    if (this.readDelayMs) await new Promise((r) => setTimeout(r, this.readDelayMs));
     if (this.down) throw new Error("db down");
     return this.rows.filter((r) => r.region === region && r.validFrom === validFrom).sort((a, b) => a.ingestedAt - b.ingestedAt).map(({ seq: _, ...o }) => o);
   }
