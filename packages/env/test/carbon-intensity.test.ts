@@ -65,10 +65,25 @@ describe("cleanCarbonIntensity", () => {
     expect(r.observations).toHaveLength(3);
   });
 
-  it("keeps the last of several rows for one period and counts the repeats", () => {
-    const r = cleanCarbonIntensity([rec("2026-11-07T14:00:00", 1), rec("2026-11-07T14:00:00", 2), rec("2026-11-07T14:00:00", 3)]);
-    expect(r.duplicates).toBe(2);
-    expect(r.observations.find((o) => o.region === "england")!.value).toBe(3);
+  it("keeps one copy of a period repeated with the same values and counts the repeats", () => {
+    const r = cleanCarbonIntensity([rec("2026-11-07T14:00:00", 1), rec("2026-11-07T14:00:00", "1"), rec("2026-11-07T14:00:00", 1)]);
+    expect(r).toMatchObject({ dropped: 0, duplicates: 2 });
+    expect(r.observations.find((o) => o.region === "england")!.value).toBe(1);
+  });
+
+  it("drops a period repeated with different values: there is no telling which is right", () => {
+    const r = cleanCarbonIntensity([rec("2026-11-07T14:00:00", 1), rec("2026-11-07T14:30:00"), rec("2026-11-07T14:00:00", 2), rec("2026-11-07T14:00:00", 1)]);
+    expect(r).toMatchObject({ dropped: 3, duplicates: 0 });
+    expect(r.observations.map((o) => o.validFrom)).toEqual([T + 1_800_000, T + 1_800_000, T + 1_800_000]);
+  });
+
+  it("reads only plain decimal strings as numbers", () => {
+    const r = cleanCarbonIntensity([rec("2026-11-07T14:00:00", "  ", "0x10", "1e2")]);
+    expect(r.observations.map((o) => [o.quality, o.value])).toEqual([
+      ["rejected", null],
+      ["rejected", null],
+      ["ok", 100],
+    ]);
   });
 
   it("handles an empty fetch", () => {

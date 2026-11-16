@@ -264,7 +264,7 @@ NESO Data Portal ──resource_show every 30 s; full fetch when last_modified m
 2. **2a, hot path:** the gateway follows the store in memory (`GRID_SOURCE=store`), adds `grid.history` and `grid.revisions`, and runs latency budgets in CI. *(Done: `feat/env-hot-path`.)*
    **2b, sessions and push:** x402 buys a session (sync settlement, liability until spent); reads are in-memory debits on leased balance; SSE push paid per event. *(Done: `feat/x402-sessions`.)* Funding a session with GBP credits is a follow-up.
 3. **Optimistic per-call x402:** local EIP-3009 verification, in-memory admission per replica.
-4. **More datasets:** embedded wind and solar forecast, demand forecast, generation mix. Each is a new `DatasetSpec`, not a new pipeline.
+4. **More datasets:** regional carbon intensity, embedded wind and solar forecast, 14-day wind forecast, 2-14 day half-hourly demand forecast, generation mix. Each is a new `DatasetSpec`, not a new pipeline. Stored only for now: serving them (endpoints, prices) is a separate PR. *(Done: `feat/env-datasets`.)*
 5. **Bulk history:** nightly Parquet export.
 
 ### 6.6 Deferred: metered compute (former Option B)

@@ -1,0 +1,27 @@
+import type { DatasetSpec } from "../types";
+import { CARBON_INTENSITY } from "./carbon-intensity";
+import { DEMAND_FORECAST_2_14D } from "./demand-forecast-2-14d";
+import { EMBEDDED_WIND_SOLAR } from "./embedded-wind-solar";
+import { GENERATION_MIX } from "./generation-mix";
+import { REGIONAL_CARBON_INTENSITY } from "./regional-carbon-intensity";
+import { WIND_FORECAST_14D } from "./wind-forecast-14d";
+
+/**
+ * Every dataset ingest-env can store. The first one is polled first at boot, and ingest-env gives
+ * its requests priority in the NESO client's queue: carbon intensity backs the paid grid product.
+ */
+export const NESO_DATASETS: readonly DatasetSpec[] = [
+  CARBON_INTENSITY,
+  REGIONAL_CARBON_INTENSITY,
+  EMBEDDED_WIND_SOLAR,
+  WIND_FORECAST_14D,
+  DEMAND_FORECAST_2_14D,
+  GENERATION_MIX,
+];
+
+export { CARBON_INTENSITY, cleanCarbonIntensity } from "./carbon-intensity";
+export { REGIONAL_CARBON_INTENSITY, cleanRegionalCarbonIntensity } from "./regional-carbon-intensity";
+export { EMBEDDED_WIND_SOLAR, cleanEmbeddedWindSolar, embeddedPeriodStart } from "./embedded-wind-solar";
+export { WIND_FORECAST_14D, cleanWindForecast14d, wind14dPeriodStart, wind14dRun } from "./wind-forecast-14d";
+export { DEMAND_FORECAST_2_14D, cleanDemandForecast214d, demand214dPeriodStart } from "./demand-forecast-2-14d";
+export { GENERATION_MIX, cleanGenerationMix } from "./generation-mix";
