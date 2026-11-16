@@ -330,7 +330,9 @@ ${views.map((v) => `<li><a class="grp" href="#ref-${esc(v.id)}">${esc(v.name)}</
   <tr><td><code>400</code> / <code>404</code></td><td>Invalid parameter, or unknown region, country or vessel</td><td>No</td></tr>
   <tr><td><code>401</code></td><td>Invalid API key or session</td><td>No</td></tr>
   <tr><td><code>503</code></td><td>Data is stale, not for sale on this network, or payments are briefly unavailable</td><td>No</td></tr>
+  <tr><td><code>503</code> <code>settlement_pending</code></td><td>Your x402 payment is still settling on chain. Don't sign a new one: resend the same <code>PAYMENT-SIGNATURE</code> after <code>Retry-After</code> and you get the data once it settles</td><td>Once at most</td></tr>
   </tbody></table></div>
+  <p>Paid but no data? If your x402 payment settled but the data didn't reach you (the settlement was still pending, or your connection dropped), the response carries <code>X-Payment-Owed: true</code> or <code>settlement_pending</code>. Resend the same <code>PAYMENT-SIGNATURE</code> to get the data, once, with no second charge. <code>GET /v1/payments/{id}</code> shows <code>data_owed</code>. A call that fails on our side before your payment settles is never charged.</p>
 </section>
 ${views
   .map(

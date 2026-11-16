@@ -16,6 +16,22 @@ const LEASE_MS = 60_000;
  * is single-use on chain, so at most one attempt can move the funds.
  */
 const TRANSIENT_REASON = /transaction_failed|simulation_failed|settlement_pending|invalid_transaction_state|broadcast_failed|timeout|timed out|unavailable|rate.?limit|internal|network error|ECONN|503|502|500/i;
+/**
+ * Failures where the transaction may have been broadcast and may still mine: the facilitator gave up
+ * waiting for the receipt (@x402/evm answers `settlement_pending` with the tx hash), lost track of
+ * it, or failed on its side mid-flight. Never "not charged" on these: only the chain can say so.
+ */
+const MAYBE_BROADCAST_REASON = /settlement_pending|invalid_transaction_state|timeout|timed out|unavailable|internal|network error|ECONN|50[234]/i;
+/**
+ * The facilitator says the authorization's nonce is spent: our transfer may have moved the money or
+ * be in flight, so this is indeterminate, never "not charged". (A spent nonce alone does not prove we
+ * were paid: the payer can also spend it with cancelAuthorization. Confirming a Transfer to payTo is
+ * tracked separately; the reconciler flags a settled payment with no matching transfer.)
+ */
+const NONCE_SPENT_REASON = /nonce|already/i;
+/** After validBefore, how long to keep asking the chain before concluding a payment never moved (RPC lag). */
+export const EXPIRY_GRACE_MS = 120_000;
+
 /** Facilitator error reasons that will never succeed on retry (bad payment, not a bad moment). */
 const FINAL_REASON = /insufficient|invalid|signature|expired|valid_before|value|recipient|unsupported|mismatch|not_supported/i;
 
@@ -91,29 +107,53 @@ export class Settler {
     const auth = authOf(row);
     const asset = (row.requirements as PaymentRequirements).asset;
 
+    if (row.settleMode === "sync" && !row.armedAt && !opts.inline) {
+      // The request path never handed this to the facilitator (it died first). The worker must not
+      // submit it, whatever its clock says: confirm it on chain if someone else did, or wait out the
+      // expiry grace and fail it ("not charged").
+      const used = auth ? await this.consumedOnChain(asset, auth) : false;
+      if (used === true) return this.markSettled(row, null);
+      if (used === "unknown" || Date.now() < row.validBefore.getTime() + EXPIRY_GRACE_MS) {
+        await this.store.failPayment(row.id, "never_submitted: awaiting expiry", false, new Date(row.validBefore.getTime() + EXPIRY_GRACE_MS + 5_000));
+        return { ok: false, reason: "never_submitted", final: false, indeterminate: true };
+      }
+      return this.markFailed(row, "never_submitted", true);
+    }
     if (Date.now() > row.validBefore.getTime()) {
       // The authorization can no longer be submitted; it either settled earlier (indeterminate) or never will.
-      if (auth && (await this.consumedOnChain(asset, auth))) return this.markSettled(row, null);
+      const used = auth ? await this.consumedOnChain(asset, auth) : false;
+      if (used === true) return this.markSettled(row, null);
+      // Can't read the chain, or it may lag a transaction mined just before expiry: never tell a
+      // buyer "not charged" on a guess. Keep checking through the grace period.
+      if (used === "unknown" || Date.now() < row.validBefore.getTime() + EXPIRY_GRACE_MS) return this.markFailed(row, "authorization_expired: awaiting chain confirmation", false, true);
       return this.markFailed(row, "authorization_expired", true);
     }
 
     let res: SettleResponse | undefined;
     let confirmedOnChain = false;
+    /** Some attempt in this call may have put a transaction on the wire. */
+    let maybeBroadcast = false;
     for (let attempt = 0; ; attempt++) {
       try {
         res = await this.server.settlePayment(row.payload as PaymentPayload, row.requirements as PaymentRequirements);
       } catch (e) {
         this.metrics.set("x402_settle_last_ms", Date.now() - t0);
         // Timeout / transport error: outcome unknown. Check chain before deciding.
-        if (auth && (await this.consumedOnChain(asset, auth))) return this.markSettled(row, null);
+        if (auth && (await this.consumedOnChain(asset, auth)) === true) return this.markSettled(row, null);
         return this.markFailed(row, `indeterminate: ${(e as Error).message}`, false, true);
       }
       if (res.success) break;
       const reason = res.errorReason ?? "unknown";
+      if (MAYBE_BROADCAST_REASON.test(reason) || NONCE_SPENT_REASON.test(reason) || (res.transaction && !/revert/i.test(reason))) maybeBroadcast = true;
       // A "nonce already used" style failure may mean a previous attempt succeeded.
-      if (/nonce|used|already/i.test(reason) && auth && (await this.consumedOnChain(asset, auth))) {
-        confirmedOnChain = true;
-        break;
+      if (/nonce|used|already/i.test(reason) && auth) {
+        const used = await this.consumedOnChain(asset, auth);
+        if (used === true) {
+          confirmedOnChain = true;
+          break;
+        }
+        // "Already used" and the chain can't be read: an earlier attempt may have moved the funds.
+        if (used === "unknown") return this.markFailed(row, `indeterminate: ${reason}`, false, true);
       }
       const delay = opts.inline && !isFinalReason(reason) ? INLINE_RETRY_MS[attempt] : undefined;
       if (delay === undefined || Date.now() + delay >= row.validBefore.getTime()) break;
@@ -126,20 +166,36 @@ export class Settler {
     if (res.success) return this.markSettled(row, res);
     if (confirmedOnChain) return this.markSettled(row, null);
     const reason = res.errorReason ?? "unknown";
+    // It may have been broadcast and may still mine: indeterminate, whatever the caller asked for.
+    // The worker and the chain check finish it; the buyer is told "pending", never "not charged".
+    if (maybeBroadcast) {
+      if (auth && (await this.consumedOnChain(asset, auth)) === true) return this.markSettled(row, null);
+      return this.markFailed(row, `indeterminate: ${reason}`, false, true);
+    }
     const final = opts.finalizeOnFailure || isFinalReason(reason) || row.attempts + 1 >= MAX_ATTEMPTS;
     // Before giving up for good on a failure that wasn't the payment's fault, make sure the funds
     // didn't move anyway (a facilitator can report failure for a transaction that later mined).
-    if (final && !isFinalReason(reason) && auth && (await this.consumedOnChain(asset, auth))) return this.markSettled(row, null);
+    if (final && !isFinalReason(reason) && auth) {
+      const used = await this.consumedOnChain(asset, auth);
+      if (used === true) return this.markSettled(row, null);
+      if (used === "unknown") return this.markFailed(row, `indeterminate: ${reason}`, false, true);
+    }
     return this.markFailed(row, reason, final);
   }
 
-  private async consumedOnChain(asset: string, auth: Authorization): Promise<boolean> {
+  /**
+   * Whether the authorization's nonce is spent on chain. "unknown" when the chain can't be read: the
+   * caller must then never conclude "failed, not charged". Without a checker (development only;
+   * production config requires BASE_RPC_URL) the answer is false, as before.
+   */
+  private async consumedOnChain(asset: string, auth: Authorization): Promise<boolean | "unknown"> {
     if (!this.checker) return false;
     try {
       return await this.checker.isUsed(asset, auth.from, auth.nonce);
     } catch (e) {
+      this.metrics.inc("x402_chain_check_failed_total");
       this.log.warn({ err: e }, "on-chain authorization check failed");
-      return false;
+      return "unknown";
     }
   }
 
@@ -163,7 +219,9 @@ export class Settler {
   }
 
   private async markFailed(row: PaymentRow, reason: string, finalHint: boolean, indeterminate = false): Promise<SettleOutcome> {
-    const final = finalHint || row.attempts + 1 >= MAX_ATTEMPTS;
+    // An indeterminate outcome is never written off by the attempt cap: it may have moved the funds.
+    // It is bounded by validBefore instead, after which the chain check gives a definite answer.
+    const final = finalHint || (!indeterminate && row.attempts + 1 >= MAX_ATTEMPTS);
     const backoffMs = Math.min(30_000, 1_000 * 2 ** row.attempts);
     await this.store.failPayment(row.id, reason, final, final ? undefined : new Date(Date.now() + backoffMs));
     if (final) {

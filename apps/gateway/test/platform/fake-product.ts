@@ -33,6 +33,8 @@ export class AcmeProduct implements Product<AcmeState> {
   /** Status the reading handler responds with (≥400 exercises refund / cancel). */
   handlerStatus = 200;
   handlerCalls = 0;
+  /** The reading handler throws (a bug): Hono answers 500 from onError, not from the handler. */
+  handlerThrows = false;
   adminCalls = 0;
 
   resolve(c: ProductContext): Resolution<AcmeState> | Response {
@@ -44,7 +46,9 @@ export class AcmeProduct implements Product<AcmeState> {
   routes(r: ProductRoutes<AcmeState>): void {
     r.paid("acme.reading", (c, s) => {
       this.handlerCalls++;
+      if (this.handlerThrows) throw new Error("handler bug");
       if (this.handlerStatus >= 400) return c.json({ error: "upstream_failed" }, this.handlerStatus as 500);
+      c.header("X-Acme-Reading", String(s.value)); // a data-bearing header: must never outlive a refusal
       return c.json({ site: s.site, value: s.value, mode: this.mode });
     });
     r.paid("acme.report", (c, s) => c.json({ site: s.site, report: c.req.param("report") }), {

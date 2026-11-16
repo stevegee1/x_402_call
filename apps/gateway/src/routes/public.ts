@@ -108,7 +108,7 @@ export function publicRoutes(d: AppDeps) {
     if (!/^[0-9a-f-]{36}$/.test(id)) return c.json({ error: "not_found" }, 404);
     const p = await d.store.getPayment(id);
     if (!p) return c.json({ error: "not_found" }, 404);
-    return c.json({ id: p.id, status: p.status, network: p.network, resource: p.endpoint, amount_usdc: Number(p.amountAtomic) / 1e6, transaction: p.txHash, settled_at: p.settledAt?.toISOString() ?? null });
+    return c.json({ id: p.id, status: p.status, network: p.network, resource: p.endpoint, amount_usdc: Number(p.amountAtomic) / 1e6, transaction: p.txHash, settled_at: p.settledAt?.toISOString() ?? null, data_owed: p.status === "settled" && p.owedSince !== null });
   });
 
   // Revenue, exposure and payer counts: never public. Production always has ADMIN_TOKEN (config

@@ -6,7 +6,7 @@ import { bearerAuth, createFacilitatorClients } from "../../src/payments/facilit
 const PAY_TO = "0x00000000000000000000000000000000000000aa";
 const TOKEN = "f".repeat(32);
 const base = { PAY_TO, LOG_LEVEL: "silent" };
-const prod = { ...base, NODE_ENV: "production", DATABASE_URL: "postgres://x", ADMIN_TOKEN: "a".repeat(32) };
+const prod = { ...base, NODE_ENV: "production", DATABASE_URL: "postgres://x", ADMIN_TOKEN: "a".repeat(32), BASE_RPC_URL: "https://sepolia.base.org" };
 
 describe("self-hosted facilitator config", () => {
   it("FACILITATOR=url requires a token in production", () => {
@@ -92,6 +92,14 @@ describe("facilitator clients", () => {
     await primary.getSupported();
     expect(seen).toEqual([null]);
     expect(fallback).toBeUndefined();
+  });
+});
+
+describe("on-chain settlement check", () => {
+  it("is required in production: without it a settle that timed out but mined is written off as not charged (I14)", () => {
+    const { BASE_RPC_URL: _, ...noRpc } = prod;
+    expect(() => loadConfig({ ...noRpc, FACILITATOR: "x402org" })).toThrow(/BASE_RPC_URL/);
+    expect(() => loadConfig({ ...prod, FACILITATOR: "x402org" })).not.toThrow();
   });
 });
 
