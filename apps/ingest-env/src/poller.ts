@@ -3,7 +3,7 @@ import type { Metrics } from "@mx/shared";
 
 export interface PollerSource {
   lastModified(resourceId: string): Promise<number | null>;
-  records(resourceId: string, limit: number): Promise<unknown[]>;
+  records(resourceId: string, limit: number, sort: string): Promise<unknown[]>;
 }
 
 export interface PollerStore {
@@ -33,7 +33,10 @@ export interface PollerOptions {
 
 export const DEFAULT_POLLER_OPTIONS: PollerOptions = { checkMs: 30_000, maxFetchIntervalMs: 10 * 60_000, maxBackoffMs: 5 * 60_000, publishSettleMs: 5 * 60_000 };
 
-export type TickResult = "fetched" | "unchanged" | "failed";
+/** Cleaning dropped at least this share of a fetch's rows: the source format has probably changed. */
+export const DROP_ALERT_RATIO = 0.05;
+
+export type TickResult = "fetched" | "unchanged" | "unstable" | "failed";
 
 export interface PollerStatus {
   dataset: string;
@@ -93,7 +96,20 @@ export class Poller {
         return "unchanged";
       }
 
-      const records = await this.source.records(this.spec.resourceId, this.spec.fetchLimit);
+      const records = await this.source.records(this.spec.resourceId, this.spec.fetchLimit, this.spec.sort);
+      if (this.spec.wholeResource) {
+        // Each run replaces the whole resource. If NESO published during our read, the rows may be
+        // part old run, part new: store nothing, and read again next check (the time moved, so it's due).
+        const after = await this.source.lastModified(this.spec.resourceId);
+        if (after !== modified) {
+          this.metrics.inc("env_checks_total", { ...labels, result: "unstable" });
+          this.log.info({ dataset: this.spec.id, publishedAt: modified, publishedAfter: after }, "source published during the read: reading again");
+          this.succeeded();
+          return "unstable";
+        }
+      }
+      // The resource should fit in one read; a full read means the far end of the horizon was cut.
+      const truncated = this.spec.wholeResource && records.length >= this.spec.fetchLimit;
       const cleaned = this.spec.clean(records);
       const ingestedAt = this.now();
       const changed = await this.store.writeVersion({
@@ -128,8 +144,17 @@ export class Poller {
         // From the source's publish time to our durable copy: our share of delivery latency.
         this.metrics.set("env_publish_to_ingest_seconds", Math.max(0, (ingestedAt - modified!) / 1000), labels);
       }
+      this.metrics.set("env_rows_dropped_ratio", records.length === 0 ? 0 : cleaned.dropped / records.length, labels);
+      if (truncated) {
+        this.metrics.inc("env_fetch_truncated_total", labels);
+        this.log.warn({ dataset: this.spec.id, limit: this.spec.fetchLimit }, "fetch hit its row limit: the forecast horizon was cut, raise fetchLimit");
+      }
       if (cleaned.dropped > 0 || cleaned.duplicates > 0 || cleaned.observations.length === 0) {
-        this.log.warn({ dataset: this.spec.id, dropped: cleaned.dropped, duplicates: cleaned.duplicates, seen: cleaned.observations.length }, "source rows needed cleaning");
+        const alarming = records.length > 0 && cleaned.dropped / records.length >= DROP_ALERT_RATIO;
+        this.log.warn(
+          { dataset: this.spec.id, dropped: cleaned.dropped, duplicates: cleaned.duplicates, seen: cleaned.observations.length, rows: records.length },
+          alarming ? "source rows could not be placed: the source format may have changed" : "source rows needed cleaning",
+        );
       }
       this.log.info({ dataset: this.spec.id, changed, seen: cleaned.observations.length, publishedAt: modified, settling }, "fetched");
       this.succeeded();
@@ -162,8 +187,11 @@ export class Poller {
     return Math.max(this.opts.checkMs, Math.floor(ceiling * this.random()));
   }
 
-  /** Runs tick → wait → tick until stop(). The first tick runs immediately. */
-  start(): void {
+  /**
+   * Runs tick → wait → tick until stop(). The first tick runs after `initialDelayMs` (default 0),
+   * so several pollers can be staggered instead of all checking the source at the same moment.
+   */
+  start(initialDelayMs = 0): void {
     const loop = async () => {
       if (this.stopped) return;
       this.running = this.tick();
@@ -171,7 +199,8 @@ export class Poller {
       if (this.stopped) return;
       this.timer = setTimeout(() => void loop(), this.nextDelay());
     };
-    void loop();
+    if (initialDelayMs > 0) this.timer = setTimeout(() => void loop(), initialDelayMs);
+    else void loop();
   }
 
   /** Stops scheduling and waits for a tick in flight, so shutdown never cuts a write short. */

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { NESO_DATASETS } from "@mx/env";
 import { loadConfig } from "../src/config";
 
 const base = { DATABASE_URL: "postgres://x@localhost/db" };
@@ -40,5 +41,25 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ ...base, ENV_HEALTH_PORT: "70000" })).toThrow(/ENV_HEALTH_PORT/);
     expect(() => loadConfig({ ...base, ENV_HTTP_TIMEOUT_MS: "1.5" })).toThrow(/ENV_HTTP_TIMEOUT_MS/);
     expect(() => loadConfig({ ...base, NESO_BASE_URL: "not a url" })).toThrow(/NESO_BASE_URL/);
+  });
+
+  it("polls every dataset by default, with a 10% margin under NESO's 1 request a second", async () => {
+    const { selectedDatasets } = await import("../src/config");
+    const c = loadConfig(base);
+    expect(c.ENV_MIN_REQUEST_GAP_MS).toBe(1_100);
+    expect(selectedDatasets(c).map((d) => d.id)).toEqual(NESO_DATASETS.map((d) => d.id));
+  });
+
+  it("polls a named subset, in registry order, and refuses unknown or empty lists", async () => {
+    const { selectedDatasets } = await import("../src/config");
+    const c = loadConfig({ ...base, ENV_DATASETS: " neso.generation_mix , neso.carbon_intensity " });
+    expect(selectedDatasets(c).map((d) => d.id)).toEqual(["neso.carbon_intensity", "neso.generation_mix"]);
+    expect(() => loadConfig({ ...base, ENV_DATASETS: "neso.carbon_intensity,neso.typo" })).toThrow(/ENV_DATASETS: unknown dataset neso.typo/);
+    expect(() => loadConfig({ ...base, ENV_DATASETS: " , " })).toThrow(/ENV_DATASETS/);
+  });
+
+  it("refuses a request gap below NESO's limit", () => {
+    expect(() => loadConfig({ ...base, ENV_MIN_REQUEST_GAP_MS: "1000" })).toThrow(/ENV_MIN_REQUEST_GAP_MS/);
+    expect(loadConfig({ ...base, ENV_MIN_REQUEST_GAP_MS: "1050" }).ENV_MIN_REQUEST_GAP_MS).toBe(1_050);
   });
 });

@@ -1,13 +1,14 @@
 import { CARBON_INTENSITY, NesoClient, PgEnvStore } from "@mx/env";
 import { Metrics } from "@mx/shared";
 import { pino } from "pino";
-import { loadConfig } from "./config";
+import { loadConfig, selectedDatasets } from "./config";
 import { healthServer } from "./health";
 import { Poller } from "./poller";
 
 /**
  * ingest-env: keeps every published version of the environmental datasets (architecture.md §6.2).
- * Several replicas are safe: the store serialises writers per dataset and appends only changes.
+ * Several replicas are safe for the data: the store serialises writers per dataset and appends only
+ * changes. But the NESO rate cap (ENV_MIN_REQUEST_GAP_MS) is per process, so run one replica.
  */
 const cfg = loadConfig();
 const log = pino({ level: cfg.LOG_LEVEL, base: { service: "ingest-env" } });
@@ -29,9 +30,18 @@ metrics.describe("env_rows_flagged", "Values in the last fetch flagged missing o
 metrics.describe("env_last_success_timestamp_seconds", "When the last successful fetch completed.");
 metrics.describe("env_publish_to_ingest_seconds", "Source publish time to stored, for the last fetch that changed data.");
 metrics.describe("env_consecutive_failures", "Failed checks in a row.");
+metrics.describe("env_rows_dropped_ratio", "Share of the last fetch's rows that could not be placed; high means a source format change.");
+metrics.describe("env_fetch_truncated_total", "Fetches of a whole-run resource that hit the row limit.");
 
-const neso = new NesoClient({ baseUrl: cfg.NESO_BASE_URL, timeoutMs: cfg.ENV_HTTP_TIMEOUT_MS });
-const pollers = [CARBON_INTENSITY].map(
+// One client for every dataset, so the request gap caps our total rate against NESO.
+// Carbon intensity backs the paid grid product, so its requests jump the queue.
+const neso = new NesoClient({
+  baseUrl: cfg.NESO_BASE_URL,
+  timeoutMs: cfg.ENV_HTTP_TIMEOUT_MS,
+  minIntervalMs: cfg.ENV_MIN_REQUEST_GAP_MS,
+  priorityResourceIds: [CARBON_INTENSITY.resourceId],
+});
+const pollers = selectedDatasets(cfg).map(
   (spec) =>
     new Poller(spec, neso, store, metrics, log, {
       checkMs: cfg.ENV_CHECK_INTERVAL_MS,
@@ -43,7 +53,8 @@ const pollers = [CARBON_INTENSITY].map(
 
 const server = healthServer({ metrics, statuses: () => pollers.map((p) => p.status), ping: () => store.ping(), storage: () => storage });
 server.listen(cfg.ENV_HEALTH_PORT);
-for (const p of pollers) p.start();
+// Spread the first checks across one interval; the first dataset (carbon intensity) starts at once.
+pollers.forEach((p, i) => p.start(Math.floor((i * cfg.ENV_CHECK_INTERVAL_MS) / pollers.length)));
 log.info({ datasets: pollers.map((p) => p.status.dataset), storage, source: cfg.NESO_BASE_URL, checkMs: cfg.ENV_CHECK_INTERVAL_MS }, "ingest-env running");
 
 let shuttingDown = false;

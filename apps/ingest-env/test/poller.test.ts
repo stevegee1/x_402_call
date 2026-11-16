@@ -1,4 +1,4 @@
-import { CARBON_INTENSITY, type FetchFailure, type VersionWrite } from "@mx/env";
+import { CARBON_INTENSITY, type DatasetSpec, EMBEDDED_WIND_SOLAR, type FetchFailure, type VersionWrite } from "@mx/env";
 import { Metrics } from "@mx/shared";
 import { describe, expect, it } from "vitest";
 import { Poller, type PollerOptions, type PollerSource, type PollerStore } from "../src/poller";
@@ -8,7 +8,8 @@ const T0 = Date.parse("2026-11-07T14:10:00Z");
 const PUB = Date.parse("2026-11-07T14:09:40Z");
 const ROWS = [{ datetime: "2026-11-07T14:00:00", England: 200, Scotland: 30, Wales: 300 }];
 
-function harness(opts: Partial<{ modified: Array<number | null | Error>; records: Array<unknown[] | Error>; write: Array<number | Error>; failure: Error }> = {}) {
+function harness(opts: Partial<{ modified: Array<number | null | Error>; records: Array<unknown[] | Error>; write: Array<number | Error>; failure: Error; spec: DatasetSpec }> = {}) {
+  const spec = opts.spec ?? CARBON_INTENSITY;
   let now = T0;
   const modified = opts.modified ?? [];
   const records = opts.records ?? [];
@@ -23,12 +24,12 @@ function harness(opts: Partial<{ modified: Array<number | null | Error>; records
   };
   const source: PollerSource = {
     lastModified: async (id) => {
-      expect(id).toBe(CARBON_INTENSITY.resourceId);
+      expect(id).toBe(spec.resourceId);
       calls.lastModified++;
       return take(modified, PUB);
     },
-    records: async (id, limit) => {
-      expect([id, limit]).toEqual([CARBON_INTENSITY.resourceId, CARBON_INTENSITY.fetchLimit]);
+    records: async (id, limit, sort) => {
+      expect([id, limit, sort]).toEqual([spec.resourceId, spec.fetchLimit, spec.sort]);
       calls.records++;
       return take(records, ROWS);
     },
@@ -47,7 +48,7 @@ function harness(opts: Partial<{ modified: Array<number | null | Error>; records
   const metrics = new Metrics();
   const logs: Array<[string, object, string]> = [];
   const log = { info: (o: object, m: string) => logs.push(["info", o, m]), warn: (o: object, m: string) => logs.push(["warn", o, m]) };
-  const poller = new Poller(CARBON_INTENSITY, source, store, metrics, log, OPTS, () => now, () => 0.5);
+  const poller = new Poller(spec, source, store, metrics, log, OPTS, () => now, () => 0.5);
   return { poller, writes, failures, calls, metrics, logs, advance: (ms: number) => (now += ms) };
 }
 
@@ -196,7 +197,59 @@ describe("Poller", () => {
     expect(h.metrics.get("env_rows_flagged", { ...L, quality: "rejected" })).toBe(1);
     expect(h.metrics.get("env_rows_dropped_total", L)).toBe(1);
     expect(h.metrics.get("env_rows_duplicate_total", L)).toBe(1);
+    // One row in three could not be placed: far above the alert ratio, so the warning says why it matters.
+    expect(h.metrics.get("env_rows_dropped_ratio", L)).toBeCloseTo(1 / 3);
+    expect(h.logs.some(([lvl, , m]) => lvl === "warn" && m === "source rows could not be placed: the source format may have changed")).toBe(true);
+  });
+
+  it("calls a few stray rows routine, below the alert ratio", async () => {
+    const rows = Array.from({ length: 40 }, (_, i) => ({ datetime: new Date(Date.parse("2026-11-07T14:00:00Z") - 1_800_000 * i).toISOString().slice(0, 19), England: 1, Scotland: 1, Wales: 1 }));
+    const h = harness({ records: [[...rows, { datetime: "bad" }]] });
+    await h.poller.tick();
+    expect(h.writes[0]!.dropped).toBe(1);
+    expect(h.metrics.get("env_rows_dropped_ratio", L)).toBeCloseTo(1 / 41);
     expect(h.logs.some(([lvl, , m]) => lvl === "warn" && m === "source rows needed cleaning")).toBe(true);
+  });
+
+  it("warns when a whole-run resource fills the fetch limit, because the horizon was cut", async () => {
+    const spec = { ...EMBEDDED_WIND_SOLAR, fetchLimit: 2 };
+    const row = (sp: number) => ({ SETTLEMENT_DATE: "2026-11-16", SETTLEMENT_PERIOD: sp, DATE_GMT: "2026-11-16", TIME_GMT: `${String(Math.floor(sp / 2)).padStart(2, "0")}:${sp % 2 ? "30" : "00"}`, EMBEDDED_WIND_FORECAST: 1 });
+    const h = harness({ spec, records: [[row(21), row(22)], [row(21)]] });
+    await h.poller.tick();
+    const E = { dataset: spec.id };
+    expect(h.writes[0]!.observations).toHaveLength(8);
+    expect(h.metrics.get("env_fetch_truncated_total", E)).toBe(1);
+    expect(h.logs.some(([lvl, , m]) => lvl === "warn" && /row limit/.test(m))).toBe(true);
+    h.advance(600_000);
+    await h.poller.tick();
+    expect(h.metrics.get("env_fetch_truncated_total", E)).toBe(1); // a short read is not a cut
+  });
+
+  it("stores nothing when a whole-run resource is republished during the read, and reads again next check", async () => {
+    const spec = EMBEDDED_WIND_SOLAR;
+    const NEW = PUB + 1_800_000;
+    const row = { SETTLEMENT_DATE: "2026-11-16", SETTLEMENT_PERIOD: 21, DATE_GMT: "2026-11-16", TIME_GMT: "10:30", EMBEDDED_WIND_FORECAST: 1 };
+    // Before the read: PUB. After it: NEW (published mid-read). Next check: NEW, steady.
+    const h = harness({ spec, modified: [PUB, NEW, NEW, NEW], records: [[row]] });
+    expect(await h.poller.tick()).toBe("unstable");
+    expect(h.writes).toHaveLength(0);
+    expect(h.metrics.get("env_checks_total", { dataset: spec.id, result: "unstable" })).toBe(1);
+    h.advance(30_000);
+    expect(await h.poller.tick()).toBe("fetched");
+    expect(h.writes[0]!.publishedAt).toBe(NEW);
+    expect(h.calls).toEqual({ lastModified: 4, records: 2 });
+  });
+
+  it("never re-checks the publish time for a resource updated row by row", async () => {
+    const h = harness();
+    await h.poller.tick();
+    expect(h.calls).toEqual({ lastModified: 1, records: 1 });
+  });
+
+  it("never calls a full read truncated for a resource read by its newest rows", async () => {
+    const h = harness({ spec: { ...CARBON_INTENSITY, fetchLimit: 1 } });
+    await h.poller.tick();
+    expect(h.metrics.get("env_fetch_truncated_total", L)).toBe(0);
   });
 
   it("waits the check interval normally and backs off with a cap after failures", async () => {
@@ -235,5 +288,31 @@ describe("Poller", () => {
     await new Promise((r) => setTimeout(r, 30));
     expect(slow.status.lastCheckAt).toBe(before); // no further ticks
     expect(h.calls.lastModified).toBe(0);
+  });
+
+  it("start(delay) waits before the first tick, and stop() during the wait means no tick at all", async () => {
+    let checks = 0;
+    const mk = () =>
+      new Poller(
+        CARBON_INTENSITY,
+        { lastModified: async () => (checks++, PUB), records: async () => ROWS },
+        { writeVersion: async () => 1, recordFailure: async () => {} },
+        new Metrics(),
+        { info: () => {}, warn: () => {} },
+        { ...OPTS, checkMs: 60_000 },
+      );
+    const p = mk();
+    p.start(40);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(checks).toBe(0);
+    await new Promise((r) => setTimeout(r, 60));
+    expect(checks).toBe(1);
+    await p.stop();
+
+    const q = mk();
+    q.start(30);
+    await q.stop();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(checks).toBe(1);
   });
 });

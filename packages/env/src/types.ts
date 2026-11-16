@@ -1,6 +1,7 @@
 /**
  * Environmental time series (architecture.md §6). A dataset is a set of regions, each a series of
- * fixed-length periods. Each value carries a quality flag. We never invent a value: a missing or
+ * fixed-length periods. "Region" is the series key within a dataset: a place for carbon intensity
+ * (england, london), a quantity for the others (wind, wind_capacity, gas). Each value carries a quality flag. We never invent a value: a missing or
  * implausible input is stored as such, not filled in.
  */
 
@@ -21,9 +22,12 @@ export interface Observation {
 
 export interface CleanResult {
   observations: Observation[];
-  /** Source rows we couldn't place at all (no valid, aligned period start). */
+  /**
+   * Source rows not stored: no valid, aligned period start; every copy of a period repeated with
+   * different values; or every row of a fetch refused whole (mixed forecast runs).
+   */
   dropped: number;
-  /** Source rows repeating a period already seen in the same fetch; the last one wins. */
+  /** Extra copies of a period repeated with the same values in one fetch (one copy is kept). */
   duplicates: number;
 }
 
@@ -35,8 +39,15 @@ export interface DatasetSpec {
   regions: readonly string[];
   /** NESO Data Portal (CKAN) resource that holds the series. */
   resourceId: string;
+  /** CKAN datastore sort that puts the newest periods first, e.g. "datetime desc". */
+  sort: string;
   /** How many of the newest rows to read per fetch: the whole forward horizon plus some recent past. */
   fetchLimit: number;
+  /**
+   * True when the resource holds only the current forecast run, so each fetch reads all of it.
+   * A fetch that fills `fetchLimit` then means the horizon was cut, and the poller warns.
+   */
+  wholeResource: boolean;
   /** Turns raw datastore records into observations. Must not throw on bad records. */
   clean(records: readonly unknown[]): CleanResult;
 }

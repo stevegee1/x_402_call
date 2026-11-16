@@ -164,9 +164,10 @@ export default defineRailway((ctx) => {
     build: build("apps/ingest-env"),
     // /healthz never fails on NESO or database trouble, so an upstream outage can't restart-loop it.
     // /readyz (database) and /status are on the private network.
-    deploy: deploy("pnpm --filter @mx/ingest-env start", "/healthz"),
-    // One replica is enough for staging. Writes are safe with more: a per-dataset lock means a
-    // change is appended once.
+    // No overlap: old and new containers polling together would double our NESO request rate.
+    deploy: { ...deploy("pnpm --filter @mx/ingest-env start", "/healthz"), overlapSeconds: 0 },
+    // Exactly one: writes would be safe with more (a per-dataset lock appends each change once), but
+    // the NESO request cap (ENV_MIN_REQUEST_GAP_MS) is per process, so two replicas double our rate.
     replicas: { sfo: 1 },
     networking: { privateNetworkEndpoint: "ingest-env" },
     env: {
