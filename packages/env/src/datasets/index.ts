@@ -2,6 +2,7 @@ import type { DatasetSpec } from "../types";
 import { CARBON_INTENSITY } from "./carbon-intensity";
 import { EA_FLOOD_WARNINGS } from "./ea-flood-warnings";
 import { EA_RIVER_LEVELS } from "./ea-river-levels";
+import { ELEXON_MARKET_INDEX, ELEXON_SYSTEM_PRICES } from "./elexon-prices";
 import { DEMAND_FORECAST_2_14D } from "./demand-forecast-2-14d";
 import { EMBEDDED_WIND_SOLAR } from "./embedded-wind-solar";
 import { GENERATION_MIX } from "./generation-mix";
@@ -22,7 +23,7 @@ export const NESO_DATASETS: readonly DatasetSpec[] = [
 ];
 
 /** Every dataset ingest-env can store, from every source. */
-export const ENV_DATASETS: readonly DatasetSpec[] = [...NESO_DATASETS, EA_FLOOD_WARNINGS, EA_RIVER_LEVELS];
+export const ENV_DATASETS: readonly DatasetSpec[] = [...NESO_DATASETS, EA_FLOOD_WARNINGS, EA_RIVER_LEVELS, ELEXON_SYSTEM_PRICES, ELEXON_MARKET_INDEX];
 
 export { CARBON_INTENSITY, cleanCarbonIntensity } from "./carbon-intensity";
 export { EA_FLOOD_WARNINGS, cleanFloodWarnings, FLOOD_PERIOD_MS } from "./ea-flood-warnings";
@@ -32,3 +33,4 @@ export { EMBEDDED_WIND_SOLAR, cleanEmbeddedWindSolar, embeddedPeriodStart } from
 export { WIND_FORECAST_14D, cleanWindForecast14d, wind14dPeriodStart, wind14dRun } from "./wind-forecast-14d";
 export { DEMAND_FORECAST_2_14D, cleanDemandForecast214d, demand214dPeriodStart } from "./demand-forecast-2-14d";
 export { GENERATION_MIX, cleanGenerationMix } from "./generation-mix";
+export { ELEXON_SYSTEM_PRICES, ELEXON_MARKET_INDEX, cleanSystemPrices, cleanMarketIndex } from "./elexon-prices";

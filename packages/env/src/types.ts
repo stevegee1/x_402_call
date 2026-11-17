@@ -38,7 +38,9 @@ export interface DatasetSpec {
   periodMs: number;
   regions: readonly string[];
   /** Where it comes from: the NESO Data Portal (default) or the Environment Agency API. */
-  source?: "neso" | "ea";
+  source?: "neso" | "ea" | "elexon";
+  /** With a source that gives no publish time, fetch at most this often (default: every check). */
+  minFetchIntervalMs?: number;
   /** The source's resource: a NESO (CKAN) resource id, or an EA API path. */
   resourceId: string;
   /** True when a fetch with no rows is normal (no flood warnings in force), so it isn't flagged. */

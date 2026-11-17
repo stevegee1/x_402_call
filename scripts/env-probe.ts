@@ -11,7 +11,7 @@
  * cut, at least 99% of values are ok, and a forecast still reaches far enough ahead.
  * Soft check (warn): the newest period isn't older than expected (generation mix lags upstream).
  */
-import { type DatasetSpec, EaClient, ENV_DATASETS, NesoClient } from "../packages/env/src";
+import { type DatasetSpec, EaClient, ElexonClient, ENV_DATASETS, NesoClient } from "../packages/env/src";
 
 const HOUR = 3_600_000;
 /** How far ahead each forecast must reach (hard), or how recent the newest period must be (soft). */
@@ -34,7 +34,7 @@ const iso = (t: number) => (Number.isFinite(t) ? new Date(t).toISOString().slice
 async function probe(d: DatasetSpec): Promise<{ fails: string[]; warns: string[]; line: string }> {
   const fails: string[] = [];
   const warns: string[] = [];
-  const src = d.source === "ea" ? ea : client;
+  const src = d.source === "ea" ? ea : d.source === "elexon" ? new ElexonClient({ baseUrl: "https://data.elexon.co.uk", timeoutMs: 30_000 }) : client;
   const modified = await src.lastModified(d.resourceId);
   const records = await src.records(d.resourceId, d.fetchLimit, d.sort);
   const r = d.clean(records);

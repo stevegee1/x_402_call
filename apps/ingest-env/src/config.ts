@@ -9,6 +9,7 @@ export const configSchema = z
     DATABASE_URL: z.string().min(1, "DATABASE_URL is required"),
     NESO_BASE_URL: z.string().url().default("https://api.neso.energy"),
     EA_BASE_URL: z.string().url().default("https://environment.data.gov.uk"),
+    ELEXON_BASE_URL: z.string().url().default("https://data.elexon.co.uk"),
     /** Metadata check interval. The 5 s floor stops a misconfiguration from hammering a public portal. */
     ENV_CHECK_INTERVAL_MS: ms(30_000, 5_000),
     ENV_MAX_FETCH_INTERVAL_MS: ms(10 * 60_000, 60_000),

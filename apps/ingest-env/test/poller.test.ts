@@ -1,4 +1,4 @@
-import { CARBON_INTENSITY, type DatasetSpec, EA_FLOOD_WARNINGS, EMBEDDED_WIND_SOLAR, type FetchFailure, type VersionWrite } from "@mx/env";
+import { CARBON_INTENSITY, type DatasetSpec, EA_FLOOD_WARNINGS, ELEXON_SYSTEM_PRICES, EMBEDDED_WIND_SOLAR, type FetchFailure, type VersionWrite } from "@mx/env";
 import { Metrics } from "@mx/shared";
 import { describe, expect, it } from "vitest";
 import { Poller, type PollerOptions, type PollerSource, type PollerStore } from "../src/poller";
@@ -244,6 +244,16 @@ describe("Poller", () => {
     const h = harness();
     await h.poller.tick();
     expect(h.calls).toEqual({ lastModified: 1, records: 1 });
+  });
+
+  it("with no publish time, a dataset's minimum fetch interval holds fetches back", async () => {
+    const h = harness({ spec: ELEXON_SYSTEM_PRICES, modified: [null], records: [[]] });
+    expect(await h.poller.tick()).toBe("fetched");
+    h.advance(30_000);
+    expect(await h.poller.tick()).toBe("unchanged");
+    h.advance(270_000); // 5 min after the first fetch
+    expect(await h.poller.tick()).toBe("fetched");
+    expect(h.calls.records).toBe(2);
   });
 
   it("an empty fetch is not flagged for a dataset where empty is normal (no flood warnings in force)", async () => {

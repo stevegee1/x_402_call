@@ -85,8 +85,9 @@ export class Poller {
     try {
       modified = await this.source.lastModified(this.spec.resourceId);
       this.status.lastCheckAt = this.now();
+      const throttled = modified === null && this.lastFetchAt !== null && this.now() - this.lastFetchAt < (this.spec.minFetchIntervalMs ?? 0);
       const due =
-        modified === null ||
+        (modified === null && !throttled) ||
         modified !== this.seenModified ||
         this.lastFetchAt === null ||
         this.now() - this.lastFetchAt >= this.opts.maxFetchIntervalMs;

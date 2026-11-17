@@ -140,6 +140,15 @@ clusters (Slough, Docklands, Hayes; `packages/env/src/sites.ts`), read from the 
 feed. Series `st_<gauge>_<datum>`: levels on different datums (mASD, mAOD) never mix. Same licence
 and attribution.
 
+Elexon prices (Insights Solution API; use cleared with Elexon 2026-11-17), £/MWh per settlement
+period, polled every 5 minutes (Elexon sends no publish time):
+- `elexon.system_prices`: imbalance prices, series `ssp` and `sbp`. Revised through the settlement
+  runs, so each version is kept. Today's and yesterday's settlement dates are re-read each time.
+- `elexon.market_index`: wholesale market index price from APX, series `apx`. A period with no
+  trades is stored as missing, never as £0.
+Attribution: "Contains BMRS data © Elexon Limited copyright and database right <year>" (wording to
+confirm with Elexon). `ELEXON_BASE_URL` overrides the host.
+
 Dataset ids are stored with every row: never rename one. Only `neso.carbon_intensity` is served by
 the gateway today; the others are stored so their history starts now. It checks NESO's `last_modified` every 30 s and
 reads the records when that moves (and at least every 10 min). It cleans them, then appends only the

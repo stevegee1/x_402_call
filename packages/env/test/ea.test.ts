@@ -51,7 +51,7 @@ describe("EA flood warnings", () => {
 
   it("is registered as an EA dataset beside the NESO ones, under an id that never changes", () => {
     expect(EA_FLOOD_WARNINGS).toMatchObject({ id: "ea.flood_warnings", source: "ea", periodMs: 900_000 });
-    expect(ENV_DATASETS.map((d) => d.id)).toEqual([...NESO_DATASETS.map((d) => d.id), "ea.flood_warnings", "ea.river_levels"]);
+    expect(ENV_DATASETS.map((d) => d.id)).toEqual([...NESO_DATASETS.map((d) => d.id), "ea.flood_warnings", "ea.river_levels", "elexon.system_prices", "elexon.market_index"]);
   });
 });
 
