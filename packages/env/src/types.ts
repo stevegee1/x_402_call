@@ -37,8 +37,12 @@ export interface DatasetSpec {
   unit: string;
   periodMs: number;
   regions: readonly string[];
-  /** NESO Data Portal (CKAN) resource that holds the series. */
+  /** Where it comes from: the NESO Data Portal (default) or the Environment Agency API. */
+  source?: "neso" | "ea";
+  /** The source's resource: a NESO (CKAN) resource id, or an EA API path. */
   resourceId: string;
+  /** True when a fetch with no rows is normal (no flood warnings in force), so it isn't flagged. */
+  emptyIsNormal?: boolean;
   /** CKAN datastore sort that puts the newest periods first, e.g. "datetime desc". */
   sort: string;
   /** How many of the newest rows to read per fetch: the whole forward horizon plus some recent past. */

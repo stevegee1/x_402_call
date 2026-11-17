@@ -1,4 +1,4 @@
-import { CARBON_INTENSITY, NesoClient, PgEnvStore } from "@mx/env";
+import { CARBON_INTENSITY, EaClient, NesoClient, PgEnvStore } from "@mx/env";
 import { Metrics } from "@mx/shared";
 import { pino } from "pino";
 import { loadConfig, selectedDatasets } from "./config";
@@ -41,9 +41,11 @@ const neso = new NesoClient({
   minIntervalMs: cfg.ENV_MIN_REQUEST_GAP_MS,
   priorityResourceIds: [CARBON_INTENSITY.resourceId],
 });
+// The EA API is a separate host with its own limits; one dataset polls it, at the same cadence.
+const ea = new EaClient({ baseUrl: cfg.EA_BASE_URL, timeoutMs: cfg.ENV_HTTP_TIMEOUT_MS });
 const pollers = selectedDatasets(cfg).map(
   (spec) =>
-    new Poller(spec, neso, store, metrics, log, {
+    new Poller(spec, spec.source === "ea" ? ea : neso, store, metrics, log, {
       checkMs: cfg.ENV_CHECK_INTERVAL_MS,
       maxFetchIntervalMs: cfg.ENV_MAX_FETCH_INTERVAL_MS,
       maxBackoffMs: cfg.ENV_MAX_BACKOFF_MS,

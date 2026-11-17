@@ -128,6 +128,13 @@ for point-in-time backtests (architecture.md §6). It stores six NESO datasets (
 | `neso.demand_forecast_2_14d` | gb (national demand) | MW | days 2-14, each run replaces the resource; NESO archives only cardinal points |
 | `neso.generation_mix` | gas, coal, nuclear, wind, wind_embedded, hydro, imports, biomass, other, solar, storage, generation | MW | estimated outturn, rows updated in place; can lag upstream by days |
 
+It also stores Environment Agency flood warnings (`ea.flood_warnings`): every 15 minutes, the
+severity (1 severe flood warning, 2 flood warning, 3 flood alert, 4 no longer in force) of each
+flood area with a warning, as series `fa_<area id>`. The source keeps no history, so this is the
+only point-in-time record. Open Government Licence v3.0; wherever it is shown or sold it must carry
+"this uses Environment Agency flood and river level data from the real-time data API (Beta)", and
+it is not for safety-critical use. Set `EA_BASE_URL` to override the host.
+
 Dataset ids are stored with every row: never rename one. Only `neso.carbon_intensity` is served by
 the gateway today; the others are stored so their history starts now. It checks NESO's `last_modified` every 30 s and
 reads the records when that moves (and at least every 10 min). It cleans them, then appends only the

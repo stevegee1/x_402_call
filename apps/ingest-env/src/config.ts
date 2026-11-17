@@ -1,4 +1,4 @@
-import { type DatasetSpec, NESO_DATASETS } from "@mx/env";
+import { type DatasetSpec, ENV_DATASETS } from "@mx/env";
 import { z } from "zod";
 
 const ms = (def: number, min: number) => z.coerce.number().int().min(min).default(def);
@@ -8,6 +8,7 @@ export const configSchema = z
     NODE_ENV: z.string().default("development"),
     DATABASE_URL: z.string().min(1, "DATABASE_URL is required"),
     NESO_BASE_URL: z.string().url().default("https://api.neso.energy"),
+    EA_BASE_URL: z.string().url().default("https://environment.data.gov.uk"),
     /** Metadata check interval. The 5 s floor stops a misconfiguration from hammering a public portal. */
     ENV_CHECK_INTERVAL_MS: ms(30_000, 5_000),
     ENV_MAX_FETCH_INTERVAL_MS: ms(10 * 60_000, 60_000),
@@ -42,15 +43,15 @@ export const configSchema = z
 
 export type Config = z.infer<typeof configSchema>;
 
-/** The datasets named by ENV_DATASETS, in NESO_DATASETS order, or an error message. */
+/** The datasets named by ENV_DATASETS, in ENV_DATASETS order, or an error message. */
 export function parseDatasets(v: string): DatasetSpec[] | string {
-  if (v.trim() === "all") return [...NESO_DATASETS];
+  if (v.trim() === "all") return [...ENV_DATASETS];
   const ids = v.split(",").map((s) => s.trim()).filter(Boolean);
   if (ids.length === 0) return 'name at least one dataset, or "all"';
-  const known = new Set(NESO_DATASETS.map((d) => d.id));
+  const known = new Set(ENV_DATASETS.map((d) => d.id));
   const unknown = ids.filter((id) => !known.has(id));
   if (unknown.length > 0) return `unknown dataset ${unknown.join(", ")} (known: ${[...known].join(", ")})`;
-  return NESO_DATASETS.filter((d) => ids.includes(d.id));
+  return ENV_DATASETS.filter((d) => ids.includes(d.id));
 }
 
 /** The datasets to poll, from a config that passed validation. */

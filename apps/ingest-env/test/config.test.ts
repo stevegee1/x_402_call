@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { NESO_DATASETS } from "@mx/env";
+import { ENV_DATASETS } from "@mx/env";
 import { loadConfig } from "../src/config";
 
 const base = { DATABASE_URL: "postgres://x@localhost/db" };
@@ -47,7 +47,7 @@ describe("loadConfig", () => {
     const { selectedDatasets } = await import("../src/config");
     const c = loadConfig(base);
     expect(c.ENV_MIN_REQUEST_GAP_MS).toBe(1_100);
-    expect(selectedDatasets(c).map((d) => d.id)).toEqual(NESO_DATASETS.map((d) => d.id));
+    expect(selectedDatasets(c).map((d) => d.id)).toEqual(ENV_DATASETS.map((d) => d.id));
   });
 
   it("polls a named subset, in registry order, and refuses unknown or empty lists", async () => {

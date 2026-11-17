@@ -11,7 +11,7 @@
  * cut, at least 99% of values are ok, and a forecast still reaches far enough ahead.
  * Soft check (warn): the newest period isn't older than expected (generation mix lags upstream).
  */
-import { type DatasetSpec, NESO_DATASETS, NesoClient } from "../packages/env/src";
+import { type DatasetSpec, EaClient, ENV_DATASETS, NesoClient } from "../packages/env/src";
 
 const HOUR = 3_600_000;
 /** How far ahead each forecast must reach (hard), or how recent the newest period must be (soft). */
@@ -22,18 +22,21 @@ const EXPECT: Record<string, { aheadH?: number; staleH?: number }> = {
   "neso.wind_forecast_14d": { aheadH: 7 * 24 },
   "neso.demand_forecast_2_14d": { aheadH: 7 * 24 },
   "neso.generation_mix": { staleH: 48 },
+  "ea.flood_warnings": { staleH: 1 },
 };
 
 const only = process.argv.slice(2);
-const datasets = only.length ? NESO_DATASETS.filter((d) => only.includes(d.id)) : NESO_DATASETS;
+const datasets = only.length ? ENV_DATASETS.filter((d) => only.includes(d.id)) : ENV_DATASETS;
+const ea = new EaClient({ baseUrl: process.env.EA_BASE_URL ?? "https://environment.data.gov.uk", timeoutMs: 30_000 });
 const client = new NesoClient({ baseUrl: process.env.NESO_BASE_URL ?? "https://api.neso.energy", minIntervalMs: 1_100, timeoutMs: 30_000 });
-const iso = (t: number) => new Date(t).toISOString().slice(0, 16);
+const iso = (t: number) => (Number.isFinite(t) ? new Date(t).toISOString().slice(0, 16) : "-");
 
 async function probe(d: DatasetSpec): Promise<{ fails: string[]; warns: string[]; line: string }> {
   const fails: string[] = [];
   const warns: string[] = [];
-  const modified = await client.lastModified(d.resourceId);
-  const records = await client.records(d.resourceId, d.fetchLimit, d.sort);
+  const src = d.source === "ea" ? ea : client;
+  const modified = await src.lastModified(d.resourceId);
+  const records = await src.records(d.resourceId, d.fetchLimit, d.sort);
   const r = d.clean(records);
   const now = Date.now();
   const n = r.observations.length;
@@ -43,14 +46,14 @@ async function probe(d: DatasetSpec): Promise<{ fails: string[]; warns: string[]
   const last = Math.max(...starts);
   const missingNow = r.observations.filter((o) => o.quality !== "ok" && o.validFrom <= now + 24 * HOUR).length;
 
-  if (records.length === 0 || n === 0) fails.push("no rows");
+  if ((records.length === 0 || n === 0) && !d.emptyIsNormal) fails.push("no rows");
   if (r.dropped > 0) fails.push(`${r.dropped}/${records.length} rows could not be placed`);
   if (d.wholeResource && records.length >= d.fetchLimit) fails.push(`fetch filled its limit (${d.fetchLimit}): horizon cut`);
   // Only the next 24 h count: placeholder rows far ahead may legitimately be empty.
   if (missingNow > 0.01 * n) fails.push(`${missingNow} values in the next 24 h are not ok`);
   const e = EXPECT[d.id] ?? {};
   if (e.aheadH !== undefined && last < now + e.aheadH * HOUR) fails.push(`horizon ends ${iso(last)}, want ≥ ${e.aheadH} h ahead`);
-  if (e.staleH !== undefined && last < now - e.staleH * HOUR) warns.push(`newest period ${iso(last)} is ${Math.round((now - last) / HOUR)} h old (upstream lag)`);
+  if (e.staleH !== undefined && n > 0 && last < now - e.staleH * HOUR) warns.push(`newest period ${iso(last)} is ${Math.round((now - last) / HOUR)} h old (upstream lag)`);
   if (r.duplicates > 0) warns.push(`${r.duplicates} repeated periods`);
   for (const region of d.regions) if (!r.observations.some((o) => o.region === region && o.quality === "ok")) fails.push(`series ${region} has no ok value`);
 

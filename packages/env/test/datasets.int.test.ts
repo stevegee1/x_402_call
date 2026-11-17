@@ -2,7 +2,7 @@ import pg from "pg";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createTestDb } from "../../../apps/gateway/test/store/pg-db";
 import type {} from "../../../apps/gateway/test/store/pg-global-setup";
-import { type DatasetSpec, EMBEDDED_WIND_SOLAR, GENERATION_MIX, NESO_DATASETS, PgEnvStore, WIND_FORECAST_14D } from "../src";
+import { type DatasetSpec, EMBEDDED_WIND_SOLAR, GENERATION_MIX, ENV_DATASETS, PgEnvStore, WIND_FORECAST_14D } from "../src";
 
 /**
  * The new datasets end to end through the real store: NESO-shaped rows → the dataset's cleaner →
@@ -101,8 +101,8 @@ describe("NESO datasets through the store", () => {
   });
 
   it("stores every registered dataset's empty fetch as a logged no-op", async () => {
-    for (const spec of NESO_DATASETS) expect(await ingest(spec, [], T0)).toBe(0);
+    for (const spec of ENV_DATASETS) expect(await ingest(spec, [], T0)).toBe(0);
     const n = await sql.query("select count(distinct dataset)::int as n from env_fetch where ok and rows_seen = 0");
-    expect(n.rows[0].n).toBe(NESO_DATASETS.length);
+    expect(n.rows[0].n).toBe(ENV_DATASETS.length);
   });
 });

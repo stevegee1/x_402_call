@@ -1,5 +1,6 @@
 export * from "./types";
 export * from "./neso";
+export * from "./ea";
 export * from "./store";
 export * from "./datasets";
 export * from "./time";

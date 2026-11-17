@@ -149,7 +149,7 @@ export class Poller {
         this.metrics.inc("env_fetch_truncated_total", labels);
         this.log.warn({ dataset: this.spec.id, limit: this.spec.fetchLimit }, "fetch hit its row limit: the forecast horizon was cut, raise fetchLimit");
       }
-      if (cleaned.dropped > 0 || cleaned.duplicates > 0 || cleaned.observations.length === 0) {
+      if (cleaned.dropped > 0 || cleaned.duplicates > 0 || (cleaned.observations.length === 0 && !this.spec.emptyIsNormal)) {
         const alarming = records.length > 0 && cleaned.dropped / records.length >= DROP_ALERT_RATIO;
         this.log.warn(
           { dataset: this.spec.id, dropped: cleaned.dropped, duplicates: cleaned.duplicates, seen: cleaned.observations.length, rows: records.length },

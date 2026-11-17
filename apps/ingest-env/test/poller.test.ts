@@ -1,4 +1,4 @@
-import { CARBON_INTENSITY, type DatasetSpec, EMBEDDED_WIND_SOLAR, type FetchFailure, type VersionWrite } from "@mx/env";
+import { CARBON_INTENSITY, type DatasetSpec, EA_FLOOD_WARNINGS, EMBEDDED_WIND_SOLAR, type FetchFailure, type VersionWrite } from "@mx/env";
 import { Metrics } from "@mx/shared";
 import { describe, expect, it } from "vitest";
 import { Poller, type PollerOptions, type PollerSource, type PollerStore } from "../src/poller";
@@ -244,6 +244,15 @@ describe("Poller", () => {
     const h = harness();
     await h.poller.tick();
     expect(h.calls).toEqual({ lastModified: 1, records: 1 });
+  });
+
+  it("an empty fetch is not flagged for a dataset where empty is normal (no flood warnings in force)", async () => {
+    const h = harness({ spec: EA_FLOOD_WARNINGS, records: [[]] });
+    expect(await h.poller.tick()).toBe("fetched");
+    expect(h.logs.some(([lvl]) => lvl === "warn")).toBe(false);
+    const neso = harness({ records: [[]] });
+    await neso.poller.tick();
+    expect(neso.logs.some(([lvl, , m]) => lvl === "warn" && m === "source rows needed cleaning")).toBe(true);
   });
 
   it("never calls a full read truncated for a resource read by its newest rows", async () => {
