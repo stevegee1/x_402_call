@@ -135,6 +135,11 @@ only point-in-time record. Open Government Licence v3.0; wherever it is shown or
 "this uses Environment Agency flood and river level data from the real-time data API (Beta)", and
 it is not for safety-critical use. Set `EA_BASE_URL` to override the host.
 
+`ea.river_levels` keeps the 15-minute river and tidal levels at the gauges nearest our data-centre
+clusters (Slough, Docklands, Hayes; `packages/env/src/sites.ts`), read from the EA latest-readings
+feed. Series `st_<gauge>_<datum>`: levels on different datums (mASD, mAOD) never mix. Same licence
+and attribution.
+
 Dataset ids are stored with every row: never rename one. Only `neso.carbon_intensity` is served by
 the gateway today; the others are stored so their history starts now. It checks NESO's `last_modified` every 30 s and
 reads the records when that moves (and at least every 10 min). It cleans them, then appends only the

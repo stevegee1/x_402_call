@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cleanFloodWarnings, EA_FLOOD_WARNINGS, EaClient, ENV_DATASETS, FLOOD_PERIOD_MS, NESO_DATASETS, OBSERVED_AT } from "../src";
+import { CLUSTER_RIVER_SERIES, cleanFloodWarnings, cleanRiverLevels, EA_FLOOD_WARNINGS, EA_RIVER_LEVELS, EaClient, ENV_DATASETS, FLOOD_PERIOD_MS, NESO_DATASETS, OBSERVED_AT, RIVER_MEASURES, SITES } from "../src";
 
 const T = Date.parse("2026-11-17T07:09:30Z");
 const BUCKET = Date.parse("2026-11-17T07:00:00Z");
@@ -51,7 +51,49 @@ describe("EA flood warnings", () => {
 
   it("is registered as an EA dataset beside the NESO ones, under an id that never changes", () => {
     expect(EA_FLOOD_WARNINGS).toMatchObject({ id: "ea.flood_warnings", source: "ea", periodMs: 900_000 });
-    expect(ENV_DATASETS.map((d) => d.id)).toEqual([...NESO_DATASETS.map((d) => d.id), "ea.flood_warnings"]);
+    expect(ENV_DATASETS.map((d) => d.id)).toEqual([...NESO_DATASETS.map((d) => d.id), "ea.flood_warnings", "ea.river_levels"]);
+  });
+});
+
+describe("EA river levels", () => {
+  const M = "http://environment.data.gov.uk/flood-monitoring/id/measures/";
+  // Live shape, 2026-11-17.
+  const reading = (measure: string, dateTime: unknown, value: unknown) => ({ "@id": "x", dateTime, measure: M + measure, value });
+
+  it("keeps only the gauges we follow, each at its own reading time", () => {
+    const r = cleanRiverLevels([
+      reading("3650TH-level-stage-i-15_min-mASD", "2026-11-17T11:30:00Z", 0.996),
+      reading("0001-level-tidal_level-i-15_min-mAOD", "2026-11-17T11:30:00Z", -1.742),
+      reading("2603TH-level-stage-i-15_min-mASD", "2026-11-17T11:15:00Z", 1.787),
+      reading("9999XX-level-stage-i-15_min-mASD", "2026-11-17T11:30:00Z", 3), // not followed: ignored, not dropped
+    ]);
+    expect(r.dropped).toBe(0);
+    expect(r.observations.map((o) => [o.region, new Date(o.validFrom).toISOString(), o.value])).toEqual([
+      ["st_2603th_masd", "2026-11-17T11:15:00.000Z", 1.787],
+      ["st_0001_maod", "2026-11-17T11:30:00.000Z", -1.742],
+      ["st_3650th_masd", "2026-11-17T11:30:00.000Z", 0.996],
+    ]);
+  });
+
+  it("drops readings it can't place and flags impossible levels", () => {
+    const r = cleanRiverLevels([
+      reading("2603TH-level-stage-i-15_min-mASD", "2026-11-17T11:07:00Z", 1), // off the 15-min grid
+      reading("2609TH-level-stage-i-15_min-mASD", "2026-11-17 11:15", 1),
+      reading("2698TH-level-stage-i-15_min-mASD", "2026-11-17T11:15:00Z", 9999),
+      reading("3629TH-level-stage-i-15_min-mASD", "2026-11-17T11:15:00Z", [1, 2]),
+    ]);
+    expect(r.dropped).toBe(2);
+    expect(r.observations.map((o) => [o.region, o.quality, o.rawValue])).toEqual([
+      ["st_2698th_masd", "rejected", "9999"],
+      ["st_3629th_masd", "rejected", "[1,2]"],
+    ]);
+  });
+
+  it("maps every cluster with a site to followed gauges, and every gauge to a cluster", () => {
+    for (const s of SITES) expect(CLUSTER_RIVER_SERIES[s.cluster].length, s.id).toBeGreaterThan(0);
+    const mapped = Object.values(CLUSTER_RIVER_SERIES).flat();
+    expect(new Set(mapped)).toEqual(new Set(Object.keys(RIVER_MEASURES)));
+    expect(EA_RIVER_LEVELS.regions).toEqual(Object.keys(RIVER_MEASURES));
   });
 });
 
