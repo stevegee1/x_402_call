@@ -505,6 +505,7 @@ describe("I14: paid means delivered (sync settlement)", () => {
           once = false;
           throw new Error("connection reset"); // ...and then the reply is lost
         }
+        return true;
       };
       const first = await b.fetch(READING);
       expect(first.status).toBe(402);

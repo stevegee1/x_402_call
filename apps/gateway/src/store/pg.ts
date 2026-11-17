@@ -147,9 +147,9 @@ export class PgStore implements Store {
   private async insertRow(q: Q, p: NewPayment): Promise<boolean> {
     const r = await q.query(
       `insert into x402_payments (id, network, payer, nonce, amount_atomic, endpoint, resource, status, settle_mode, payload, requirements, valid_before, fx_usdc_gbp, fx_source, next_attempt_at, owed_since, armed_at)
-       values ($1, $2, lower($3), $4, $5, $6, $7, 'verified', $8, $9, $10, $11, $12, $13, $14, case when $15 then now() end, case when $8 = 'sync' then null else now() end)
+       values ($1, $2, lower($3), $4, $5, $6, $7, 'verified', $8, $9, $10, $11, $12, $13, $14, case when $15 then now() end, case when $16 then now() end)
        on conflict (network, payer, nonce) do nothing`,
-      [p.id, p.network, p.payer, p.nonce, p.amountAtomic.toString(), p.endpoint, p.resource, p.settleMode ?? "async", JSON.stringify(p.payload), JSON.stringify(p.requirements), p.validBefore, p.fxRate, p.fxSource, p.nextAttemptAt, p.owed === true],
+      [p.id, p.network, p.payer, p.nonce, p.amountAtomic.toString(), p.endpoint, p.resource, p.settleMode ?? "async", JSON.stringify(p.payload), JSON.stringify(p.requirements), p.validBefore, p.fxRate, p.fxSource, p.nextAttemptAt, p.owed === true, p.armed ?? (p.settleMode ?? "async") !== "sync"],
     );
     return r.rowCount === 1;
   }
@@ -160,7 +160,8 @@ export class PgStore implements Store {
 
   async admitPayment(p: Omit<NewPayment, "nextAttemptAt" | "settleMode">, o: AdmitOptions): Promise<Admission> {
     const insert = async (q: Q, mode: SettleMode, syncReason?: SyncReason): Promise<Admission> => {
-      const inserted = await this.insertRow(q, { ...p, settleMode: mode, owed: mode === "sync", nextAttemptAt: mode === "async" ? o.asyncAttemptAt : o.syncAttemptAt });
+      // Unarmed in both modes (I15): the request path arms it once the response is going out.
+      const inserted = await this.insertRow(q, { ...p, settleMode: mode, owed: mode === "sync", armed: false, nextAttemptAt: mode === "async" ? o.asyncAttemptAt : o.syncAttemptAt });
       if (!inserted) return { result: "duplicate" };
       return syncReason ? { result: "inserted", mode, syncReason } : { result: "inserted", mode };
     };
@@ -258,7 +259,8 @@ export class PgStore implements Store {
   }
 
   async armPayment(id: string, at: Date) {
-    await this.pool.query("update x402_payments set next_attempt_at = $2, armed_at = coalesce(armed_at, now()) where id = $1 and status = 'verified'", [id, at]);
+    const r = await this.pool.query("update x402_payments set next_attempt_at = $2, armed_at = coalesce(armed_at, now()) where id = $1 and status = 'verified'", [id, at]);
+    return r.rowCount === 1;
   }
 
   async paymentByNonce(network: string, payer: string, nonce: string) {

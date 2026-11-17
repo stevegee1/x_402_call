@@ -376,6 +376,26 @@ export function describeStoreContract(name: string, make: () => Promise<StoreHar
         expect(await s.exposure()).toEqual({ totalAtomic: 33_000n, payers: 1 });
       });
 
+      it("admits both modes unarmed (I15): an async payment counts as exposure but is armed only by the request path", async () => {
+        const p = newPayment();
+        expect(await admit(p)).toMatchObject({ mode: "async" });
+        expect((await s.getPayment(p.id))!.armedAt).toBeNull();
+        expect((await s.exposure()).totalAtomic).toBe(33_000n); // reserved while the handler runs
+        const due = new Date(Date.now() - 1);
+        await s.armPayment(p.id, due);
+        const row = (await s.getPayment(p.id))!;
+        expect(row.armedAt).toBeInstanceOf(Date);
+        expect(row.nextAttemptAt.getTime()).toBe(due.getTime());
+        const sync = newPayment();
+        expect(await admit(sync, false)).toMatchObject({ mode: "sync" });
+        expect((await s.getPayment(sync.id))!.armedAt).toBeNull();
+        // A refused response cancels it unarmed, which releases the reservation.
+        const q = newPayment();
+        await admit(q);
+        await s.cancelPayment(q.id, "handler_status_500");
+        expect((await s.getPayment(q.id))!).toMatchObject({ status: "cancelled", armedAt: null });
+      });
+
       it("falls back to sync when the per-payer cap would be exceeded; other payers are unaffected", async () => {
         const payer = newPayment().payer;
         expect(await admit(newPayment({ payer }))).toMatchObject({ mode: "async" });

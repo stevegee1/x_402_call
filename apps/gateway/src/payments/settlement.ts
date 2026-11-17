@@ -107,15 +107,25 @@ export class Settler {
     const auth = authOf(row);
     const asset = (row.requirements as PaymentRequirements).asset;
 
-    if (row.settleMode === "sync" && !row.armedAt && !opts.inline) {
-      // The request path never handed this to the facilitator (it died first). The worker must not
-      // submit it, whatever its clock says: confirm it on chain if someone else did, or wait out the
-      // expiry grace and fail it ("not charged").
+    if (!row.armedAt && !opts.inline) {
+      // The request path never armed this (I15): a sync payment it never handed to the facilitator,
+      // or an async one whose response never went out (refused, failed, client gone, replica died).
+      // The worker must not submit it, whatever its clock says: confirm it on chain if someone else
+      // did, or wait out the expiry grace and fail it ("not charged").
       const used = auth ? await this.consumedOnChain(asset, auth) : false;
       if (used === true) return this.markSettled(row, null);
       if (used === "unknown" || Date.now() < row.validBefore.getTime() + EXPIRY_GRACE_MS) {
         await this.store.failPayment(row.id, "never_submitted: awaiting expiry", false, new Date(row.validBefore.getTime() + EXPIRY_GRACE_MS + 5_000));
         return { ok: false, reason: "never_submitted", final: false, indeterminate: true };
+      }
+      if (row.settleMode === "async") {
+        // Never armed: our request path died (or failed to arm and to cancel) before the response
+        // went out. Not the buyer's default, so cancelled, not failed: no demotion, no exposure hold.
+        // Counted: a non-zero rate means crashes or database trouble on the request path.
+        await this.store.cancelPayment(row.id, "never_armed");
+        this.metrics.inc("x402_never_armed_total");
+        this.log.warn({ paymentId: row.id }, "async payment never armed (request path died); closed unpaid");
+        return { ok: false, reason: "never_armed", final: true };
       }
       return this.markFailed(row, "never_submitted", true);
     }

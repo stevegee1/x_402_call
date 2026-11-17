@@ -15,8 +15,8 @@ const START_RETRY_MS = 30_000;
 const START_LOOKUP_BUDGET_MS = 250;
 /**
  * A store read (history older than the memory window, or a revision) that takes longer than this
- * fails, so the handler answers 503 and the payment is cancelled before an async settle (2 s after
- * admission) could charge it. Pinned below ASYNC_SETTLE_DELAY_MS by a test.
+ * fails, so the handler answers 503 (never charged: async payments are armed only after a
+ * successful response, I15) instead of holding the buyer and a pool connection.
  */
 export const STORE_READ_DEADLINE_MS = 1_200;
 /**
@@ -26,9 +26,6 @@ export const STORE_READ_DEADLINE_MS = 1_200;
  */
 export const GATEWAY_ENV_POOL = { max: 8, timeouts: { statementMs: 5_000, queryMs: 6_000, connectMs: 5_000 } } as const;
 
-/** Kept free before an async settle may start: time for the 503 and the cancel to land. */
-export const SETTLE_MARGIN_MS = 500;
-
 /** Thrown when a store read runs out of its budget. */
 export class StoreReadTimeout extends Error {}
 
@@ -36,7 +33,7 @@ export class StoreReadTimeout extends Error {}
 async function within<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
   try {
-    if (ms <= 0) throw new StoreReadTimeout(`${what}: no time left before settlement`);
+    if (ms <= 0) throw new StoreReadTimeout(`${what}: no time left in its budget`);
     return await Promise.race([p, new Promise<never>((_, reject) => (timer = setTimeout(() => reject(new StoreReadTimeout(`${what} exceeded ${ms} ms`)), ms)))]);
   } finally {
     clearTimeout(timer);
@@ -152,21 +149,10 @@ export class GridHistory {
     return { window_start: w, cached_versions: this.cache.size, position: this.cache.position, reads: this.reads };
   }
 
-  /**
-   * A store read's budget: STORE_READ_DEADLINE_MS, cut further so it ends SETTLE_MARGIN_MS before an
-   * async payment's settle may start (`settleNotBefore`, epoch ms), however long admission took.
-   */
-  budget(settleNotBefore?: number): number {
-    if (settleNotBefore === undefined) return STORE_READ_DEADLINE_MS;
-    // Same clock as billing's admission and the settle worker (each replica's own). Clock skew
-    // between replicas comes out of SETTLE_MARGIN_MS.
-    return Math.min(STORE_READ_DEADLINE_MS, settleNotBefore - SETTLE_MARGIN_MS - this.now());
-  }
-
   private async timed<T>(read: () => Promise<T>, ms: number, what: string): Promise<T> {
     try {
       // No time left: refuse without issuing the query, so no connection is spent on an abandoned read.
-      if (ms <= 0) throw new StoreReadTimeout(`${what}: no time left before settlement`);
+      if (ms <= 0) throw new StoreReadTimeout(`${what}: no time left in its budget`);
       return await within(read(), ms, what);
     } catch (e) {
       if (e instanceof StoreReadTimeout) this.storeTimeouts++;

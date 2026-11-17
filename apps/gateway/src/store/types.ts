@@ -45,6 +45,11 @@ export type NewPayment = Pick<
   settleMode?: SettleMode;
   /** Owe the data from admission (sync payments, I14). */
   owed?: boolean;
+  /**
+   * Armed (due to the settlement worker at nextAttemptAt) on insert. Default: async yes, sync no.
+   * Admission passes false for both: a payment is armed only once its response is going out (I15).
+   */
+  armed?: boolean;
 };
 
 /** Caps on value served against unsettled payments, across every replica. */
@@ -71,6 +76,10 @@ export interface AdmitOptions {
   /** Admission time; the hold and demotion windows end relative to it. */
   now: Date;
   /** next_attempt_at for each outcome: async waits for the handler; sync keeps the worker away while settling inline. */
+  /**
+   * When the worker first looks at an async payment that was never armed (the request died before
+   * its response went out): after the authorization expires, so it can only confirm or fail it.
+   */
   asyncAttemptAt: Date;
   syncAttemptAt: Date;
 }
@@ -187,7 +196,8 @@ export interface Store {
    * unarmed (never due): only once the request path is about to hand them to the facilitator are
    * they armed, so a request that dies before that never gets charged by the worker later.
    */
-  armPayment(id: string, at: Date): Promise<void>;
+  /** Returns false when the row is no longer verified (cancelled, settled or failed): nothing was armed. */
+  armPayment(id: string, at: Date): Promise<boolean>;
   /** The payment for an authorization, if one was recorded (payer matched lowercase). */
   paymentByNonce(network: string, payer: string, nonce: string): Promise<PaymentRow | null>;
   /**

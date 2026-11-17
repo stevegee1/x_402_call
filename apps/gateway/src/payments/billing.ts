@@ -14,10 +14,17 @@ import { FacilitatorUnavailableError } from "./facilitator";
 import { EXPIRY_GRACE_MS, type SettleOutcome } from "./settlement";
 
 /** Async mode: give the request path this long to serve or cancel before the worker may settle. */
-/** An async x402 payment can be settled this long after admission: a handler must answer well inside it. */
+/** An async x402 payment is due to the settlement worker this long after it is armed (its response went out). */
 export const ASYNC_SETTLE_DELAY_MS = 2_000;
 /** If the authorization expires sooner than this, settle inline rather than queueing. */
 const MIN_ASYNC_VALIDITY_MS = 30_000;
+/** Slack over the advertised maxTimeoutSeconds for clock skew between buyer and gateway. */
+const MAX_ASYNC_VALIDITY_SLACK_MS = 60_000;
+/**
+ * An async payment is armed only if its authorization outlives the settle delay by this much, so
+ * the worker can still submit it; nearer expiry, the response is withheld (not charged).
+ */
+const ARM_MIN_REMAINING_MS = ASYNC_SETTLE_DELAY_MS + 10_000;
 /**
  * How long one delivery of an owed payment may hold it before it is presumed dead (a replica that
  * died mid-request). Far above any handler's time; a handler slower than this could let a second
@@ -132,6 +139,19 @@ const json = (body: unknown, status: number, headers: Record<string, string> = {
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
 
 /** Replaces the response a handler produced, without inheriting any of its headers. */
+/** Withholds the handler's response for an unarmed async payment: cancels it (best effort) and answers 503. */
+async function withhold(c: Context<AppEnv>, d: AppDeps, id: string, error: string, detail: string) {
+  await d.store.cancelPayment(id, error).catch((e) => d.log.error({ err: e, paymentId: id }, "cancel failed; the payment stays unarmed, never charged"));
+  await c.res.body?.cancel().catch(() => {});
+  return replaceResponse(c, c.json({ error, detail }, 503, { "Retry-After": "5" }));
+}
+
+/** After a cancel: true unless the row is settled (the cancel only touches verified rows). */
+async function stillUnsettled(d: AppDeps, id: string): Promise<boolean> {
+  const row = await d.store.getPayment(id).catch(() => null);
+  return row !== null && row.status !== "settled";
+}
+
 function replaceResponse(c: Context<AppEnv>, res: Response) {
   c.res = undefined as unknown as Response; // Hono copies the old response's headers on assignment
   c.res = res;
@@ -222,7 +242,14 @@ async function chargeX402(c: Context<AppEnv>, next: () => Promise<void>, resourc
   const validBefore = new Date(Number(auth.validBefore) * 1000);
   // Async only if configured and the authorisation outlives the settle delay comfortably; the store
   // then admits it as async only if global and per-payer exposure (all replicas) stay within the caps.
-  const wantAsync = d.cfg.SETTLEMENT_MODE === "async" && resource.settlement !== "sync" && validBefore.getTime() - Date.now() >= MIN_ASYNC_VALIDITY_MS;
+  // Async also needs a validity no longer than we advertise: a never-armed async payment holds
+  // exposure until its authorization expires, so a far-future validBefore would hold it for ever.
+  const validFor = validBefore.getTime() - Date.now();
+  const wantAsync =
+    d.cfg.SETTLEMENT_MODE === "async" &&
+    resource.settlement !== "sync" &&
+    validFor >= MIN_ASYNC_VALIDITY_MS &&
+    validFor <= d.cfg.MAX_TIMEOUT_SECONDS * 1_000 + MAX_ASYNC_VALIDITY_SLACK_MS;
 
   const [fx, tier] = await Promise.all([d.fx.usdcGbp(), tierLookup]);
   const id = randomUUID();
@@ -247,8 +274,10 @@ async function chargeX402(c: Context<AppEnv>, next: () => Promise<void>, resourc
       caps: d.identity ? d.identity.capsFor(tier.tier) : d.exposureCaps,
       failures: d.failurePolicy,
       now: new Date(now),
-      // Async: let the handler finish first. Sync: keep the worker away while we settle inline.
-      asyncAttemptAt: new Date(now + ASYNC_SETTLE_DELAY_MS),
+      // Both modes are admitted unarmed (I15), so the worker can't charge a request still being
+      // served. If it is never armed, the worker only looks after the authorization has expired,
+      // when settleNow can only confirm it on chain or fail it ("not charged").
+      asyncAttemptAt: new Date(validBefore.getTime() + EXPIRY_GRACE_MS + 5_000),
       // Sync: unarmed until the request path hands it to the facilitator (armPayment). If the request
       // dies first, the worker only sees it once the authorization has expired past the grace, when
       // settleNow can only confirm on chain or fail it ("not charged"): it never submits it.
@@ -305,14 +334,48 @@ async function chargeX402(c: Context<AppEnv>, next: () => Promise<void>, resourc
     c.res.headers.set("X-Settlement", "settled");
     if (!delivered) c.res.headers.set(PAYMENT_OWED_HEADER, "true");
   } else {
-    // Async: the worker may settle from this moment. A handler that can be slow must answer (and so
-    // let a >= 400 cancel) before it; see GridHistory's store-read budget.
-    c.set("payment", { id, payer, settleNotBefore: now + ASYNC_SETTLE_DELAY_MS });
+    // Async (I15): served before settlement, but charged only for a response that goes out. The
+    // payment stays unarmed while the handler runs, so however long it takes the worker can't
+    // settle it; it is armed only once the response succeeded and the client is still there.
+    c.set("payment", { id, payer });
     await next();
-    if (c.res.status >= 400) {
-      // Cancelling also releases the exposure: it is derived from verified async rows.
-      await d.store.cancelPayment(id, `handler_status_${c.res.status}`);
+    if (c.res.status >= 400 || c.req.raw.signal?.aborted) {
+      // Never armed, so even if this write fails the worker can't charge it. Cancelling also
+      // releases the exposure (derived from verified async rows).
+      await d.store
+        .cancelPayment(id, c.res.status >= 400 ? `handler_status_${c.res.status}` : "client_gone_before_settle")
+        .catch((e) => d.log.error({ err: e, paymentId: id }, "cancel failed; the payment stays unarmed, never charged"));
       return;
+    }
+    // Too near expiry to settle after the delay: withhold and cancel (it was never armed).
+    if (validBefore.getTime() - Date.now() < ARM_MIN_REMAINING_MS) {
+      d.metrics.inc("x402_arm_refused_total", { resource: resource.id, reason: "near_expiry" });
+      return withhold(c, d, id, "payment_expired", "the payment authorization expires too soon to settle; you have not been charged, retry with a new payment");
+    }
+    let armed: boolean;
+    try {
+      armed = await d.store.armPayment(id, new Date(Date.now() + ASYNC_SETTLE_DELAY_MS));
+    } catch (e) {
+      // The write may or may not have committed. Only a successful cancel makes "not charged" true;
+      // if the cancel fails too, the outcome is unknown, so the buyer gets what they may have paid for.
+      d.log.error({ err: e, paymentId: id }, "arming an async payment failed");
+      d.metrics.inc("x402_arm_failed_total", { resource: resource.id });
+      const cancelled = await d.store.cancelPayment(id, "arm_failed").then(
+        () => true,
+        () => false,
+      );
+      if (cancelled && (await stillUnsettled(d, id))) {
+        await c.res.body?.cancel().catch(() => {});
+        return replaceResponse(c, c.json({ error: "payment_unavailable", detail: "the payment could not be recorded; you have not been charged" }, 503, { "Retry-After": "5" }));
+      }
+      d.log.error({ paymentId: id }, "arm and cancel both failed: outcome unknown, serving the response");
+      armed = true; // treated as armed: serve, and let the worker (armed) or never_armed (unarmed) finish it
+    }
+    if (!armed) {
+      // The row left 'verified' while the handler ran (the worker closed it at expiry): nothing can
+      // be charged now, so the data is not served.
+      d.metrics.inc("x402_arm_refused_total", { resource: resource.id, reason: "not_verified" });
+      return withhold(c, d, id, "payment_expired", "the payment authorization expired before the response was ready; you have not been charged");
     }
     c.res.headers.set("X-Payment-Id", id);
     c.res.headers.set("X-Settlement", "pending");

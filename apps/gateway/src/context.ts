@@ -52,6 +52,6 @@ export type AppEnv = {
     resolution: Resolution<unknown>;
     account: CreditAccount;
     /** Set by billing for x402 payments, before the handler runs. */
-    payment: { id: string; payer: string; settleNotBefore?: number };
+    payment: { id: string; payer: string };
   };
 };

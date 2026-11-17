@@ -5,8 +5,7 @@ import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GridProduct } from "../../../src/products/grid";
 import { GridFeed } from "../../../src/products/grid/feed";
-import { ASYNC_SETTLE_DELAY_MS } from "../../../src/payments/billing";
-import { GATEWAY_ENV_POOL, GridHistory, SETTLE_MARGIN_MS, STORE_READ_DEADLINE_MS } from "../../../src/products/grid/history";
+import { GATEWAY_ENV_POOL, GridHistory, STORE_READ_DEADLINE_MS } from "../../../src/products/grid/history";
 import { STORE_LIMITS, StoreGridSource } from "../../../src/products/grid/store-source";
 import { ADMIN_TOKEN, BASE_URL, createTestEnv, type TestEnv } from "../../helpers";
 import { CUR, T0 } from "./fixtures";
@@ -344,15 +343,14 @@ describe("grid on the version store: live view, point-in-time history, revisions
     expect((await res.json()).data[0].from).toBe(iso(CUR));
   });
 
-  it("a slow database read ends as a 503 before an async payment could settle, and is cancelled", async () => {
-    expect(STORE_READ_DEADLINE_MS).toBeLessThanOrEqual(ASYNC_SETTLE_DELAY_MS - 500); // a margin for the cancel itself
+  it("a slow database read ends as a 503 at its deadline, and is cancelled, never charged", async () => {
     store.readDelayMs = 2_500; // slower than the async settle delay
     const old = CUR - 10 * DAY; // outside the memory window: a store read
     const started = performance.now();
     const res = await paying().fetch(`${G}/england/history?from=${iso(old)}&to=${iso(old + P)}`);
     const took = performance.now() - started;
     expect(res.status).toBe(503);
-    expect(took).toBeLessThan(ASYNC_SETTLE_DELAY_MS - 300); // answered well before the worker may settle
+    expect(took).toBeLessThan(STORE_READ_DEADLINE_MS + 500); // bounded: the buyer isn't held for the slow query
     const rows = await payments();
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ status: "cancelled", error: "handler_status_503" }); // async is the test default
@@ -366,36 +364,6 @@ describe("grid on the version store: live view, point-in-time history, revisions
     expect(STORE_READ_DEADLINE_MS).toBeLessThan(statementMs);
     expect(statementMs).toBeLessThan(queryMs); // the server cancels first on a live database; the client guard catches a dead one
     expect(connectMs).toBeGreaterThan(0);
-  });
-
-  it("the store-read budget ends before this payment's settle, however long admission took", () => {
-    const h = new GridHistory(cache, store);
-    const now = Date.now();
-    expect(h.budget()).toBe(STORE_READ_DEADLINE_MS); // credits, sessions, sync x402: the plain deadline
-    expect(h.budget(now + ASYNC_SETTLE_DELAY_MS)).toBe(STORE_READ_DEADLINE_MS); // fast admission
-    expect(h.budget(now + 1_000)).toBe(1_000 - SETTLE_MARGIN_MS); // admission ate a second
-    expect(h.budget(now + 300)).toBeLessThanOrEqual(0); // nothing left: answer 503 at once
-  });
-
-  it("billing hands the handler this payment's settle time: a slow admission leaves no time, so no query and no charge", async () => {
-    const admit = env.store.admitPayment.bind(env.store);
-    env.store.admitPayment = async (...args: Parameters<typeof admit>) => {
-      const r = await admit(...args);
-      vi.setSystemTime(Date.now() + 1_600); // admission took 1.6 s: the worker may settle 0.4 s from now
-      return r;
-    };
-    const old = CUR - 10 * DAY; // a store read
-    const res = await paying().fetch(`${G}/england/history?from=${iso(old)}&to=${iso(old + P)}`);
-    expect(res.status).toBe(503);
-    const rev = await paying().fetch(`${G}/england/revisions?period=${iso(old)}`);
-    expect(rev.status).toBe(503);
-    expect(store.calls.filter((c) => c === "asOf" || c === "revisions")).toEqual([]); // both refused before querying
-    for (const row of await payments()) expect(row).toMatchObject({ status: "cancelled", error: "handler_status_503" });
-
-    // The same slow admission on credits (no async settle) keeps the full budget and is served.
-    const key = await creditsKey(1);
-    const ok = await env.fetch(`${G}/england/history?from=${iso(old)}&to=${iso(old + P)}`, { headers: { authorization: `Bearer ${key}` } });
-    expect(ok.status).toBe(200);
   });
 
   it("with no time left before the settle, a store read answers 503 at once and is cancelled", async () => {

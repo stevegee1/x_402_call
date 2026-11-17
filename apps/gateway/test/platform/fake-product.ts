@@ -35,6 +35,8 @@ export class AcmeProduct implements Product<AcmeState> {
   handlerCalls = 0;
   /** The reading handler throws (a bug): Hono answers 500 from onError, not from the handler. */
   handlerThrows = false;
+  /** When set, acme.reading waits on it before answering: a slow handler. */
+  handlerGate?: Promise<void>;
   adminCalls = 0;
 
   resolve(c: ProductContext): Resolution<AcmeState> | Response {
@@ -44,7 +46,8 @@ export class AcmeProduct implements Product<AcmeState> {
   }
 
   routes(r: ProductRoutes<AcmeState>): void {
-    r.paid("acme.reading", (c, s) => {
+    r.paid("acme.reading", async (c, s) => {
+      if (this.handlerGate) await this.handlerGate;
       this.handlerCalls++;
       if (this.handlerThrows) throw new Error("handler bug");
       if (this.handlerStatus >= 400) return c.json({ error: "upstream_failed" }, this.handlerStatus as 500);

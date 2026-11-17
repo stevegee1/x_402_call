@@ -50,8 +50,8 @@ export class MemoryStore implements Store {
     if (this.nonces.has(k)) return "duplicate" as const;
     this.nonces.set(k, p.id);
     const now = new Date();
-    const { owed, ...row } = p;
-    this.payments.set(p.id, { ...row, payer: p.payer.toLowerCase(), status: "verified", settleMode: p.settleMode ?? "async", attempts: 0, txHash: null, error: null, createdAt: now, settledAt: null, owedSince: owed ? now : null, armedAt: (p.settleMode ?? "async") === "sync" ? null : now });
+    const { owed, armed: _armed, ...row } = p;
+    this.payments.set(p.id, { ...row, payer: p.payer.toLowerCase(), status: "verified", settleMode: p.settleMode ?? "async", attempts: 0, txHash: null, error: null, createdAt: now, settledAt: null, owedSince: owed ? now : null, armedAt: (p.armed ?? (p.settleMode ?? "async") !== "sync") ? now : null });
     return "inserted" as const;
   }
 
@@ -94,10 +94,10 @@ export class MemoryStore implements Store {
 
   async armPayment(id: string, at: Date) {
     const p = this.payments.get(id);
-    if (p?.status === "verified") {
-      p.nextAttemptAt = at;
-      p.armedAt ??= new Date();
-    }
+    if (p?.status !== "verified") return false;
+    p.nextAttemptAt = at;
+    p.armedAt ??= new Date();
+    return true;
   }
 
   async paymentByNonce(network: string, payer: string, nonce: string) {
@@ -178,7 +178,8 @@ export class MemoryStore implements Store {
         else syncReason = "cap";
       }
     }
-    const r = await this.insertPayment({ ...p, settleMode: mode, owed: mode === "sync", nextAttemptAt: mode === "async" ? o.asyncAttemptAt : o.syncAttemptAt });
+    // Unarmed in both modes (I15): the request path arms it once the response is going out.
+    const r = await this.insertPayment({ ...p, settleMode: mode, owed: mode === "sync", armed: false, nextAttemptAt: mode === "async" ? o.asyncAttemptAt : o.syncAttemptAt });
     if (r === "duplicate") return { result: "duplicate" };
     return syncReason ? { result: "inserted", mode, syncReason } : { result: "inserted", mode };
   }

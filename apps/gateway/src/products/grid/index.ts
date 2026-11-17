@@ -253,7 +253,7 @@ export class GridProduct implements Product<GridState> {
       "grid.history",
       async (c, s) => {
         const p = historyParams(c, s.now) as HistoryParams; // validated in the precheck
-        const read = await history.history(s.country, p.from, p.to, p.asOf, history.budget(c.get("payment")?.settleNotBefore)).catch(() => null);
+        const read = await history.history(s.country, p.from, p.to, p.asOf).catch(() => null);
         if (!read) return unavailable(c); // billing refunds credits and cancels x402 (sync runs the handler before settling) (I5)
         const { rows } = read;
         // From the cache only: an extra store round trip here could outlast the async settle delay.
@@ -280,7 +280,7 @@ export class GridProduct implements Product<GridState> {
       "grid.revisions",
       async (c, s) => {
         const period = revisionPeriod(c) as number;
-        const read = await history.revisions(s.country, period, history.budget(c.get("payment")?.settleNotBefore)).catch(() => null);
+        const read = await history.revisions(s.country, period).catch(() => null);
         if (!read) return unavailable(c);
         const { rows } = read;
         if (rows.length === 0) return noHistory(c, s.country, history.cachedHistoryFrom(s.country), "this half-hour has no recorded version");
