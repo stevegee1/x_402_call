@@ -243,6 +243,9 @@ importers:
 
   packages/env:
     dependencies:
+      csv-parse:
+        specifier: 7.0.3
+        version: 7.0.3
       pg:
         specifier: 8.23.1
         version: 8.23.1
@@ -1425,6 +1428,9 @@ packages:
 
   crypt@0.0.2:
     resolution: {integrity: sha512-mCxBlsHFYh9C+HVpiEacem8FEBnMXgU9gy4zmNC+SXAZNB/1idgp/aulFJ4FgCi7GPEVbfyng092GqL2k2rmow==}
+
+  csv-parse@7.0.3:
+    resolution: {integrity: sha512-YFd3QM/yo17vH91L1IOZuvl09zM0zEEtdfTcOCKWcMdM++MNaQSyp09slXyFCLaPXvHstQFx/xC8myiFHSMUvw==}
 
   debug@4.4.3:
     resolution: {integrity: sha512-RGwwWnwQvkVfavKVt22FGLw+xYSdzARwm0ru6DhTVA3umU5hZc28V3kO4stgYryrTlLpuvgI9GiijltAjNbcqA==}
@@ -3587,6 +3593,8 @@ snapshots:
       which: 2.0.2
 
   crypt@0.0.2: {}
+
+  csv-parse@7.0.3: {}
 
   debug@4.4.3:
     dependencies:

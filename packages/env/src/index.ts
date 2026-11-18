@@ -10,3 +10,6 @@ export { EnvCache, type CacheSource, type EnvCacheOptions } from "./cache";
 export { EnvFollower, type FollowerStore, type FollowerLog } from "./follower";
 export * from "./sites";
 export { EnvHistory, GATEWAY_ENV_POOL, STORE_READ_DEADLINE_MS, StoreReadTimeout, type HistoryStore, type ReadPath } from "./history";
+export { EaGeoClient, EA_GEO_ATTRIBUTION, type EaGeoClientOptions, type SiteFeatureRecord } from "./ea-geo";
+export { CkanCsvClient, RELEASE_URL, type CkanCsvClientOptions } from "./ckan-csv";
+export { pointInGeometry, bngDistanceM, haversineM, type GeoJsonGeometry } from "./geo";

@@ -10,6 +10,8 @@ export const configSchema = z
     NESO_BASE_URL: z.string().url().default("https://api.neso.energy"),
     EA_BASE_URL: z.string().url().default("https://environment.data.gov.uk"),
     ELEXON_BASE_URL: z.string().url().default("https://data.elexon.co.uk"),
+    /** UK government data catalogue (CKAN API), for datasets released as CSV files (DESNZ heat networks). */
+    CKAN_BASE_URL: z.string().url().default("https://ckan.publishing.service.gov.uk"),
     /** Metadata check interval. The 5 s floor stops a misconfiguration from hammering a public portal. */
     ENV_CHECK_INTERVAL_MS: ms(30_000, 5_000),
     ENV_MAX_FETCH_INTERVAL_MS: ms(10 * 60_000, 60_000),

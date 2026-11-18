@@ -85,12 +85,14 @@ export class Poller {
     try {
       modified = await this.source.lastModified(this.spec.resourceId);
       this.status.lastCheckAt = this.now();
-      const throttled = modified === null && this.lastFetchAt !== null && this.now() - this.lastFetchAt < (this.spec.minFetchIntervalMs ?? 0);
+      // minFetchIntervalMs is a floor on reads: only a new publish time (a new release) beats it.
+      // Without it, a source with no publish time is read on every check, and every source at
+      // least every maxFetchIntervalMs.
+      const tooSoon = this.lastFetchAt !== null && this.now() - this.lastFetchAt < (this.spec.minFetchIntervalMs ?? 0);
       const due =
-        (modified === null && !throttled) ||
-        modified !== this.seenModified ||
         this.lastFetchAt === null ||
-        this.now() - this.lastFetchAt >= this.opts.maxFetchIntervalMs;
+        (modified !== null && modified !== this.seenModified) ||
+        (!tooSoon && (modified === null || modified !== this.seenModified || this.now() - this.lastFetchAt! >= this.opts.maxFetchIntervalMs));
       if (!due) {
         this.metrics.inc("env_checks_total", { ...labels, result: "unchanged" });
         this.succeeded();
@@ -182,10 +184,12 @@ export class Poller {
 
   /** Delay before the next tick: the check interval, or full-jitter exponential backoff after failures. */
   nextDelay(): number {
+    // A slow-moving dataset may check less often than the default (a quarterly release needn't be asked about every 30 s).
+    const checkMs = Math.max(this.opts.checkMs, this.spec.checkIntervalMs ?? 0);
     const f = this.status.consecutiveFailures;
-    if (f === 0) return this.opts.checkMs;
-    const ceiling = Math.min(this.opts.maxBackoffMs, this.opts.checkMs * 2 ** Math.min(f, 20));
-    return Math.max(this.opts.checkMs, Math.floor(ceiling * this.random()));
+    if (f === 0) return checkMs;
+    const ceiling = Math.min(Math.max(this.opts.maxBackoffMs, checkMs), checkMs * 2 ** Math.min(f, 20));
+    return Math.max(checkMs, Math.floor(ceiling * this.random()));
   }
 
   /**

@@ -1,4 +1,4 @@
-import { CARBON_INTENSITY, type DatasetSpec, EA_FLOOD_WARNINGS, ELEXON_SYSTEM_PRICES, EMBEDDED_WIND_SOLAR, type FetchFailure, type VersionWrite } from "@mx/env";
+import { CARBON_INTENSITY, DESNZ_HEAT_NETWORKS, EA_WATER_AVAILABILITY, type DatasetSpec, EA_FLOOD_WARNINGS, ELEXON_SYSTEM_PRICES, EMBEDDED_WIND_SOLAR, type FetchFailure, type VersionWrite } from "@mx/env";
 import { Metrics } from "@mx/shared";
 import { describe, expect, it } from "vitest";
 import { Poller, type PollerOptions, type PollerSource, type PollerStore } from "../src/poller";
@@ -333,5 +333,50 @@ describe("Poller", () => {
     await q.stop();
     await new Promise((r) => setTimeout(r, 50));
     expect(checks).toBe(1);
+  });
+});
+
+describe("Poller cadence for slow-moving site data", () => {
+  const H = 3_600_000;
+  const geoRows = () => [];
+
+  it("minFetchIntervalMs is a floor: no read every maxFetchIntervalMs when the source gives no publish time", async () => {
+    const h = harness({ spec: EA_WATER_AVAILABILITY, modified: [null], records: [geoRows()] });
+    expect(await h.poller.tick()).toBe("fetched");
+    for (const step of [10 * 60_000, 60 * 60_000, 4 * H]) {
+      h.advance(step);
+      expect(await h.poller.tick()).toBe("unchanged"); // well past maxFetchIntervalMs (10 min), inside the 6 h floor
+    }
+    h.advance(H); // 6 h 10 min after the first read
+    expect(await h.poller.tick()).toBe("fetched");
+    expect(h.calls.records).toBe(2);
+  });
+
+  it("a new release (publish time moved) is read at once, floor or not", async () => {
+    const R1 = Date.parse("2026-08-10T08:39:36Z");
+    const R2 = Date.parse("2026-11-07T14:00:00Z");
+    const h = harness({ spec: DESNZ_HEAT_NETWORKS, modified: [R1, R1, R2], records: [[]] });
+    expect(await h.poller.tick()).toBe("fetched");
+    h.advance(20 * 60_000);
+    expect(await h.poller.tick()).toBe("unchanged"); // same release, inside the floor
+    h.advance(20 * 60_000);
+    expect(await h.poller.tick()).toBe("fetched"); // new release
+  });
+
+  it("checks a slow dataset at its own interval, and backs off from it, not from 30 s", () => {
+    const h = harness({ spec: DESNZ_HEAT_NETWORKS });
+    expect(h.poller.nextDelay()).toBe(15 * 60_000);
+    h.poller.status.consecutiveFailures = 3;
+    expect(h.poller.nextDelay()).toBeGreaterThanOrEqual(15 * 60_000);
+    expect(harness().poller.nextDelay()).toBe(30_000); // unchanged for everything else
+  });
+
+  it("datasets with no floor keep their cadence: a no-publish-time source with a 5 min floor reads every 5 min", async () => {
+    const h = harness({ spec: { ...EA_WATER_AVAILABILITY, minFetchIntervalMs: 5 * 60_000 }, modified: [null], records: [[]] });
+    expect(await h.poller.tick()).toBe("fetched");
+    h.advance(4 * 60_000);
+    expect(await h.poller.tick()).toBe("unchanged");
+    h.advance(60_000);
+    expect(await h.poller.tick()).toBe("fetched");
   });
 });

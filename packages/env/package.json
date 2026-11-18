@@ -13,6 +13,7 @@
     "test:latency": "vitest run --config vitest.latency.config.ts"
   },
   "dependencies": {
+    "csv-parse": "7.0.3",
     "pg": "8.23.1"
   },
   "devDependencies": {

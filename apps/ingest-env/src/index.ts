@@ -1,9 +1,9 @@
-import { CARBON_INTENSITY, EaClient, ElexonClient, NesoClient, PgEnvStore } from "@mx/env";
+import { CARBON_INTENSITY, CkanCsvClient, EaClient, EaGeoClient, ElexonClient, NesoClient, PgEnvStore, type DatasetSource } from "@mx/env";
 import { Metrics } from "@mx/shared";
 import { pino } from "pino";
 import { loadConfig, selectedDatasets } from "./config";
 import { healthServer } from "./health";
-import { Poller } from "./poller";
+import { Poller, type PollerSource } from "./poller";
 
 /**
  * ingest-env: keeps every published version of the environmental datasets (architecture.md §6.2).
@@ -44,7 +44,12 @@ const neso = new NesoClient({
 // The EA API is a separate host with its own limits; one dataset polls it, at the same cadence.
 const ea = new EaClient({ baseUrl: cfg.EA_BASE_URL, timeoutMs: cfg.ENV_HTTP_TIMEOUT_MS });
 const elexon = new ElexonClient({ baseUrl: cfg.ELEXON_BASE_URL, timeoutMs: cfg.ENV_HTTP_TIMEOUT_MS });
-const sourceOf = (s: "neso" | "ea" | "elexon") => (s === "ea" ? ea : s === "elexon" ? elexon : neso);
+// Site data: EA spatial polygons at each site, and CSV releases on data.gov.uk. Slow-moving; their
+// datasets set their own check and fetch floors.
+const eaGeo = new EaGeoClient({ baseUrl: cfg.EA_BASE_URL, timeoutMs: Math.max(cfg.ENV_HTTP_TIMEOUT_MS, 30_000) });
+const ckan = new CkanCsvClient({ baseUrl: cfg.CKAN_BASE_URL, timeoutMs: Math.max(cfg.ENV_HTTP_TIMEOUT_MS, 30_000) });
+const SOURCES: Record<DatasetSource, PollerSource> = { neso, ea, elexon, ea_geo: eaGeo, ckan_csv: ckan };
+const sourceOf = (s: DatasetSource) => SOURCES[s];
 const pollers = selectedDatasets(cfg).map(
   (spec) =>
     new Poller(spec, sourceOf(spec.source ?? "neso"), store, metrics, log, {

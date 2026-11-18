@@ -31,6 +31,9 @@ export interface CleanResult {
   duplicates: number;
 }
 
+/** Where a dataset comes from: NESO Data Portal (default), EA real-time API, Elexon, EA spatial (OGC API) per site, or a CSV release on data.gov.uk. */
+export type DatasetSource = "neso" | "ea" | "elexon" | "ea_geo" | "ckan_csv";
+
 export interface DatasetSpec {
   /** Stable id stored with every row, e.g. "neso.carbon_intensity". Never rename. */
   id: string;
@@ -38,9 +41,14 @@ export interface DatasetSpec {
   periodMs: number;
   regions: readonly string[];
   /** Where it comes from: the NESO Data Portal (default) or the Environment Agency API. */
-  source?: "neso" | "ea" | "elexon";
-  /** With a source that gives no publish time, fetch at most this often (default: every check). */
+  source?: DatasetSource;
+  /**
+   * Read the records at most this often (default: no floor). Only a new publish time (a new
+   * release) reads sooner. Without it, a source with no publish time is read on every check.
+   */
   minFetchIntervalMs?: number;
+  /** Check the source at most this often (default: the poller's check interval, 30 s). For slow-moving releases. */
+  checkIntervalMs?: number;
   /** The source's resource: a NESO (CKAN) resource id, or an EA API path. */
   resourceId: string;
   /** True when a fetch with no rows is normal (no flood warnings in force), so it isn't flagged. */
