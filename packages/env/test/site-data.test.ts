@@ -121,8 +121,17 @@ describe("EA water availability at our sites", () => {
     ]);
     expect(r.dropped).toBe(2);
     expect(r.observations[0]).toMatchObject({ region: `${id}.q30`, quality: "rejected", rawValue: "Purple", value: null });
-    expect(r.observations[1]).toMatchObject({ region: `${id}.q50`, quality: "missing", value: null });
+    expect(r.observations[1]).toMatchObject({ region: `${id}.q50`, quality: "rejected", value: null, rawValue: "camscdsq50 absent" }); // a polygon with no value: the source changed
     expect(cleanWaterAvailability([{ site: id, feature: null, [OBSERVED_AT]: T }]).observations.every((o) => o.quality === "missing")).toBe(true);
+  });
+
+  it("a polygon without the expected field is rejected, never stored as 'not assessed' (the source changed shape)", () => {
+    const id = SITES[0]!.id;
+    const { camscdsq30: _gone, ...renamed } = props;
+    const av = cleanWaterAvailability([{ site: id, feature: { ...renamed, CAMSCDSQ30: "Yellow" }, [OBSERVED_AT]: T }]).observations;
+    expect(av[0]).toMatchObject({ region: `${id}.q30`, quality: "rejected", rawValue: "camscdsq30 absent" });
+    const rel = cleanWaterReliability([{ site: id, feature: { ea_wb_id: "GB1" }, [OBSERVED_AT]: T }]).observations;
+    expect(rel[0]).toMatchObject({ quality: "rejected", rawValue: "resavail absent" });
   });
 
   it("declares a series for every site and flow, sampled daily at most every 6 h", () => {
@@ -163,9 +172,22 @@ describe("DESNZ heat networks near our sites", () => {
   });
 
   it("excludes Northern Ireland (not on the GB grid) and drops rows with no valid location", () => {
-    const r = cleanHeatNetworks([row("Operational", 0, 0, { Country: "Northern Ireland" }), row("Operational", 0, 0, { "X-coordinate": "" }), row("Operational", 0, 0, { "Y-coordinate": "n/a" })], [site]);
+    const r = cleanHeatNetworks([row("Operational", 0, 0, { Country: "Northern Ireland" }), row("Operational", 0, 0, { "X-coordinate": "" }), row("Operational", 0, 0, { "Y-coordinate": "n/a" }), row("Operational", 50_000, 0)], [site]);
     expect(r.dropped).toBe(2);
     expect(Object.fromEntries(r.observations.map((o) => [o.region, o.value]))["s1.operational_2km"]).toBe(0);
+  });
+
+  it("a release missing a required column stores nothing and counts every row dropped (never silent zeros)", () => {
+    const { "Development Status (short)": _gone, ...renamed } = row("Operational", 0, 0);
+    const r = cleanHeatNetworks([{ ...renamed, "Development Status": "Operational" }, row("Operational", 10, 0)], [site]);
+    expect(r).toEqual({ observations: [], dropped: 2, duplicates: 0 });
+  });
+
+  it("an unknown status is counted as dropped; a release with no network at all stores nothing", () => {
+    const r = cleanHeatNetworks([row("Operational", 0, 0), row("Commissioning", 0, 0), row("Application Refused", 0, 0)], [site]);
+    expect(r.dropped).toBe(1);
+    expect(r.observations.find((o) => o.region === "s1.operational_2km")!.value).toBe(1);
+    expect(cleanHeatNetworks([row("Application Refused", 0, 0), row("Abandoned", 0, 0)], [site])).toEqual({ observations: [], dropped: 2, duplicates: 0 });
   });
 
   it("is placed on the UTC day it was read; an empty read stores nothing", () => {

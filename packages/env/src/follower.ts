@@ -118,12 +118,14 @@ export class EnvFollower {
   async tick(dataset: string = this.cache.dataset): Promise<void> {
     const cache = this.caches.get(dataset);
     if (!cache) return;
-    await this.refresh(cache);
+    // Status first, then the cache: a fetch committing in between leaves the cache newer than the
+    // status (harmless), never a status that names a fetch the cache hasn't loaded yet.
     try {
       this.ingestOk.set(dataset, (await this.store.lastSuccess(dataset))?.fetchedAt ?? null);
     } catch (e) {
       this.log.warn({ err: (e as Error).message, dataset }, "could not read ingest status");
     }
+    await this.refresh(cache);
     for (const l of this.listeners) {
       try {
         l(dataset);

@@ -49,9 +49,13 @@ function recordsOf(records: readonly unknown[]): { recs: Rec[]; dropped: number 
   return { recs, dropped };
 }
 
-/** One observation from a categorical field: ok when the label is known, missing when absent, rejected otherwise. */
-function categorical(region: string, validFrom: number, raw: unknown, table: Readonly<Record<string, number>>): Observation {
-  if (raw === null || raw === undefined || raw === "") return { region, validFrom, value: null, quality: "missing", rawValue: null };
+/** One observation from a categorical field: ok when the label is known, missing when no polygon holds the site, rejected otherwise. */
+function categorical(region: string, validFrom: number, feature: Record<string, unknown> | null, field: string, table: Readonly<Record<string, number>>): Observation {
+  // No polygon at the site: the EA doesn't assess it (missing). A polygon without the field means
+  // the source changed shape: rejected, so it is never sold as "not assessed".
+  if (feature === null) return { region, validFrom, value: null, quality: "missing", rawValue: null };
+  const raw = feature[field];
+  if (raw === null || raw === undefined || raw === "") return { region, validFrom, value: null, quality: "rejected", rawValue: `${field} absent` };
   const v = typeof raw === "string" ? table[raw.trim()] : undefined;
   return v === undefined ? { region, validFrom, value: null, quality: "rejected", rawValue: String(raw).slice(0, 200) } : { region, validFrom, value: v, quality: "ok", rawValue: null };
 }
@@ -62,14 +66,14 @@ export function cleanWaterAvailability(records: readonly unknown[]): CleanResult
   const { recs, dropped } = recordsOf(records);
   const observations: Observation[] = [];
   for (const r of recs) {
-    for (const q of WATER_FLOWS) observations.push(categorical(`${r.site}.${q}`, day(r.observedAt), r.feature?.[`camscds${q}`], WATER_CLASS));
+    for (const q of WATER_FLOWS) observations.push(categorical(`${r.site}.${q}`, day(r.observedAt), r.feature, `camscds${q}`, WATER_CLASS));
   }
   return { observations, dropped, duplicates: 0 };
 }
 
 export function cleanWaterReliability(records: readonly unknown[]): CleanResult {
   const { recs, dropped } = recordsOf(records);
-  return { observations: recs.map((r) => categorical(r.site, day(r.observedAt), r.feature?.resavail, RELIABILITY_PCT)), dropped, duplicates: 0 };
+  return { observations: recs.map((r) => categorical(r.site, day(r.observedAt), r.feature, "resavail", RELIABILITY_PCT)), dropped, duplicates: 0 };
 }
 
 const SIX_HOURS = 6 * 3_600_000;

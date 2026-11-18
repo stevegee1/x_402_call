@@ -106,7 +106,7 @@ describe("EnvFollower", () => {
     await f.start();
     expect(f.failures).toBe(1);
     expect(f.cache.ready).toBe(false);
-    expect(warnings).toEqual(["env cache refresh failed", "could not read ingest status"]);
+    expect(warnings).toEqual(["could not read ingest status", "env cache refresh failed"]); // status is read before the cache
     expect(calls).toBe(1);
     src.failRefresh = false;
     src.failStatus = false;

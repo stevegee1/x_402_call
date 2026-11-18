@@ -35,7 +35,7 @@ export interface SiteInput {
    * 10). Daily site data: 30 h (read every 6 h; a day of failures is tolerated, two are not).
    */
   maxIngestAgeMs: number;
-  /** How far back the gateway keeps every version in memory; older reads go to Postgres. */
+  /** How far back the gateway keeps every version in memory; older reads go to Postgres. Must exceed the section's lookback (report.ts LOOKBACK_MS). */
   memoryMs: number;
 }
 
@@ -49,10 +49,10 @@ export const SITE_INPUTS: readonly SiteInput[] = [
   { key: "market_index", spec: ELEXON_MARKET_INDEX, series: ELEXON_MARKET_INDEX.regions, maxIngestAgeMs: LIVE, memoryMs: TWO_DAYS },
   { key: "flood", spec: EA_FLOOD_WARNINGS, series: SITE_FLOOD_SERIES, maxIngestAgeMs: LIVE, memoryMs: TWO_DAYS },
   { key: "rivers", spec: EA_RIVER_LEVELS, series: EA_RIVER_LEVELS.regions, maxIngestAgeMs: LIVE, memoryMs: TWO_DAYS },
-  { key: "water", spec: EA_WATER_AVAILABILITY, series: EA_WATER_AVAILABILITY.regions, maxIngestAgeMs: DAILY, memoryMs: 3 * 24 * H },
-  { key: "water_reliability", spec: EA_WATER_RELIABILITY, series: EA_WATER_RELIABILITY.regions, maxIngestAgeMs: DAILY, memoryMs: 3 * 24 * H },
-  { key: "heat", spec: DESNZ_HEAT_NETWORKS, series: DESNZ_HEAT_NETWORKS.regions, maxIngestAgeMs: DAILY, memoryMs: 3 * 24 * H },
-  { key: "heat_distance", spec: DESNZ_HEAT_NETWORK_DISTANCE, series: DESNZ_HEAT_NETWORK_DISTANCE.regions, maxIngestAgeMs: DAILY, memoryMs: 3 * 24 * H },
+  { key: "water", spec: EA_WATER_AVAILABILITY, series: EA_WATER_AVAILABILITY.regions, maxIngestAgeMs: DAILY, memoryMs: 4 * 24 * H },
+  { key: "water_reliability", spec: EA_WATER_RELIABILITY, series: EA_WATER_RELIABILITY.regions, maxIngestAgeMs: DAILY, memoryMs: 4 * 24 * H },
+  { key: "heat", spec: DESNZ_HEAT_NETWORKS, series: DESNZ_HEAT_NETWORKS.regions, maxIngestAgeMs: DAILY, memoryMs: 4 * 24 * H },
+  { key: "heat_distance", spec: DESNZ_HEAT_NETWORK_DISTANCE, series: DESNZ_HEAT_NETWORK_DISTANCE.regions, maxIngestAgeMs: DAILY, memoryMs: 4 * 24 * H },
 ];
 
 /** What the product reads for one dataset. */

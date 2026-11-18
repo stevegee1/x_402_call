@@ -2,6 +2,7 @@ import { EnvCache, EnvHistory, floodSeries, type ChangeRow } from "@mx/env";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SitesProduct, asOfParam } from "../../../src/products/sites";
 import { SITE_INPUTS, type InputKey, type SiteInputSource } from "../../../src/products/sites/inputs";
+import { LOOKBACK_MS } from "../../../src/products/sites/report";
 import { ADMIN_TOKEN, BASE_URL, createTestEnv, type TestEnv } from "../../helpers";
 import { MultiFakeStore } from "../trading/fixtures";
 
@@ -205,6 +206,53 @@ describe("site intelligence", () => {
     const docs = await (await env.fetch(`${BASE_URL}/docs`, { headers: { accept: "text/html" } })).text();
     expect(docs).toContain("/v1/sites/{site}/report");
     expect(docs).toContain("Contains Environment Agency information");
+  });
+
+  it("every input's memory window outlasts its section's lookback, so live reports never miss memory as the clock moves", () => {
+    const lookback: Record<InputKey, number> = {
+      carbon: LOOKBACK_MS.carbon,
+      system_prices: LOOKBACK_MS.prices,
+      market_index: LOOKBACK_MS.prices,
+      flood: LOOKBACK_MS.flood,
+      rivers: LOOKBACK_MS.rivers,
+      water: LOOKBACK_MS.daily,
+      water_reliability: LOOKBACK_MS.daily,
+      heat: LOOKBACK_MS.daily,
+      heat_distance: LOOKBACK_MS.daily,
+    };
+    for (const i of SITE_INPUTS) expect(i.memoryMs - lookback[i.key], i.key).toBeGreaterThanOrEqual(H);
+  });
+
+  it("a live report reads only memory even as the clock moves between resolve and handler (regression: the window equalled the lookback)", async () => {
+    let t = T0;
+    const spy = vi.spyOn(Date, "now").mockImplementation(() => (t += 5)); // every read of the clock is 5 ms later
+    try {
+      const e2 = await createTestEnv({}, { products: [await build()] });
+      const signup = await (await e2.fetch(`${BASE_URL}/v1/credits/accounts`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ company: "X", email: "x@b.test", country: "GB" }) })).json();
+      await e2.fetch(`${BASE_URL}/admin/credits/${signup.account_id}/topup`, { method: "POST", headers: { authorization: `Bearer ${ADMIN_TOKEN}`, "content-type": "application/json" }, body: JSON.stringify({ net_gbp: 5, reference: "t" }) });
+      const r = await e2.fetch(`${S}/equinix_ld4/report`, { headers: { authorization: `Bearer ${signup.api_key}` } });
+      expect(r.status).toBe(200);
+      expect(store.calls).toEqual([]);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("a flood fetch that straddled a period boundary still shows the warning it saw", async () => {
+    const floodAt = async (now: number, fetchedAt: number) => {
+      vi.setSystemTime(now);
+      ingest = new Map<InputKey, number | null>([["flood", fetchedAt], ...SITE_INPUTS.filter((i) => i.key !== "flood").map((i) => [i.key, now - MIN] as [InputKey, number])]);
+      const e2 = await createTestEnv({}, { products: [await build()] }); // caches loaded at this time
+      const signup = await (await e2.fetch(`${BASE_URL}/v1/credits/accounts`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ company: "X", email: `x${now}@b.test`, country: "GB" }) })).json();
+      await e2.fetch(`${BASE_URL}/admin/credits/${signup.account_id}/topup`, { method: "POST", headers: { authorization: `Bearer ${ADMIN_TOKEN}`, "content-type": "application/json" }, body: JSON.stringify({ net_gbp: 5, reference: "t" }) });
+      const res = await e2.fetch(`${S}/equinix_ld4/flood`, { headers: { authorization: `Bearer ${signup.api_key}` } });
+      expect(res.status).toBe(200);
+      return (await res.json()).flood;
+    };
+    // Ingest committed 10 s into the next period; the rows sit in the previous one.
+    expect((await floodAt(FP + 15 * MIN + 20_000, FP + 15 * MIN + 10_000)).in_force).toEqual([{ area: "061FWF23Mdnhead", severity: 3, level: "flood alert" }]);
+    // Well into the new period with no rows there: nothing was in force at that fetch.
+    expect((await floodAt(FP + 20 * MIN, FP + 19 * MIN)).in_force).toEqual([]);
   });
 
   it("the catalog reads every input it needs from the version store", () => {

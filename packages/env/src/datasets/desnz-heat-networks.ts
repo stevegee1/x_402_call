@@ -30,14 +30,31 @@ export const HNPD_ATTRIBUTION = "Contains public sector information licensed und
 export const HEAT_METRICS = ["operational_2km", "construction_2km", "planned_2km", "nearest_live_m"] as const;
 
 type Stage = "operational" | "construction" | "planned" | null;
-/** `Development Status (short)` → stage. Withdrawn, refused, abandoned, revised and the rest count as none. */
-function stageOf(status: unknown): Stage {
+/** Statuses that are not (or no longer) a network: known, so not a sign of a format change. */
+const NOT_A_NETWORK = new Set([
+  "application withdrawn",
+  "application refused",
+  "abandoned",
+  "revised",
+  "no application required",
+  "no application made",
+  "appeal refused",
+  "appeal withdrawn",
+  "appeal lodged",
+  "planning permission expired",
+  "decommissioned",
+]);
+/** `Development Status (short)` → stage; null for a known non-network status; undefined when unrecognised. */
+function stageOf(status: unknown): Stage | undefined {
   const s = typeof status === "string" ? status.trim().toLowerCase() : "";
   if (s === "operational") return "operational";
   if (s === "under construction") return "construction";
   if (s === "awaiting construction" || s === "application submitted") return "planned";
-  return null;
+  return NOT_A_NETWORK.has(s) ? null : undefined;
 }
+
+/** Columns every release must have; without them the counts would be silent zeros. */
+export const HNPD_REQUIRED_COLUMNS = ["Development Status (short)", "X-coordinate", "Y-coordinate", "Country"] as const;
 
 /** BNG coordinate: finite, within the GB grid's extent. */
 function coord(v: unknown, max: number): number | null {
@@ -57,8 +74,15 @@ export function cleanHeatNetworks(records: readonly unknown[], sites: readonly S
       continue;
     }
     observedAt ??= t;
+    // A release without these columns has changed shape: store nothing, so the dataset goes stale
+    // (and reports refuse) rather than sell zeros. Every row counts as dropped, which alerts.
+    if (HNPD_REQUIRED_COLUMNS.some((c) => !(c in rec))) return { observations: [], dropped: records.length, duplicates: 0 };
     if (typeof rec.Country === "string" && rec.Country.trim().toLowerCase() === "northern ireland") continue;
     const stage = stageOf(rec["Development Status (short)"]);
+    if (stage === undefined) {
+      dropped++; // a status we don't know: counted, so a vocabulary change shows in the drop ratio
+      continue;
+    }
     if (stage === null) continue; // not a network that exists or is coming: no bearing on heat reuse
     const e = coord(rec["X-coordinate"], 700_000);
     const n = coord(rec["Y-coordinate"], 1_300_000);
@@ -69,6 +93,8 @@ export function cleanHeatNetworks(records: readonly unknown[], sites: readonly S
     networks.push({ e, n, stage });
   }
   if (observedAt === null) return { observations: [], dropped, duplicates: 0 };
+  // Not one network found in a whole release: the file is not the database we expect. Store nothing.
+  if (networks.length === 0) return { observations: [], dropped: records.length, duplicates: 0 };
   const validFrom = Math.floor(observedAt / HEAT_PERIOD_MS) * HEAT_PERIOD_MS;
   const observations: Observation[] = [];
   const ok = (region: string, value: number): Observation => ({ region, validFrom, value, quality: "ok", rawValue: null });

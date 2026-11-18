@@ -5,7 +5,16 @@ const MIN = 60_000;
 const H = 60 * MIN;
 const HALF_HOUR = 30 * MIN;
 const FLOOD_PERIOD = 15 * MIN;
+/** A commit this soon after a period boundary may belong to a fetch whose rows sit in the previous period. */
+const FLOOD_BOUNDARY_MS = 60_000;
 const iso = (t: number) => new Date(t).toISOString();
+
+/**
+ * How far back each section looks for its newest value. Each input's memory window (inputs.ts)
+ * must exceed these by a margin, or the read misses memory by the milliseconds between resolve
+ * and handler and goes to Postgres (pinned by a test).
+ */
+export const LOOKBACK_MS = { carbon: HALF_HOUR, prices: 6 * H, flood: 2 * FLOOD_PERIOD, rivers: 25 * H, daily: 3 * 24 * H } as const;
 
 export const FLOOD_SEVERITY: Readonly<Record<number, string>> = { 1: "severe flood warning", 2: "flood warning", 3: "flood alert", 4: "no longer in force" };
 export const WATER_CLASS_LABEL: Readonly<Record<number, string>> = { 1: "available", 2: "restricted", 3: "not available", 4: "heavily modified water body (judged locally)" };
@@ -35,7 +44,7 @@ export interface ReportOptions {
 /** Carbon intensity for the site's grid region: the current half-hour and the next 24 h. */
 export async function carbonSection(sources: SiteSources, site: Site, o: ReportOptions) {
   const read = reader(sources, o.asOf);
-  const rows = await read("carbon", site.gridRegion, o.at - HALF_HOUR, o.at + 24 * H);
+  const rows = await read("carbon", site.gridRegion, o.at - LOOKBACK_MS.carbon, o.at + 24 * H);
   const cur = rows.find((r) => r.validFrom <= o.at && o.at < r.validFrom + HALF_HOUR) ?? null;
   const ahead = rows.filter((r) => r.validFrom >= (cur ? cur.validFrom : o.at) && ok(r));
   if (!cur && ahead.length === 0) return null;
@@ -56,9 +65,9 @@ export async function carbonSection(sources: SiteSources, site: Site, o: ReportO
 export async function pricesSection(sources: SiteSources, o: ReportOptions) {
   const read = reader(sources, o.asOf);
   const [ssp, sbp, apx] = await Promise.all([
-    latest(read, "system_prices", "ssp", o.at, 6 * H),
-    latest(read, "system_prices", "sbp", o.at, 6 * H),
-    latest(read, "market_index", "apx", o.at, 6 * H),
+    latest(read, "system_prices", "ssp", o.at, LOOKBACK_MS.prices),
+    latest(read, "system_prices", "sbp", o.at, LOOKBACK_MS.prices),
+    latest(read, "market_index", "apx", o.at, LOOKBACK_MS.prices),
   ]);
   if (!ssp && !sbp && !apx) return null;
   const one = (r: Row | null) => (r ? { from: iso(r.validFrom), value: r.value, quality: r.quality } : null);
@@ -77,7 +86,13 @@ export async function floodSection(sources: SiteSources, site: Site, o: ReportOp
   const p = Math.floor(fetchedAt / FLOOD_PERIOD) * FLOOD_PERIOD;
   const read = reader(sources, o.asOf);
   const areas = SITE_FLOOD_AREAS[site.id] ?? [];
-  const rows = await Promise.all(areas.map((a) => read("flood", floodSeries(a), p, p + FLOOD_PERIOD).then((r) => ({ area: a, row: r.at(-1) ?? null }))));
+  // Rows are placed by when the EA response arrived; fetchedAt is when ingest committed, a moment
+  // later. A fetch that straddled a period boundary left its rows in the previous period: then the
+  // previous period's state is the latest (erring towards showing a warning, never hiding one).
+  const both = await Promise.all(areas.map((a) => read("flood", floodSeries(a), p - FLOOD_PERIOD, p + FLOOD_PERIOD).then((r) => ({ area: a, rows: r }))));
+  const inCurrent = both.some((x) => x.rows.some((r) => r.validFrom === p));
+  const period = inCurrent || fetchedAt - p > FLOOD_BOUNDARY_MS ? p : p - FLOOD_PERIOD;
+  const rows = both.map((x) => ({ area: x.area, row: x.rows.find((r) => r.validFrom === period) ?? null }));
   const inForce = rows.filter((x) => x.row && ok(x.row) && x.row.value! <= 3).map((x) => ({ area: x.area, severity: x.row!.value!, level: FLOOD_SEVERITY[x.row!.value!] }));
   inForce.sort((a, b) => a.severity - b.severity || (a.area < b.area ? -1 : 1));
   return {
@@ -95,7 +110,7 @@ export async function riversSection(sources: SiteSources, site: Site, o: ReportO
   const gauges = CLUSTER_RIVER_SERIES[site.cluster];
   const out = await Promise.all(
     gauges.map(async (g) => {
-      const rows = (await read("rivers", g, o.at - 25 * H, o.at + 1)).filter(ok);
+      const rows = (await read("rivers", g, o.at - LOOKBACK_MS.rivers, o.at + 1)).filter(ok);
       const last = rows.at(-1);
       if (!last) return { gauge: g, level_m: null, at: null, change_24h_m: null };
       const dayAgo = rows.find((r) => r.validFrom === last.validFrom - 24 * H);
@@ -109,8 +124,8 @@ export async function riversSection(sources: SiteSources, site: Site, o: ReportO
 export async function waterSection(sources: SiteSources, site: Site, o: ReportOptions) {
   const read = reader(sources, o.asOf);
   const [classes, rel] = await Promise.all([
-    Promise.all(WATER_FLOWS.map((q) => latest(read, "water", `${site.id}.${q}`, o.at, 3 * 24 * H).then((r) => ({ flow: q, row: r })))),
-    latest(read, "water_reliability", site.id, o.at, 3 * 24 * H),
+    Promise.all(WATER_FLOWS.map((q) => latest(read, "water", `${site.id}.${q}`, o.at, LOOKBACK_MS.daily).then((r) => ({ flow: q, row: r })))),
+    latest(read, "water_reliability", site.id, o.at, LOOKBACK_MS.daily),
   ]);
   if (classes.every((c) => !c.row) && !rel) return null;
   const all = [...classes.flatMap((c) => (c.row ? [c.row] : [])), ...(rel ? [rel] : [])];
@@ -129,10 +144,10 @@ export async function waterSection(sources: SiteSources, site: Site, o: ReportOp
 export async function heatSection(sources: SiteSources, site: Site, o: ReportOptions) {
   const read = reader(sources, o.asOf);
   const [op, con, plan, dist] = await Promise.all([
-    latest(read, "heat", `${site.id}.operational_2km`, o.at, 3 * 24 * H),
-    latest(read, "heat", `${site.id}.construction_2km`, o.at, 3 * 24 * H),
-    latest(read, "heat", `${site.id}.planned_2km`, o.at, 3 * 24 * H),
-    latest(read, "heat_distance", site.id, o.at, 3 * 24 * H),
+    latest(read, "heat", `${site.id}.operational_2km`, o.at, LOOKBACK_MS.daily),
+    latest(read, "heat", `${site.id}.construction_2km`, o.at, LOOKBACK_MS.daily),
+    latest(read, "heat", `${site.id}.planned_2km`, o.at, LOOKBACK_MS.daily),
+    latest(read, "heat_distance", site.id, o.at, LOOKBACK_MS.daily),
   ]);
   const rows = [op, con, plan, dist].filter((r): r is Row => r !== null);
   if (rows.length === 0) return null;

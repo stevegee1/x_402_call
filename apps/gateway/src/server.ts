@@ -158,11 +158,17 @@ if (gridOnStore || cfg.TRADING_ENABLED || cfg.SITES_ENABLED) {
         history: new EnvHistory(cache, versionStore),
         ingestLastSuccessAt: () => follower.ingestLastSuccess(i.spec.id),
         // Point-in-time reports only, within the paid-read budget: a slow store fails the read (503, never charged).
-        ingestSuccessAsOf: (at) =>
-          Promise.race([
-            versionStore.lastSuccess(i.spec.id, at).then((r) => r?.fetchedAt ?? null),
-            new Promise<never>((_, reject) => setTimeout(() => reject(new StoreReadTimeout("ingest status read")), STORE_READ_DEADLINE_MS).unref()),
-          ]),
+        ingestSuccessAsOf: async (at) => {
+          let timer: NodeJS.Timeout | undefined;
+          try {
+            return await Promise.race([
+              versionStore.lastSuccess(i.spec.id, at).then((r) => r?.fetchedAt ?? null),
+              new Promise<never>((_, reject) => (timer = setTimeout(() => reject(new StoreReadTimeout("ingest status read")), STORE_READ_DEADLINE_MS))),
+            ]);
+          } finally {
+            clearTimeout(timer);
+          }
+        },
       });
     }
     products.push(new SitesProduct(sources, Date.now));
