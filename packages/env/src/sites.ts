@@ -34,3 +34,41 @@ export const SITES: readonly Site[] = [
   { id: "equinix_ld8", name: "Equinix LD8 (Harbour Exchange)", operator: "Equinix", address: "6-9 Harbour Exchange Square, London", postcode: "E14 9GE", lat: 51.498934, lon: -0.015953, easting: 537814, northing: 179643, cluster: "docklands", gridRegion: "london", source: "https://www.peeringdb.com/fac/45" },
   { id: "colt_hayes", name: "Colt London Hayes Campus", operator: "Colt DCS", address: "Beaconsfield Road / Uxbridge Road, Hayes", postcode: "UB4 0JZ", lat: 51.510417, lon: -0.393692, easting: 511568, northing: 180277, cluster: "hayes", gridRegion: "london", source: "https://www.datacentermap.com/united-kingdom/london/colt-london-hayes-campus/" },
 ];
+
+const SLOUGH_FLOOD = ["061FWF23XMhead", "061WAF23Mdnhead", "061FWF23Mdnhead", "061WAF23Slough"] as const;
+const DOCKLANDS_FLOOD = [
+  "062WAF53LowerLee",
+  "063WAT232N",
+  "063WAT233N",
+  "063WAT232S",
+  "063WAT23Central",
+  "063FWT23Greenwch",
+  "063WAT233S",
+  "062FWB53TidalLee",
+  "063FWT23RDockA",
+  "063FWT23IoDA",
+  "063FWT23RDockC",
+  "063FWT23BermA",
+] as const;
+const HAYES_FLOOD = ["062WAF28Pinn", "062FWF36Hilling", "062WAF36FluCrane", "062FWF36Southall"] as const;
+
+/**
+ * EA flood areas (warning `FW…` and alert `WA…` areas) within 1 km of each site, from the EA
+ * flood-monitoring API (`/id/floodAreas?lat&long&dist=1`), resolved 2026-11-18. Series names in
+ * ea.flood_warnings are `fa_` + the id lowercased (floodSeries).
+ */
+export const SITE_FLOOD_AREAS: Readonly<Record<string, readonly string[]>> = {
+  equinix_ld4: SLOUGH_FLOOD,
+  equinix_ld5: SLOUGH_FLOOD,
+  equinix_ld6: SLOUGH_FLOOD,
+  equinix_ld7: SLOUGH_FLOOD,
+  telehouse_north: DOCKLANDS_FLOOD,
+  equinix_ld8: DOCKLANDS_FLOOD,
+  colt_hayes: HAYES_FLOOD,
+};
+
+/** The ea.flood_warnings series for a flood area id. */
+export const floodSeries = (areaId: string) => `fa_${areaId.toLowerCase()}`;
+
+/** Every flood-warning series any site reads (what a cache of ea.flood_warnings must hold). */
+export const SITE_FLOOD_SERIES: readonly string[] = [...new Set(Object.values(SITE_FLOOD_AREAS).flat().map(floodSeries))];

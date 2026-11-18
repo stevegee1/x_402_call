@@ -60,6 +60,8 @@ const schema = z
 
     /** Trading feed (every NESO and Elexon series in the version store, with point-in-time history). Off unless enabled. */
     TRADING_ENABLED: bool.default("false"),
+    /** Site intelligence (reports on our UK data-centre sites from the version store). Off unless enabled. */
+    SITES_ENABLED: bool.default("false"),
 
     // x402 sessions (architecture.md §6.4): prepay once, then read from memory. Off unless enabled.
     SESSIONS_ENABLED: bool.default("false"),
@@ -139,6 +141,8 @@ const schema = z
       ctx.addIssue({ code: "custom", path: ["GRID_SOURCE"], message: "store needs DATABASE_URL (the version store is in Postgres)" });
     if (c.TRADING_ENABLED && !c.DATABASE_URL)
       ctx.addIssue({ code: "custom", path: ["TRADING_ENABLED"], message: "the trading feed needs DATABASE_URL (it reads the version store in Postgres)" });
+    if (c.SITES_ENABLED && !c.DATABASE_URL)
+      ctx.addIssue({ code: "custom", path: ["SITES_ENABLED"], message: "site intelligence needs DATABASE_URL (it reads the version store in Postgres)" });
     if (c.SESSIONS_ENABLED && !c.SESSION_SECRET) ctx.addIssue({ code: "custom", path: ["SESSION_SECRET"], message: "required when SESSIONS_ENABLED=true" });
     if (c.X402_NETWORK === "eip155:8453" && c.FACILITATOR === "x402org")
       ctx.addIssue({ code: "custom", path: ["FACILITATOR"], message: "x402.org facilitator is testnet-only; use cdp for Base mainnet" });

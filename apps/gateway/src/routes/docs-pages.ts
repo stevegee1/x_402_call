@@ -143,7 +143,7 @@ ${mainnet ? "" : `<div class="banner" role="note">Test environment. Payments use
 <main id="main">${o.body}</main>
 <footer><div class="wrap">
   <nav aria-label="Footer"><a href="/">Home</a><a href="/catalog">Catalog</a><a href="/docs">API reference</a><a href="/openapi.json?format=json">openapi.json</a><a href="/v1/products?format=json">Catalog (JSON)</a><a href="/status">Service status</a></nav>
-  <div>Payments on ${esc(network)}.${d.catalog.product("grid") || d.catalog.product("trading") ? " Grid data supported by National Energy SO Open Data; not provided or endorsed by NESO." : ""}${d.catalog.product("trading") ? ` Contains BMRS data © Elexon Limited copyright and database right ${new Date().getUTCFullYear()}.` : ""}</div>
+  <div>Payments on ${esc(network)}.${d.catalog.product("grid") || d.catalog.product("trading") || d.catalog.product("sites") ? " Grid data supported by National Energy SO Open Data; not provided or endorsed by NESO." : ""}${d.catalog.product("trading") || d.catalog.product("sites") ? ` Contains BMRS data © Elexon Limited copyright and database right ${new Date().getUTCFullYear()}.` : ""}${d.catalog.product("sites") ? " Contains Environment Agency information © Environment Agency and/or database right; flood data is not for safety-critical use. Contains public sector information licensed under the Open Government Licence v3.0." : ""}</div>
 </div></footer>
 ${o.script ? `<script>${o.script}</script>\n` : ""}</body>
 </html>`;

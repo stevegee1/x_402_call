@@ -122,3 +122,11 @@ describe("trading feed config", () => {
     expect(loadConfig({ ...base, TRADING_ENABLED: "true", DATABASE_URL: "postgres://x" }).TRADING_ENABLED).toBe(true);
   });
 });
+
+describe("site intelligence config", () => {
+  it("is off by default and needs the version store when on", () => {
+    expect(loadConfig(base).SITES_ENABLED).toBe(false);
+    expect(() => loadConfig({ ...base, SITES_ENABLED: "true" })).toThrow(/SITES_ENABLED/);
+    expect(loadConfig({ ...base, SITES_ENABLED: "true", DATABASE_URL: "postgres://x" }).SITES_ENABLED).toBe(true);
+  });
+});

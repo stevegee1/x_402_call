@@ -231,6 +231,22 @@ function tradingCard(trading: Product, o: ReturnType<typeof offers>): string {
         <ul>${items.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></article>`;
 }
 
+/** The home page's site-intelligence card. */
+function sitesCard(sites: Product): string {
+  const items = [
+    "Grid carbon now and the cleanest half-hour in the next 24 h, for the site's grid region",
+    "Imbalance and market index prices",
+    "Flood warnings in force and river levels nearby",
+    "Water availability for new abstraction",
+    "Heat networks that could take waste heat",
+    "Any report as it stood on a past date",
+  ];
+  return `<article class="card ">
+        <div class="card-head"><h3>Data-centre site intelligence</h3>${statusChip(sites)}</div>
+        <p>One report per UK data-centre site (Slough, Docklands, Hayes), from public sources we record every day:</p>
+        <ul>${items.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></article>`;
+}
+
 /** A concrete, callable URL for a product: its first resource that needs only one path value. */
 function sampleFor(p: Product): { label: string; path: string; id: string } | null {
   const scope = statusOf(p).scopes[0]?.scope;
@@ -380,6 +396,7 @@ export function renderSite(d: AppDeps, viewer?: Viewer | null): string {
   const maritime = products.find((p) => p.id === "maritime");
   const grid = products.find((p) => p.id === "grid");
   const trading = products.find((p) => p.id === "trading");
+  const sites = products.find((p) => p.id === "sites");
 
   return `<!doctype html>
 <html lang="en-GB">
@@ -436,6 +453,7 @@ ${mainnet ? "" : `<div class="banner" role="note">Test environment. Payments use
         <p>AIS vessel positions turned into signals a model can use:</p>
         <ul><li>Live vessel snapshots and tracks</li><li>Traffic density on an H3 grid</li><li>Anchorage queues and wait times</li><li>Anomalies: vessels going dark, jumps, loitering</li></ul></article>
       ${trading ? tradingCard(trading, o) : ""}
+      ${sites ? sitesCard(sites) : ""}
       ${grid ? gridCard(grid, trading ? { ...o, history: false, stream: false } : o) : ""}
     </div>
   </section>
@@ -492,7 +510,7 @@ ${mainnet ? "" : `<div class="banner" role="note">Test environment. Payments use
 </div></main>
 <footer><div class="wrap">
   <nav aria-label="Footer"><a href="/catalog">Catalog</a><a href="/docs">API reference</a><a href="/openapi.json?format=json">openapi.json</a><a href="/status">Service status</a></nav>
-  <div>Payments on ${esc(network)}.${grid || trading ? " Grid data supported by National Energy SO Open Data; not provided or endorsed by NESO." : ""}${trading ? ` Contains BMRS data © Elexon Limited copyright and database right ${new Date().getUTCFullYear()}.` : ""}</div>
+  <div>Payments on ${esc(network)}.${grid || trading || sites ? " Grid data supported by National Energy SO Open Data; not provided or endorsed by NESO." : ""}${trading || sites ? ` Contains BMRS data © Elexon Limited copyright and database right ${new Date().getUTCFullYear()}.` : ""}${sites ? " Contains Environment Agency information © Environment Agency and/or database right; flood data is not for safety-critical use. Contains public sector information licensed under the Open Government Licence v3.0." : ""}</div>
 </div></footer>
 <script>${JS}</script>
 </body>

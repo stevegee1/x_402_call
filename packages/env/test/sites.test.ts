@@ -21,3 +21,13 @@ describe("UK data-centre sites", () => {
     }
   });
 });
+
+import { SITE_FLOOD_AREAS, SITE_FLOOD_SERIES, floodSeries } from "../src";
+describe("site flood areas", () => {
+  it("every site has its EA flood areas, named as ea.flood_warnings stores them", () => {
+    for (const s of SITES) expect(SITE_FLOOD_AREAS[s.id]?.length, s.id).toBeGreaterThan(0);
+    expect(Object.keys(SITE_FLOOD_AREAS).sort()).toEqual(SITES.map((s) => s.id).sort());
+    expect(floodSeries("063FWT23IoDA")).toBe("fa_063fwt23ioda");
+    expect(SITE_FLOOD_SERIES.every((s) => /^fa_[0-9a-z]{3,32}$/.test(s))).toBe(true);
+  });
+});

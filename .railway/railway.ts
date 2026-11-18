@@ -129,6 +129,8 @@ export default defineRailway((ctx) => {
       GRID_SOURCE: "store",
       // Trading feed: every NESO and Elexon series ingest-env records, from the same version store.
       TRADING_ENABLED: "true",
+      // Site intelligence: reports on our data-centre sites, from the same version store.
+      SITES_ENABLED: "true",
 
       // x402 sessions: pay once, read at memory speed; SSE push is paid from a session.
       SESSIONS_ENABLED: "true",

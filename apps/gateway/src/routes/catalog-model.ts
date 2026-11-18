@@ -133,7 +133,7 @@ export function catalogView(d: AppDeps, now = new Date()): ProductView[] {
  * that names them (home, /docs, openapi), so none can claim a product that is switched off.
  */
 export function offeredSubject(products: readonly Product[]): string {
-  const known: Record<string, string> = { maritime: "maritime", grid: "energy-grid", trading: "power-market" };
+  const known: Record<string, string> = { maritime: "maritime", grid: "energy-grid", trading: "power-market", sites: "data-centre site" };
   const parts = products.filter((p) => (p.kind ?? "data") === "data").map((p) => known[p.id] ?? p.displayName.toLowerCase());
   const text = parts.length === 0 ? "data" : parts.length === 1 ? parts[0]! : `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}`;
   return text.charAt(0).toUpperCase() + text.slice(1);
