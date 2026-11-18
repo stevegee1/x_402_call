@@ -1,5 +1,5 @@
 import { serve } from "@hono/node-server";
-import { CARBON_INTENSITY, EnvCache, EnvFollower, PgEnvStore } from "@mx/env";
+import { CARBON_INTENSITY, EnvCache, EnvFollower, EnvHistory, PgEnvStore } from "@mx/env";
 import { createApp } from "./app";
 import { isMainnet, loadConfig, settleConcurrency } from "./config";
 import type { AppDeps } from "./context";
@@ -32,6 +32,9 @@ import { StoreGridSource } from "./products/grid/store-source";
 import { GridProduct } from "./products/grid";
 import { NesoGridSource } from "./products/grid/source";
 import { MaritimeProduct } from "./products/maritime";
+import { TradingProduct, type TradingSource } from "./products/trading";
+import { TRADING_DATASETS, tradingDataset } from "./products/trading/datasets";
+import { TradingUpdates } from "./products/trading/updates";
 import { SnapshotEngine } from "./products/maritime/snapshot/engine";
 import { WorldState } from "./products/maritime/snapshot/state";
 import { migrate } from "./store/migrate";
@@ -69,38 +72,76 @@ const products: Product[] = [maritime];
 let gridFeed: GridFeed | undefined;
 let envStore: PgEnvStore | undefined;
 let envFollower: EnvFollower | undefined;
-if (cfg.GRID_ENABLED && cfg.GRID_SOURCE === "store") {
-  // Versions written by ingest-env, followed in memory: the live view updates the moment a new
-  // version commits (LISTEN/NOTIFY), and history reads for the recent window never touch Postgres.
-  // Reads only (history, revisions, the live view's follower). Paid reads have their own 1.2 s
-  // deadline (STORE_READ_DEADLINE_MS) inside the async settle window; these pool timeouts free the
-  // connection behind an abandoned query. 8 connections, so a few abandoned queries can't starve paid reads.
+const gridOnStore = cfg.GRID_ENABLED && cfg.GRID_SOURCE === "store";
+// Push needs sessions (streams are paid per event from one).
+const gridUpdates = gridOnStore && cfg.SESSIONS_ENABLED ? new GridUpdates() : undefined;
+const tradingUpdates = cfg.TRADING_ENABLED && cfg.SESSIONS_ENABLED ? new TradingUpdates() : undefined;
+if (gridOnStore || cfg.TRADING_ENABLED) {
+  // Versions written by ingest-env, followed in memory: a new version reaches readers the moment it
+  // commits (LISTEN/NOTIFY, one connection for every dataset), and reads of the recent window never
+  // touch Postgres. Reads only. Paid reads have their own 1.2 s deadline (STORE_READ_DEADLINE_MS)
+  // inside the async settle window; these pool timeouts free the connection behind an abandoned
+  // query. 8 connections, so a few abandoned queries can't starve paid reads.
   envStore = new PgEnvStore(cfg.DATABASE_URL!, GATEWAY_ENV_POOL.max, GATEWAY_ENV_POOL.timeouts);
   if (!(await envStore.schemaReady())) throw new Error("env tables missing after migrations");
-  const cache = new EnvCache(envStore, { dataset: CARBON_INTENSITY.id, regions: CARBON_INTENSITY.regions, windowMs: cfg.GRID_HISTORY_MEMORY_DAYS * 86_400_000 });
-  envFollower = new EnvFollower(envStore, cache, log);
+  const caches = new Map<string, EnvCache>();
+  // Grid and the trading feed share the carbon-intensity cache: one copy, the longer window.
+  const carbonWindowMs = Math.max(gridOnStore ? cfg.GRID_HISTORY_MEMORY_DAYS * 86_400_000 : 0, cfg.TRADING_ENABLED ? tradingDataset("carbon_intensity")!.memoryMs : 0);
+  caches.set(CARBON_INTENSITY.id, new EnvCache(envStore, { dataset: CARBON_INTENSITY.id, regions: CARBON_INTENSITY.regions, windowMs: carbonWindowMs }));
+  if (cfg.TRADING_ENABLED) {
+    for (const d of TRADING_DATASETS) {
+      if (!caches.has(d.spec.id)) caches.set(d.spec.id, new EnvCache(envStore, { dataset: d.spec.id, regions: d.spec.regions, windowMs: d.memoryMs }));
+    }
+  }
+  envFollower = new EnvFollower(envStore, [...caches.values()], log);
   await envFollower.start();
   const follower = envFollower;
-  gridFeed = new GridFeed(new StoreGridSource(cache, { lastRefreshAt: () => cache.lastRefreshAt, ingestLastSuccessAt: () => follower.ingestLastSuccessAt }), log, cfg.GRID_POLL_MS);
-  const feedRef = gridFeed;
-  // After every follower step: a new version reaches the live endpoints at once, and so does
-  // ingest recovering (which changes freshness without changing values).
-  // Push needs sessions (streams are paid per event from one). Subscribers hear about a version
-  // only after the feed has taken it in.
-  const updates = cfg.SESSIONS_ENABLED ? new GridUpdates() : undefined;
-  let streamedPosition = cache.position;
-  envFollower.onUpdate(() => {
-    void feedRef.poll().then(() => {
-      if (updates && cache.position !== streamedPosition) {
-        streamedPosition = cache.position;
-        updates.publish();
-      }
+  const versionStore = envStore;
+  const carbon = caches.get(CARBON_INTENSITY.id)!;
+
+  if (gridOnStore) {
+    gridFeed = new GridFeed(new StoreGridSource(carbon, { lastRefreshAt: () => carbon.lastRefreshAt, ingestLastSuccessAt: () => follower.ingestLastSuccess(CARBON_INTENSITY.id) }), log, cfg.GRID_POLL_MS);
+    const feedRef = gridFeed;
+    // After every follower step for carbon intensity: a new version reaches the live endpoints at
+    // once, and so does ingest recovering (which changes freshness without changing values).
+    // Subscribers hear about a version only after the feed has taken it in.
+    let streamedPosition = carbon.position;
+    envFollower.onUpdate((dataset) => {
+      if (dataset !== CARBON_INTENSITY.id) return;
+      void feedRef.poll().then(() => {
+        if (gridUpdates && carbon.position !== streamedPosition) {
+          streamedPosition = carbon.position;
+          gridUpdates.publish();
+        }
+      });
     });
-  });
-  await gridFeed.poll();
-  gridFeed.start();
-  products.push(new GridProduct(gridFeed, Date.now, new GridHistory(cache, envStore), updates));
-  log.info({ versions: cache.size, windowDays: cfg.GRID_HISTORY_MEMORY_DAYS }, "grid reading from the version store");
+    await gridFeed.poll();
+    gridFeed.start();
+    products.push(new GridProduct(gridFeed, Date.now, new GridHistory(carbon, envStore), gridUpdates));
+    log.info({ versions: carbon.size, windowDays: cfg.GRID_HISTORY_MEMORY_DAYS }, "grid reading from the version store");
+  }
+
+  if (cfg.TRADING_ENABLED) {
+    const sources = new Map<string, TradingSource>();
+    for (const d of TRADING_DATASETS) {
+      const cache = caches.get(d.spec.id)!;
+      sources.set(d.key, { cache, history: new EnvHistory(cache, versionStore), ingestLastSuccessAt: () => follower.ingestLastSuccess(d.spec.id) });
+    }
+    if (tradingUpdates) {
+      // A stream event goes out only when the dataset's cache moved, after it has taken the version in.
+      const positions = new Map(TRADING_DATASETS.map((d) => [d.spec.id, caches.get(d.spec.id)!.position]));
+      const keyOf = new Map(TRADING_DATASETS.map((d) => [d.spec.id, d.key]));
+      envFollower.onUpdate((dataset) => {
+        const key = keyOf.get(dataset);
+        const cache = caches.get(dataset);
+        if (!key || !cache || cache.position === positions.get(dataset)) return;
+        positions.set(dataset, cache.position);
+        tradingUpdates.publish(key);
+      });
+    }
+    products.push(new TradingProduct(sources, Date.now, tradingUpdates));
+    log.info({ datasets: TRADING_DATASETS.map((d) => ({ key: d.key, versions: caches.get(d.spec.id)!.size })) }, "trading feed reading from the version store");
+  }
 } else if (cfg.GRID_ENABLED) {
   gridFeed = new GridFeed(new NesoGridSource(cfg.GRID_SOURCE_URL), log, cfg.GRID_POLL_MS);
   await gridFeed.poll(); // serve with data from the first request, or report stale (never charge)

@@ -114,3 +114,11 @@ describe("product alert config", () => {
   });
 });
 
+
+describe("trading feed config", () => {
+  it("is off by default and needs the version store (DATABASE_URL) when on", () => {
+    expect(loadConfig(base).TRADING_ENABLED).toBe(false);
+    expect(() => loadConfig({ ...base, TRADING_ENABLED: "true" })).toThrow(/TRADING_ENABLED/);
+    expect(loadConfig({ ...base, TRADING_ENABLED: "true", DATABASE_URL: "postgres://x" }).TRADING_ENABLED).toBe(true);
+  });
+});

@@ -166,7 +166,7 @@ export function openapi(d: AppDeps) {
         responses: {
           "200": { description: "Data envelope", content: { "application/json": { schema: { $ref: "#/components/schemas/Envelope" } } } },
           "402": { description: "Payment required: x402 PAYMENT-REQUIRED header, and the price in the body (credits alternative included); not charged", content: { "application/json": { schema: { $ref: "#/components/schemas/PaymentRequired" } } } },
-          "404": { description: "Unknown scope or resource, or (grid history and revisions) no recorded data for the request: error no_history, with history_from; not charged", content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } } },
+          "404": { description: "Unknown scope or resource, or (history and revisions) no recorded data for the request: error no_history, with history_from; not charged", content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } } },
           "503": { description: "Data stale, not for sale on this network, or payments unavailable; not charged", content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } } },
         },
       },
@@ -221,14 +221,14 @@ export function openapi(d: AppDeps) {
       schemas: {
         Envelope: {
           type: "object",
-          description: "Every data response. mode is always present; the timing fields depend on the product (maritime: snapshot_ts, source_ts, degraded; grid: generated_at, forecast_until).",
+          description: "Every data response. mode is always present; the timing fields depend on the product (maritime: snapshot_ts, source_ts, degraded; grid: generated_at, forecast_until; trading: dataset, unit, generated_at, source).",
           required: ["mode"],
           properties: {
             mode: { type: "string", enum: ["live", "simulated", "replay"], description: "Only live data is sold on mainnet" },
             snapshot_ts: { type: "string", format: "date-time", description: "Maritime: when this snapshot was built" },
             source_ts: { type: ["string", "null"], format: "date-time", description: "Maritime: newest AIS report in it" },
             degraded: { type: "boolean", description: "Maritime: the feed is behind (paid calls return 503 instead)" },
-            generated_at: { type: "string", format: "date-time", description: "Grid: when this answer was computed" },
+            generated_at: { type: "string", format: "date-time", description: "Grid and trading: when this answer was computed" },
             forecast_until: { type: ["string", "null"], format: "date-time", description: "Grid: end of the forecast horizon" },
           },
           additionalProperties: true,

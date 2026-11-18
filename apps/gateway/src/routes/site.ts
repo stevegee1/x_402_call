@@ -142,8 +142,12 @@ function statusChip(p: Product): string {
 /** What this server actually sells, so the page never advertises a feature that is switched off. */
 function offers(d: AppDeps) {
   const has = (id: string) => d.catalog.paid.some((r) => r.resource.id === id) || d.catalog.streams.some((r) => r.resource.id === id);
-  // History and revisions are one resource set (GRID_HISTORY_RESOURCES): sold together or not at all.
-  return { history: has("grid.history"), stream: has("grid.stream"), sessions: accessProduct(d) !== undefined };
+  // History and revisions are one resource set per product: sold together or not at all.
+  return {
+    history: has("grid.history") || has("trading.history"),
+    stream: has("grid.stream") || has("trading.stream"),
+    sessions: accessProduct(d) !== undefined,
+  };
 }
 
 /**
@@ -209,6 +213,22 @@ function gridCard(grid: Product, o: ReturnType<typeof offers>): string {
         <div class="card-head"><h3>${trading ? "Intelligence for AI trading platforms" : "Grid carbon intelligence"}</h3>${statusChip(grid)}</div>
         <p>${intro}</p>
         <ul>${list.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></article>`;
+}
+
+/** The home page's trading-feed card, listing push and sessions only when this server sells them. */
+function tradingCard(trading: Product, o: ReturnType<typeof offers>): string {
+  const items = [
+    "Carbon intensity (GB and 14 regions), embedded wind and solar, 14-day wind, 2-14 day demand, generation mix",
+    "Imbalance and market index prices",
+    "Point-in-time history: the data as it was known, for backtests without look-ahead",
+    "Every revision of every period",
+    o.stream ? "A live push stream per dataset" : "",
+    o.sessions ? "Reads from memory with prepaid sessions" : "",
+  ].filter(Boolean);
+  return `<article class="card "><div class="art">${tradingScene()}</div>
+        <div class="card-head"><h3>Intelligence for AI trading platforms</h3>${statusChip(trading)}</div>
+        <p>Every half-hourly GB power series from the system operator and Elexon, with every published version kept:</p>
+        <ul>${items.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></article>`;
 }
 
 /** A concrete, callable URL for a product: its first resource that needs only one path value. */
@@ -359,6 +379,7 @@ export function renderSite(d: AppDeps, viewer?: Viewer | null): string {
   const description = `${subject} intelligence for AI agents${o.history || o.stream ? " and trading systems" : ""}, sold per request. Agents pay from $${from} in USDC with x402; businesses can prepay in GBP.`;
   const maritime = products.find((p) => p.id === "maritime");
   const grid = products.find((p) => p.id === "grid");
+  const trading = products.find((p) => p.id === "trading");
 
   return `<!doctype html>
 <html lang="en-GB">
@@ -414,7 +435,8 @@ ${mainnet ? "" : `<div class="banner" role="note">Test environment. Payments use
         <div class="card-head"><h3>Maritime intelligence</h3>${maritime ? statusChip(maritime) : ""}</div>
         <p>AIS vessel positions turned into signals a model can use:</p>
         <ul><li>Live vessel snapshots and tracks</li><li>Traffic density on an H3 grid</li><li>Anchorage queues and wait times</li><li>Anomalies: vessels going dark, jumps, loitering</li></ul></article>
-      ${grid ? gridCard(grid, o) : ""}
+      ${trading ? tradingCard(trading, o) : ""}
+      ${grid ? gridCard(grid, trading ? { ...o, history: false, stream: false } : o) : ""}
     </div>
   </section>
 
@@ -470,7 +492,7 @@ ${mainnet ? "" : `<div class="banner" role="note">Test environment. Payments use
 </div></main>
 <footer><div class="wrap">
   <nav aria-label="Footer"><a href="/catalog">Catalog</a><a href="/docs">API reference</a><a href="/openapi.json?format=json">openapi.json</a><a href="/status">Service status</a></nav>
-  <div>Payments on ${esc(network)}.${grid ? " Grid data supported by National Energy SO Open Data; not provided or endorsed by NESO." : ""}</div>
+  <div>Payments on ${esc(network)}.${grid || trading ? " Grid data supported by National Energy SO Open Data; not provided or endorsed by NESO." : ""}${trading ? ` Contains BMRS data © Elexon Limited copyright and database right ${new Date().getUTCFullYear()}.` : ""}</div>
 </div></footer>
 <script>${JS}</script>
 </body>

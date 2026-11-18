@@ -127,6 +127,8 @@ export default defineRailway((ctx) => {
       // Grid is served from the version store that ingest-env writes (memory, point-in-time history),
       // instead of polling NESO from the gateway.
       GRID_SOURCE: "store",
+      // Trading feed: every NESO and Elexon series ingest-env records, from the same version store.
+      TRADING_ENABLED: "true",
 
       // x402 sessions: pay once, read at memory speed; SSE push is paid from a session.
       SESSIONS_ENABLED: "true",

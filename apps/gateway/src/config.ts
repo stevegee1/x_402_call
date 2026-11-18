@@ -58,6 +58,9 @@ const schema = z
     /** How much version history Grid keeps in memory (days); older history reads go to Postgres. */
     GRID_HISTORY_MEMORY_DAYS: z.coerce.number().int().min(1).max(31).default(7),
 
+    /** Trading feed (every NESO and Elexon series in the version store, with point-in-time history). Off unless enabled. */
+    TRADING_ENABLED: bool.default("false"),
+
     // x402 sessions (architecture.md §6.4): prepay once, then read from memory. Off unless enabled.
     SESSIONS_ENABLED: bool.default("false"),
     /** HMAC key for session tokens; identical on every replica. Rotating it invalidates live sessions. */
@@ -134,6 +137,8 @@ const schema = z
       ctx.addIssue({ code: "custom", path: ["CDP_API_KEY_ID"], message: "CDP credentials required when FACILITATOR=cdp" });
     if (c.GRID_ENABLED && c.GRID_SOURCE === "store" && !c.DATABASE_URL)
       ctx.addIssue({ code: "custom", path: ["GRID_SOURCE"], message: "store needs DATABASE_URL (the version store is in Postgres)" });
+    if (c.TRADING_ENABLED && !c.DATABASE_URL)
+      ctx.addIssue({ code: "custom", path: ["TRADING_ENABLED"], message: "the trading feed needs DATABASE_URL (it reads the version store in Postgres)" });
     if (c.SESSIONS_ENABLED && !c.SESSION_SECRET) ctx.addIssue({ code: "custom", path: ["SESSION_SECRET"], message: "required when SESSIONS_ENABLED=true" });
     if (c.X402_NETWORK === "eip155:8453" && c.FACILITATOR === "x402org")
       ctx.addIssue({ code: "custom", path: ["FACILITATOR"], message: "x402.org facilitator is testnet-only; use cdp for Base mainnet" });

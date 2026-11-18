@@ -137,3 +137,93 @@ describe("EnvFollower", () => {
     await f.stop();
   });
 });
+
+describe("EnvFollower over several datasets, one connection", () => {
+  class MultiFake implements CacheSource, FollowerStore {
+    rows = new Map<string, ChangeRow[]>();
+    lastOk = new Map<string, number>();
+    listens = 0;
+    handlers?: { onNotify: (d: string) => void; onReconnect: () => void; onError: (e: unknown) => void };
+    reads: string[] = [];
+    async snapshot(d: string) {
+      this.reads.push(d);
+      const rows = this.rows.get(d) ?? [];
+      return { rows: [...rows], maxSeq: rows.length };
+    }
+    async changesSince(d: string, after: number) {
+      this.reads.push(d);
+      return (this.rows.get(d) ?? []).filter((r) => r.seq > after);
+    }
+    async lastSuccess(d: string): Promise<FetchRecord | null> {
+      const t = this.lastOk.get(d);
+      return t === undefined ? null : { fetchedAt: t, publishedAt: null, ok: true, rowsSeen: 1, rowsChanged: 1, rowsDropped: 0, error: null };
+    }
+    listen(h: NonNullable<MultiFake["handlers"]>) {
+      this.listens++;
+      this.handlers = h;
+      return async () => {};
+    }
+    add(d: string, region: string) {
+      const list = this.rows.get(d) ?? [];
+      list.push({ seq: list.length + 1, region, validFrom: NOW, value: 1, quality: "ok", rawValue: null, ingestedAt: NOW + list.length, publishedAt: null });
+      this.rows.set(d, list);
+    }
+  }
+  const A = "neso.carbon_intensity";
+  const B = "elexon.system_prices";
+  function setup() {
+    const src = new MultiFake();
+    const a = new EnvCache(src, { dataset: A, regions: ["england"], windowMs: 86_400_000 }, () => NOW);
+    const b = new EnvCache(src, { dataset: B, regions: ["ssp"], windowMs: 86_400_000 }, () => NOW);
+    const f = new EnvFollower(src, [a, b], { warn: () => {} }, 60_000);
+    return { src, a, b, f };
+  }
+
+  it("loads every cache and each dataset's own ingest status, on one listen connection", async () => {
+    const { src, a, b, f } = setup();
+    src.add(A, "england");
+    src.add(B, "ssp");
+    src.lastOk.set(A, NOW - 1_000);
+    src.lastOk.set(B, NOW - 9_000);
+    await f.start();
+    expect([a.ready, b.ready, a.position, b.position]).toEqual([true, true, 1, 1]);
+    expect([f.ingestLastSuccess(A), f.ingestLastSuccess(B), f.ingestLastSuccessAt]).toEqual([NOW - 1_000, NOW - 9_000, NOW - 1_000]);
+    expect(src.listens).toBe(1);
+    expect(f.cacheFor(B)).toBe(b);
+    await f.stop();
+  });
+
+  it("a notification refreshes only its dataset, and listeners hear which one", async () => {
+    const { src, a, b, f } = setup();
+    await f.start();
+    const heard: string[] = [];
+    f.onUpdate((d) => heard.push(d));
+    src.reads = [];
+    src.add(B, "ssp");
+    src.handlers!.onNotify(B);
+    await settle();
+    expect(heard).toEqual([B]);
+    expect(src.reads.every((d) => d === B)).toBe(true);
+    expect([a.position, b.position]).toEqual([0, 1]);
+    await f.stop();
+  });
+
+  it("a reconnect refreshes every dataset", async () => {
+    const { src, f } = setup();
+    await f.start();
+    const heard: string[] = [];
+    f.onUpdate((d) => heard.push(d));
+    src.handlers!.onReconnect();
+    await settle();
+    expect(heard.sort()).toEqual([B, A].sort());
+    await f.stop();
+  });
+
+  it("refuses two caches for one dataset (they would drift apart)", () => {
+    const src = new MultiFake();
+    const a1 = new EnvCache(src, { dataset: A, regions: ["england"], windowMs: 1 });
+    const a2 = new EnvCache(src, { dataset: A, regions: ["wales"], windowMs: 1 });
+    expect(() => new EnvFollower(src, [a1, a2], { warn: () => {} })).toThrow(/two caches for dataset/);
+    expect(() => new EnvFollower(src, [], { warn: () => {} })).toThrow(/at least one cache/);
+  });
+});
