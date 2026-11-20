@@ -3,7 +3,8 @@ import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { isMainnet } from "../config";
 import type { AppDeps, AppEnv } from "../context";
 import { CreditsError } from "../credits/service";
-import { accountPage, ACCOUNT_HEADERS, errorPage, newKeyPage, signInPage, signUpPage, type AccountView, type PageOpts } from "./account-pages";
+import { accountPage, ACCOUNT_HEADERS, AUTH_HEADERS, errorPage, newKeyPage, signInPage, signUpPage, type AccountView, type PageOpts } from "./account-pages";
+import { catalogView } from "./catalog-model";
 import { sessionCookieName } from "../customers/web-session";
 import { clientIp, WindowLimiter } from "./limits";
 
@@ -33,7 +34,9 @@ const FRIENDLY: Record<string, string> = {
  *  - CSRF: every POST must come from our own origin (Origin header, or Sec-Fetch-Site), on top of
  *    SameSite=Lax. Cross-site form posts are refused before any work is done.
  *  - Guessing: per-user lockout in the database (all replicas) plus a per-IP limit per replica.
- *  - Pages: no script, hash-only styles, no-store, noindex, frame-ancestors none.
+ *  - Pages: auth pages (/signup, /signin) are script-free; /account and newKeyPage use one
+ *    hash-pinned inline script with connect-src 'self'. All pages are hash-only styles, no-store,
+ *    noindex, frame-ancestors none.
  */
 export function accountRoutes(d: AppDeps) {
   const r = new Hono<AppEnv>();
@@ -46,6 +49,7 @@ export function accountRoutes(d: AppDeps) {
   const signInLimit = new WindowLimiter(20, 15 * 60_000);
   const signUpLimit = new WindowLimiter(10, 60 * 60_000);
 
+  const authPage = (c: Context<AppEnv>, html: string, status: 200 | 400 | 401 | 403 | 404 | 409 | 429 | 503 = 200) => c.body(html, status, AUTH_HEADERS);
   const page = (c: Context<AppEnv>, html: string, status: 200 | 400 | 401 | 403 | 404 | 409 | 429 | 503 = 200) => c.body(html, status, ACCOUNT_HEADERS);
   const seeOther = (c: Context<AppEnv>, to: string) => c.body(null, 303, { location: to, "cache-control": "no-store" });
 
@@ -74,17 +78,17 @@ export function accountRoutes(d: AppDeps) {
   r.use("*", async (c, next) => {
     if (c.req.method === "POST" && ours(c.req.path) && !sameOrigin(c)) {
       d.metrics.inc("account_csrf_refused_total");
-      return page(c, errorPage(opts, 403, "Request refused", "This form must be sent from our own site. Reload the page and try again."), 403);
+      return authPage(c, errorPage(opts, 403, "Request refused", "This form must be sent from our own site. Reload the page and try again."), 403);
     }
     await next();
   });
 
-  r.get("/signup", async (c) => ((await current(c)) ? seeOther(c, "/account") : page(c, signUpPage(opts))));
+  r.get("/signup", async (c) => ((await current(c)) ? seeOther(c, "/account") : authPage(c, signUpPage(opts))));
 
   r.post("/signup", async (c) => {
     const f = await form(c);
     const values = { company: f.company ?? "", email: f.email ?? "", country: f.country ?? "GB", taxId: f.taxId ?? "" };
-    if (!signUpLimit.hit(clientIp(c, d.cfg.CLIENT_IP_HEADER))) return page(c, signUpPage(opts, values, { form: "Too many sign-ups from your network. Try again later." }), 429);
+    if (!signUpLimit.hit(clientIp(c, d.cfg.CLIENT_IP_HEADER))) return authPage(c, signUpPage(opts, values, { form: "Too many sign-ups from your network. Try again later." }), 429);
     try {
       const res = await customers.signUp({ ...values, password: f.password });
       setSession(c, res.token, res.expiresAt);
@@ -95,26 +99,26 @@ export function accountRoutes(d: AppDeps) {
       if (!(e instanceof CreditsError)) throw e;
       const fieldName = FIELD_OF[e.code];
       const message = FRIENDLY[e.code] ?? e.message;
-      return page(c, signUpPage(opts, values, fieldName ? { [fieldName]: message } : { form: message }), e.code === "email_taken" ? 409 : 400);
+      return authPage(c, signUpPage(opts, values, fieldName ? { [fieldName]: message } : { form: message }), e.code === "email_taken" ? 409 : 400);
     }
   });
 
   r.get("/signin", async (c) => {
     if (await current(c)) return seeOther(c, "/account");
     const notice = c.req.query("signed_out") === "1" ? "You've signed out." : undefined;
-    return page(c, signInPage(opts, "", undefined, notice));
+    return authPage(c, signInPage(opts, "", undefined, notice));
   });
 
   r.post("/signin", async (c) => {
     const f = await form(c);
     const email = (f.email ?? "").trim();
-    if (!signInLimit.hit(clientIp(c, d.cfg.CLIENT_IP_HEADER))) return page(c, signInPage(opts, email, "Too many attempts from your network. Wait a few minutes and try again."), 429);
+    if (!signInLimit.hit(clientIp(c, d.cfg.CLIENT_IP_HEADER))) return authPage(c, signInPage(opts, email, "Too many attempts from your network. Wait a few minutes and try again."), 429);
     const res = await customers.signIn(email, f.password);
     if (!res.ok) {
       d.metrics.inc("account_signin_failed_total", { reason: res.reason });
       // One message for unknown email and wrong password, so the form doesn't reveal who has an account.
       const msg = res.reason === "locked" ? "Too many failed attempts. This account is locked for a few minutes; try again later." : "That email and password don't match an account.";
-      return page(c, signInPage(opts, email, msg), res.reason === "locked" ? 429 : 401);
+      return authPage(c, signInPage(opts, email, msg), res.reason === "locked" ? 429 : 401);
     }
     setSession(c, res.token, res.expiresAt);
     return seeOther(c, "/account");
@@ -130,6 +134,7 @@ export function accountRoutes(d: AppDeps) {
     ...s,
     keys: await customers.keys(s.account.id),
     usage: await d.store.usage(s.account.id, 20),
+    products: catalogView(d),
     notice,
   });
 

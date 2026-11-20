@@ -1,12 +1,14 @@
 import { createHash } from "node:crypto";
 import { CREDIT_PACKS } from "@mx/shared";
 import type { ApiKeyInfo, CreditAccount, CustomerUser, UsageRow } from "../store/types";
+import type { ProductView } from "./catalog-model";
 import { BRAND_MARK, esc, FAVICON, THEME_CSS } from "./site-theme";
 
 /**
- * Server-rendered customer pages: sign up, sign in, account. Plain HTML forms, no script at all,
- * so they work everywhere and the CSP can forbid scripts outright. Styled with the site's
- * Material 3 theme.
+ * Server-rendered customer pages: sign up, sign in, account. Auth pages (/signup, /signin) are
+ * plain HTML forms with zero script so their CSP forbids scripts outright. The signed-in account
+ * dashboard (/account) and new-key page include one hash-pinned vanilla script for the interactive
+ * API Explorer box. Styled with the site's Material 3 theme.
  */
 
 const ACCOUNT_CSS = `
@@ -32,17 +34,411 @@ const ACCOUNT_CSS = `
 .status-revoked{color:var(--on-surface-v)}
 .btn.danger{color:var(--error);border-color:var(--outline)}
 .empty{color:var(--on-surface-v);font-size:14px;margin:8px 0 0}
+.console-card{margin-top:24px}
+.console-preset{width:100%;margin:12px 0}
+.console-bar{display:grid;grid-template-columns:104px minmax(0,1fr) auto;gap:10px;align-items:center;margin:0 0 12px}
+.console-auth{display:grid;grid-template-columns:132px minmax(0,1fr) auto auto;gap:10px;align-items:center;background:var(--surface-c);border:1px solid var(--outline-v);border-radius:12px;padding:10px 12px;margin-bottom:12px}
+.console-select,.console-input,.console-textarea{width:100%;border-radius:8px;border:1px solid var(--outline-v);background:var(--surface);color:var(--on-surface);font:400 14px/1.4 var(--font)}
+.console-select,.console-input{height:40px;padding:0 12px}
+.console-input,.console-textarea{font-family:var(--mono);font-size:13px}
+.console-textarea{padding:10px 12px;min-height:92px;resize:vertical}
+.console-body{margin-bottom:12px}
+.console-body label{display:block;font-size:13px;font-weight:500;color:var(--on-surface-v);margin-bottom:6px}
+.console-meta{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:16px 0 8px;font-size:13px}
+.console-meta .spacer{margin-left:auto}
+.status-pill{display:inline-flex;align-items:center;padding:3px 10px;border-radius:999px;font:600 12px/1.3 var(--mono)}
+.status-2xx{background:var(--tertiary-container);color:var(--on-tertiary-container)}
+.status-4xx{background:var(--warn-container);color:var(--on-warn-container)}
+.status-5xx{background:var(--error-container);color:var(--on-error-container)}
+.status-idle{background:var(--surface-ch);color:var(--on-surface-v)}
+.res-time,.res-info{font:400 12px/1.3 var(--mono);color:var(--on-surface-v)}
+.curl-box{margin:12px 0 0;background:var(--surface-c);border:1px solid var(--outline-v);border-radius:12px;padding:10px 14px}
+.curl-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px;font:500 11px/1 var(--font);text-transform:uppercase;letter-spacing:.6px;color:var(--on-surface-v)}
+.curl-pre{margin:0;padding:0;border:0;background:transparent;border-radius:0;font:400 12px/1.5 var(--mono);overflow-x:auto}
+.console-out{margin:0;max-height:420px;overflow:auto;background:var(--surface);border:1px solid var(--outline-v);border-radius:12px;padding:14px 16px;font:400 13px/1.5 var(--mono);white-space:pre-wrap;word-break:break-word}
+.console-hint{font-size:13px;color:var(--on-surface-v);margin:6px 0 0}
+.key-actions{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;margin-top:8px}
 @media (max-width:860px){.grid2{grid-template-columns:minmax(0,1fr)}}
+@media (max-width:640px){.console-bar,.console-auth{grid-template-columns:minmax(0,1fr)}.key-actions{grid-template-columns:minmax(0,1fr)}}
 @media (max-width:560px){.row2,.packs{grid-template-columns:minmax(0,1fr)}.auth .card{padding:24px}}
 `;
+
+/**
+ * Hash-pinned vanilla client script for /account (API Explorer) and newKeyPage (session key handoff).
+ * Never uses innerHTML on response data; enforces same-origin relative paths so keys cannot leak.
+ */
+export const ACCOUNT_SCRIPT = `(function(){
+var KEY_STORAGE="mx_api_key";
+var keyEl=document.querySelector(".key");
+var copyKeyBtn=document.getElementById("copy-key-btn");
+if(keyEl&&keyEl.textContent){
+  var rawKey=keyEl.textContent.trim();
+  try{sessionStorage.setItem(KEY_STORAGE,rawKey);}catch(_){}
+  if(copyKeyBtn){
+    copyKeyBtn.addEventListener("click",function(){
+      if(!navigator.clipboard)return;
+      navigator.clipboard.writeText(rawKey).then(function(){
+        copyKeyBtn.textContent="Copied";
+        setTimeout(function(){copyKeyBtn.textContent="Copy key";},2000);
+      }).catch(function(){});
+    });
+  }
+}
+
+document.querySelectorAll('form[action="/signout"]').forEach(function(f){
+  f.addEventListener("submit",function(){
+    try{sessionStorage.removeItem(KEY_STORAGE);}catch(_){}
+  });
+});
+
+document.querySelectorAll("form[data-key-prefix]").forEach(function(f){
+  f.addEventListener("submit",function(){
+    var prefix=f.getAttribute("data-key-prefix")||"";
+    if(!prefix)return;
+    try{
+      var stored=sessionStorage.getItem(KEY_STORAGE)||"";
+      if(stored.startsWith(prefix))sessionStorage.removeItem(KEY_STORAGE);
+    }catch(_){}
+  });
+});
+
+var root=document.getElementById("api-console");
+if(!root)return;
+
+var presetEl=document.getElementById("preset-select");
+var methodEl=document.getElementById("req-method");
+var urlEl=document.getElementById("req-url");
+var schemeEl=document.getElementById("auth-scheme");
+var keyIn=document.getElementById("api-key-input");
+var toggleKeyBtn=document.getElementById("toggle-key-btn");
+var clearKeyBtn=document.getElementById("clear-key-btn");
+var bodyWrap=document.getElementById("body-section");
+var bodyIn=document.getElementById("req-body");
+var descEl=document.getElementById("preset-desc");
+var sendBtn=document.getElementById("send-btn");
+var curlEl=document.getElementById("curl-snippet");
+var copyCurlBtn=document.getElementById("copy-curl-btn");
+var statusEl=document.getElementById("res-status");
+var timeEl=document.getElementById("res-time");
+var infoEl=document.getElementById("res-info");
+var outEl=document.getElementById("res-body");
+var copyResBtn=document.getElementById("copy-res-btn");
+var balEl=document.getElementById("acct-balance");
+
+var creds={Bearer:"",Session:""};
+var activeScheme=schemeEl?schemeEl.value:"Bearer";
+try{
+  var saved=sessionStorage.getItem(KEY_STORAGE);
+  if(saved)creds.Bearer=saved;
+}catch(_){}
+if(keyIn&&activeScheme==="Bearer"&&creds.Bearer)keyIn.value=creds.Bearer;
+
+function shQuote(s){
+  return "'"+String(s).replace(/'/g,"'\\\\''")+"'";
+}
+
+function resolveSafePath(raw){
+  var p=(raw||"").trim();
+  if(!p||!p.startsWith("/")||p.startsWith("//")||p.startsWith("/\\\\"))return null;
+  try{
+    var u=new URL(p,window.location.origin);
+    if(u.origin!==window.location.origin||!u.pathname.startsWith("/")||u.pathname.startsWith("//")||u.pathname.startsWith("/\\\\"))return null;
+    return u.pathname+u.search;
+  }catch(_){return null;}
+}
+
+function parseNum(v){
+  if(v===null||v.trim()==="")return null;
+  var n=Number(v);
+  return Number.isFinite(n)?n:null;
+}
+
+function syncKeyVisibility(){
+  if(!keyIn||!schemeEl)return;
+  var none=schemeEl.value==="None";
+  keyIn.disabled=none;
+  keyIn.placeholder=schemeEl.value==="Session"?"Paste x402 session token":"Paste API key (mk_...)";
+}
+
+function cleanAuth(){
+  if(!keyIn||!schemeEl)return{scheme:"None",token:""};
+  var v=keyIn.value.trim();
+  var switched=false;
+  if(/^Bearer\\s+/i.test(v)){
+    v=v.replace(/^Bearer\\s+/i,"").trim();
+    keyIn.value=v;
+    if(schemeEl.value!=="Bearer"){schemeEl.value="Bearer";activeScheme="Bearer";switched=true;}
+  }else if(/^Session\\s+/i.test(v)){
+    v=v.replace(/^Session\\s+/i,"").trim();
+    keyIn.value=v;
+    if(schemeEl.value!=="Session"){schemeEl.value="Session";activeScheme="Session";switched=true;}
+  }
+  if(activeScheme==="Bearer"||activeScheme==="Session")creds[activeScheme]=v;
+  if(switched)syncKeyVisibility();
+  return{scheme:schemeEl.value,token:schemeEl.value==="None"?"":v};
+}
+
+function toggleBody(){
+  if(!bodyWrap||!methodEl)return;
+  bodyWrap.hidden=methodEl.value!=="POST";
+}
+
+function markCustom(){
+  if(presetEl&&presetEl.value!=="custom"){
+    presetEl.value="custom";
+    if(descEl)descEl.textContent="Custom gateway request.";
+  }
+}
+
+function updateCurl(){
+  if(!curlEl)return;
+  var method=(methodEl?methodEl.value:"GET").toUpperCase();
+  var safePath=resolveSafePath(urlEl?urlEl.value:"");
+  if(!safePath){
+    curlEl.textContent="# Enter a relative path starting with a single / (for example /v1/credits/balance)";
+    return;
+  }
+  var auth=cleanAuth();
+  var fullUrl=window.location.origin+safePath;
+  var parts=["curl -i"+(method==="GET"?"":" -X "+method)];
+  if(auth.scheme!=="None"&&auth.token){
+    parts.push("-H "+shQuote("Authorization: "+auth.scheme+" "+auth.token));
+  }
+  if(method==="POST"&&bodyIn&&bodyIn.value.trim()){
+    var compact=bodyIn.value.trim();
+    try{compact=JSON.stringify(JSON.parse(compact));}catch(_){}
+    parts.push("-H 'Content-Type: application/json'");
+    parts.push("-d "+shQuote(compact));
+  }
+  parts.push(shQuote(fullUrl));
+  curlEl.textContent=parts.join(" \\\\\\n  ");
+}
+
+function applyPreset(){
+  if(!presetEl)return;
+  var opt=presetEl.options[presetEl.selectedIndex];
+  if(!opt)return;
+  if(opt.value==="custom"){
+    if(descEl)descEl.textContent="Enter any relative gateway path (for example /v1/grid/england/intensity).";
+    updateCurl();
+    return;
+  }
+  var m=opt.getAttribute("data-method")||"GET";
+  var p=opt.getAttribute("data-path")||"/v1/credits/balance";
+  var b=opt.getAttribute("data-body")||"";
+  var d=opt.getAttribute("data-desc")||"";
+  if(methodEl)methodEl.value=m;
+  if(urlEl)urlEl.value=p;
+  if(bodyIn)bodyIn.value=b;
+  if(descEl)descEl.textContent=d;
+  toggleBody();
+  updateCurl();
+}
+
+if(toggleKeyBtn&&keyIn){
+  toggleKeyBtn.addEventListener("click",function(){
+    var show=keyIn.type==="password";
+    keyIn.type=show?"text":"password";
+    toggleKeyBtn.textContent=show?"Hide":"Show";
+  });
+}
+
+if(clearKeyBtn&&keyIn){
+  clearKeyBtn.addEventListener("click",function(){
+    keyIn.value="";
+    if(activeScheme==="Bearer"){
+      creds.Bearer="";
+      try{sessionStorage.removeItem(KEY_STORAGE);}catch(_){}
+    }else if(activeScheme==="Session"){
+      creds.Session="";
+    }
+    updateCurl();
+  });
+}
+
+if(keyIn){
+  keyIn.addEventListener("input",function(){
+    var auth=cleanAuth();
+    if(auth.scheme==="Bearer"){
+      try{
+        if(auth.token)sessionStorage.setItem(KEY_STORAGE,auth.token);
+        else sessionStorage.removeItem(KEY_STORAGE);
+      }catch(_){}
+    }
+    updateCurl();
+  });
+}
+
+if(schemeEl){
+  schemeEl.addEventListener("change",function(){
+    if(keyIn&&(activeScheme==="Bearer"||activeScheme==="Session")){
+      creds[activeScheme]=keyIn.value.trim();
+    }
+    activeScheme=schemeEl.value;
+    if(keyIn){
+      keyIn.value=activeScheme==="None"?"":(creds[activeScheme]||"");
+    }
+    syncKeyVisibility();
+    updateCurl();
+  });
+}
+
+if(presetEl)presetEl.addEventListener("change",applyPreset);
+if(methodEl)methodEl.addEventListener("change",function(){markCustom();toggleBody();updateCurl();});
+if(urlEl)urlEl.addEventListener("input",function(){markCustom();updateCurl();});
+if(bodyIn)bodyIn.addEventListener("input",updateCurl);
+
+if(copyCurlBtn&&curlEl){
+  copyCurlBtn.addEventListener("click",function(){
+    if(!navigator.clipboard)return;
+    navigator.clipboard.writeText(curlEl.textContent||"").then(function(){
+      copyCurlBtn.textContent="Copied";
+      setTimeout(function(){copyCurlBtn.textContent="Copy cURL";},2000);
+    }).catch(function(){});
+  });
+}
+
+if(copyResBtn&&outEl){
+  copyResBtn.addEventListener("click",function(){
+    if(!navigator.clipboard)return;
+    navigator.clipboard.writeText(outEl.textContent||"").then(function(){
+      copyResBtn.textContent="Copied";
+      setTimeout(function(){copyResBtn.textContent="Copy response";},2000);
+    }).catch(function(){});
+  });
+}
+
+async function sendRequest(){
+  if(!urlEl||!sendBtn||sendBtn.disabled)return;
+  var safePath=resolveSafePath(urlEl.value);
+  if(!safePath){
+    if(statusEl){statusEl.textContent="Invalid path";statusEl.className="status-pill status-4xx";}
+    if(timeEl)timeEl.textContent="";
+    if(infoEl)infoEl.textContent="";
+    if(copyResBtn)copyResBtn.disabled=true;
+    if(outEl)outEl.textContent="Path must be a same-origin relative path starting with a single / (for example /v1/credits/balance).";
+    return;
+  }
+  var method=(methodEl?methodEl.value:"GET").toUpperCase();
+  var auth=cleanAuth();
+  var bodyText=bodyIn?bodyIn.value.trim():"";
+  if(method==="POST"&&bodyText){
+    try{JSON.parse(bodyText);}catch(e){
+      if(statusEl){statusEl.textContent="Invalid JSON";statusEl.className="status-pill status-4xx";}
+      if(timeEl)timeEl.textContent="";
+      if(infoEl)infoEl.textContent="";
+      if(copyResBtn)copyResBtn.disabled=true;
+      if(outEl)outEl.textContent="Request body is not valid JSON: "+(e&&e.message?e.message:String(e));
+      return;
+    }
+  }
+
+  sendBtn.disabled=true;
+  sendBtn.textContent="Sending...";
+  if(statusEl){statusEl.textContent="Sending...";statusEl.className="status-pill status-idle";}
+  if(timeEl)timeEl.textContent="";
+  if(infoEl)infoEl.textContent="";
+  if(copyResBtn)copyResBtn.disabled=true;
+
+  var t0=performance.now();
+  try{
+    var headers={accept:"application/json"};
+    if(auth.scheme!=="None"&&auth.token){
+      headers.authorization=auth.scheme+" "+auth.token;
+    }
+    if(method==="POST")headers["content-type"]="application/json";
+
+    var res=await fetch(window.location.origin+safePath,{
+      method:method,
+      credentials:"omit",
+      headers:headers,
+      body:method==="POST"&&bodyText?bodyText:undefined
+    });
+    var dt=Math.round(performance.now()-t0);
+    var text=await res.text();
+    var pretty=text;
+    try{pretty=JSON.stringify(JSON.parse(text),null,2);}catch(_){}
+
+    if(statusEl){
+      statusEl.textContent=res.status+(res.statusText?" "+res.statusText:"");
+      statusEl.className="status-pill "+(res.ok?"status-2xx":res.status>=500?"status-5xx":"status-4xx");
+    }
+    if(timeEl)timeEl.textContent=dt+" ms";
+
+    var meta=[];
+    var chargedGbp=parseNum(res.headers.get("x-credits-charged-gbp-micros"));
+    var balGbp=parseNum(res.headers.get("x-credits-balance-gbp-micros"));
+    var chargedUsdc=parseNum(res.headers.get("x-session-charged-usdc-atomic"));
+    var remUsdc=parseNum(res.headers.get("x-session-remaining-usdc-atomic"));
+    var reqId=res.headers.get("x-request-id");
+    if(chargedGbp!==null){
+      meta.push("Charged \\u00a3"+(chargedGbp/1e6).toFixed(3));
+    }
+    if(balGbp!==null&&balEl){
+      balEl.textContent="\\u00a3"+(balGbp/1e6).toFixed(2);
+    }
+    if(chargedUsdc!==null){
+      meta.push("Charged $"+(chargedUsdc/1e6).toFixed(4)+" USDC");
+    }
+    if(remUsdc!==null){
+      meta.push("Session left $"+(remUsdc/1e6).toFixed(4));
+    }
+    if(reqId)meta.push("Req "+reqId.slice(0,8));
+    if(infoEl)infoEl.textContent=meta.join(" \\u00b7 ");
+
+    if(outEl)outEl.textContent=pretty||"(Empty response body)";
+    if(copyResBtn)copyResBtn.disabled=false;
+  }catch(err){
+    var dt2=Math.round(performance.now()-t0);
+    if(statusEl){statusEl.textContent="Network error";statusEl.className="status-pill status-5xx";}
+    if(timeEl)timeEl.textContent=dt2+" ms";
+    if(outEl)outEl.textContent="Request failed: "+(err&&err.message?err.message:String(err));
+  }finally{
+    sendBtn.disabled=false;
+    sendBtn.textContent="Send request";
+  }
+}
+
+if(sendBtn)sendBtn.addEventListener("click",sendRequest);
+[urlEl,keyIn,bodyIn].forEach(function(el){
+  if(!el)return;
+  el.addEventListener("keydown",function(e){
+    if((e.metaKey||e.ctrlKey)&&e.key==="Enter")sendRequest();
+  });
+});
+
+syncKeyVisibility();
+applyPreset();
+})();`;
 
 const CSS = THEME_CSS + ACCOUNT_CSS;
 const sha = (s: string) => `sha256-${createHash("sha256").update(s).digest("base64")}`;
 
-/** No scripts at all. Forms post to us; a top-up redirects on to Stripe Checkout. */
+/** Script-free CSP for /signup and /signin. */
+export const AUTH_CSP = [
+  "default-src 'none'",
+  `style-src '${sha(CSS)}'`,
+  "img-src data:",
+  "form-action 'self' https://checkout.stripe.com",
+  "base-uri 'none'",
+  "frame-ancestors 'none'",
+].join("; ");
+
+export const AUTH_HEADERS: Record<string, string> = {
+  "content-type": "text/html; charset=utf-8",
+  "content-security-policy": AUTH_CSP,
+  "x-content-type-options": "nosniff",
+  "referrer-policy": "same-origin",
+  "cache-control": "no-store",
+  "x-robots-tag": "noindex",
+};
+
+/** Hash-pinned CSP for /account and newKeyPage: allows only the exact API Explorer script and same-origin fetches. */
 export const ACCOUNT_CSP = [
   "default-src 'none'",
   `style-src '${sha(CSS)}'`,
+  `script-src '${sha(ACCOUNT_SCRIPT)}'`,
+  "connect-src 'self'",
   "img-src data:",
   "form-action 'self' https://checkout.stripe.com",
   "base-uri 'none'",
@@ -59,7 +455,7 @@ export const ACCOUNT_HEADERS: Record<string, string> = {
   "x-robots-tag": "noindex",
 };
 
-function shell(title: string, body: string, opts: { signedIn: boolean; testnet: string | null }): string {
+function shell(title: string, body: string, opts: { signedIn: boolean; testnet: string | null; script?: string }): string {
   const acts = opts.signedIn
     ? `<a class="btn text" href="/account">Account</a><form class="inline" method="post" action="/signout"><button class="btn outlined" type="submit">Sign out</button></form>`
     : `<a class="btn text" href="/signin">Sign in</a><a class="btn filled" href="/signup">Get started</a>`;
@@ -84,7 +480,7 @@ ${opts.testnet ? `<div class="banner" role="note">Test environment. Payments use
 </div></header>
 <main id="main"><div class="wrap">${body}</div></main>
 <footer><div class="wrap"><nav aria-label="Footer"><a href="/">Home</a><a href="/openapi.json">API spec</a><a href="/status">Service status</a></nav></div></footer>
-</body>
+${opts.script ? `<script>${opts.script}</script>\n` : ""}</body>
 </html>`;
 }
 
@@ -159,11 +555,144 @@ const gbp = (micros: number) => `£${(micros / 1e6).toFixed(2)}`;
 const gbp3 = (micros: number) => `£${(micros / 1e6).toFixed(3)}`;
 const when = (d: Date) => d.toISOString().replace("T", " ").slice(0, 16) + " UTC";
 
+export interface ApiPreset {
+  id: string;
+  group: string;
+  label: string;
+  method: "GET" | "POST";
+  path: string;
+  body?: string;
+  description: string;
+}
+
+export function buildApiPresets(products: ProductView[] = []): ApiPreset[] {
+  const presets: ApiPreset[] = [
+    {
+      id: "credits.balance",
+      group: "Account & Credits",
+      label: "GET /v1/credits/balance (Free)",
+      method: "GET",
+      path: "/v1/credits/balance",
+      description: "Check your GBP credit balance, company name, and account status.",
+    },
+    {
+      id: "credits.usage",
+      group: "Account & Credits",
+      label: "GET /v1/credits/usage?limit=10 (Free)",
+      method: "GET",
+      path: "/v1/credits/usage?limit=10",
+      description: "List your recent API calls and credit deductions.",
+    },
+    {
+      id: "policy.events",
+      group: "Account & Credits",
+      label: "POST /v1/policy/events (Free)",
+      method: "POST",
+      path: "/v1/policy/events",
+      body: JSON.stringify({ events: [{ action: "demo_check", timestamp: new Date().toISOString() }] }, null, 2),
+      description: "Ingest policy SDK events authenticated with your API key.",
+    },
+  ];
+  for (const p of products) {
+    if (p.kind !== "data") continue;
+    for (const e of p.endpoints) {
+      if (e.kind === "stream") continue;
+      const price = e.pay.credits ? `£${e.pay.credits.price_gbp.toFixed(3)}` : e.kind === "free" ? "Free" : e.pay.session ? `$${e.pay.session.price_usdc} session` : "Paid";
+      presets.push({
+        id: e.id,
+        group: p.name,
+        label: `${e.method} ${e.example} (${price})`,
+        method: e.method,
+        path: e.example,
+        description: e.summary,
+      });
+    }
+  }
+  presets.push(
+    {
+      id: "meta.products",
+      group: "Discovery",
+      label: "GET /v1/products (Free)",
+      method: "GET",
+      path: "/v1/products",
+      description: "Machine-readable catalog of all products, live coverage, and per-call prices.",
+    },
+    {
+      id: "meta.openapi",
+      group: "Discovery",
+      label: "GET /openapi.json (Free)",
+      method: "GET",
+      path: "/openapi.json",
+      description: "Full OpenAPI 3.1 specification for the gateway.",
+    },
+  );
+  return presets;
+}
+
+function renderApiConsole(presets: ApiPreset[]): string {
+  const groups = new Map<string, ApiPreset[]>();
+  for (const p of presets) {
+    const list = groups.get(p.group) ?? [];
+    list.push(p);
+    groups.set(p.group, list);
+  }
+  const options = [...groups.entries()]
+    .map(
+      ([group, items]) =>
+        `<optgroup label="${esc(group)}">${items
+          .map(
+            (p) =>
+              `<option value="${esc(p.id)}" data-method="${esc(p.method)}" data-path="${esc(p.path)}" data-body="${esc(p.body ?? "")}" data-desc="${esc(p.description)}">${esc(p.label)}</option>`,
+          )
+          .join("")}</optgroup>`,
+    )
+    .join("");
+  return `<section class="card console-card" id="api-console" aria-labelledby="console-h">
+  <div class="head">
+    <div>
+      <h2 id="console-h">API Explorer</h2>
+      <p class="muted">Run live requests against any endpoint with your API key or x402 session token. Paid calls deduct from your credit balance (or session) and update your balance live.</p>
+    </div>
+    <span class="chip ok">Collection</span>
+  </div>
+  <select id="preset-select" class="console-select console-preset" aria-label="Select API endpoint preset">${options}<optgroup label="Custom"><option value="custom">Custom endpoint...</option></optgroup></select>
+  <p class="console-hint" id="preset-desc"></p>
+  <div class="console-bar">
+    <select id="req-method" class="console-select" aria-label="HTTP method"><option value="GET">GET</option><option value="POST">POST</option></select>
+    <input id="req-url" class="console-input" type="text" value="/v1/credits/balance" placeholder="/v1/..." aria-label="Endpoint path" spellcheck="false">
+    <button id="send-btn" class="btn filled" type="button">Send request</button>
+  </div>
+  <div class="console-auth">
+    <select id="auth-scheme" class="console-select" aria-label="Authorization scheme"><option value="Bearer">Bearer (Credits)</option><option value="Session">Session (Wallet)</option><option value="None">No auth (402)</option></select>
+    <input id="api-key-input" class="console-input" type="password" placeholder="Paste API key (mk_...)" autocomplete="off" aria-label="API key or session token">
+    <button id="toggle-key-btn" class="btn text" type="button">Show</button>
+    <button id="clear-key-btn" class="btn text" type="button">Clear</button>
+  </div>
+  <div id="body-section" class="console-body" hidden>
+    <label for="req-body">JSON request body</label>
+    <textarea id="req-body" class="console-textarea" spellcheck="false" placeholder='{"events":[]}'></textarea>
+  </div>
+  <div class="curl-box">
+    <div class="curl-head"><span>cURL command</span><button id="copy-curl-btn" class="btn text" type="button">Copy cURL</button></div>
+    <pre class="curl-pre"><code id="curl-snippet"></code></pre>
+  </div>
+  <div class="console-meta">
+    <span id="res-status" class="status-pill status-idle">Ready</span>
+    <span id="res-time" class="res-time"></span>
+    <span id="res-info" class="res-info"></span>
+    <span class="spacer"></span>
+    <button id="copy-res-btn" class="btn text" type="button" disabled>Copy response</button>
+  </div>
+  <pre class="console-out" tabindex="0"><code id="res-body">Choose an endpoint, paste your API key (or create one above), and click "Send request".</code></pre>
+</section>`;
+}
+
 export interface AccountView {
   user: CustomerUser;
   account: CreditAccount;
   keys: ApiKeyInfo[];
   usage: UsageRow[];
+  products?: ProductView[];
   notice?: { kind: "ok" | "info" | "error"; text: string };
 }
 
@@ -174,7 +703,7 @@ export function accountPage(o: PageOpts, v: AccountView): string {
         .map(
           (k) =>
             `<tr><td><code>${esc(k.prefix)}…</code></td><td class="num">${when(k.createdAt)}</td><td>${k.revokedAt ? `<span class="status-revoked">Revoked</span>` : `<span class="chip ok">Active</span>`}</td><td>${
-              k.revokedAt ? "" : `<form class="inline" method="post" action="/account/keys/${esc(k.id)}/revoke"><button class="btn text danger" type="submit">Revoke</button></form>`
+              k.revokedAt ? "" : `<form class="inline" method="post" action="/account/keys/${esc(k.id)}/revoke" data-key-prefix="${esc(k.prefix)}"><button class="btn text danger" type="submit">Revoke</button></form>`
             }</td></tr>`,
         )
         .join("")}</tbody></table></div>`
@@ -184,6 +713,7 @@ export function accountPage(o: PageOpts, v: AccountView): string {
         .map((u) => `<tr><td><code>${esc(u.endpoint)}</code></td><td class="num">${u.micros < 0 ? "+" : ""}${gbp3(Math.abs(u.micros))}</td><td class="num">${when(u.at)}</td></tr>`)
         .join("")}</tbody></table></div>`
     : `<p class="empty">No usage yet. Calls made with your API key appear here.</p>`;
+  const consoleHtml = renderApiConsole(buildApiPresets(v.products));
   return shell(
     "Your account",
     `<div class="dash">
@@ -196,7 +726,7 @@ export function accountPage(o: PageOpts, v: AccountView): string {
     <div class="stack">
       <section class="card" aria-labelledby="bal-h">
         <h2 id="bal-h">Credit balance</h2>
-        <div class="balance">${gbp(a.balanceMicros)}</div>
+        <div class="balance" id="acct-balance">${gbp(a.balanceMicros)}</div>
         <p class="muted">Spent per call at the prices on the <a href="/#pricing">pricing page</a>. VAT is charged when you top up.</p>
         <div class="packs">${Object.values(CREDIT_PACKS)
           .map((p) => `<form method="post" action="/account/topup"><input type="hidden" name="pack" value="${esc(p.id)}"><button class="btn tonal" type="submit">Add ${esc(gbp(p.netGbpMicros))}</button></form>`)
@@ -215,8 +745,9 @@ export function accountPage(o: PageOpts, v: AccountView): string {
       </section>
     </div>
   </div>
+  ${consoleHtml}
 </div>`,
-    { signedIn: true, testnet: o.testnet },
+    { signedIn: true, testnet: o.testnet, script: ACCOUNT_SCRIPT },
   );
 }
 
@@ -231,9 +762,13 @@ export function newKeyPage(o: PageOpts, key: string, first: boolean): string {
   <p class="key">${esc(key)}</p>
   <pre tabindex="0"><code>curl -H "Authorization: Bearer ${esc(key)}" \\
   ${esc(o.base)}/v1/credits/balance</code></pre>
-  <a class="btn filled lg" href="/account">I've saved it, continue</a>
+  <div class="key-actions">
+    <button class="btn tonal" type="button" id="copy-key-btn">Copy key</button>
+    <a class="btn filled" href="/account#api-console">Test in API Explorer</a>
+  </div>
+  <p class="alt"><a href="/account">I've saved it, continue to dashboard</a></p>
 </div></div>`,
-    { signedIn: true, testnet: o.testnet },
+    { signedIn: true, testnet: o.testnet, script: ACCOUNT_SCRIPT },
   );
 }
 

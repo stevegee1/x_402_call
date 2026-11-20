@@ -1,4 +1,6 @@
+import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ACCOUNT_SCRIPT } from "../../src/routes/account-pages";
 import { BASE_URL, createTestEnv, type TestEnv } from "../helpers";
 
 const ORIGIN = new URL(BASE_URL).origin;
@@ -335,5 +337,295 @@ describe("customer sign-up, sign-in and account pages", () => {
     const html = await (await env.fetch(`${BASE_URL}/`, { headers: { accept: "text/html" } })).text();
     expect(html).toContain('href="/signin"');
     expect(html).toContain('href="/signup"');
+  });
+
+  it("account dashboard renders the API Explorer with hash-pinned CSP and live catalog presets", async () => {
+    // Client script must parse cleanly as valid JavaScript.
+    expect(() => new Function(ACCOUNT_SCRIPT)).not.toThrow();
+
+    const unescapeHtml = (s: string) => s.replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+    const assertAccountCsp = (res: Response, html: string) => {
+      const csp = res.headers.get("content-security-policy")!;
+      expect(csp).toContain("default-src 'none'");
+      expect(csp).toContain("connect-src 'self'");
+      expect(csp).toContain("form-action 'self' https://checkout.stripe.com");
+      expect(csp).toContain("frame-ancestors 'none'");
+      expect(csp).not.toContain("unsafe-inline");
+      expect(res.headers.get("cache-control")).toBe("no-store");
+      expect(res.headers.get("x-robots-tag")).toBe("noindex");
+      expect(html).not.toMatch(/\sstyle="/);
+      const styleMatch = /<style>([\s\S]*?)<\/style>/.exec(html);
+      expect(styleMatch).not.toBeNull();
+      const expectedStyleHash = `sha256-${createHash("sha256").update(styleMatch![1]!).digest("base64")}`;
+      expect(csp).toContain(`style-src '${expectedStyleHash}'`);
+      const scriptMatch = /<script>([\s\S]*?)<\/script>/.exec(html);
+      expect(scriptMatch).not.toBeNull();
+      const expectedHash = `sha256-${createHash("sha256").update(scriptMatch![1]!).digest("base64")}`;
+      expect(csp).toContain(`script-src '${expectedHash}'`);
+    };
+
+    const env = await createTestEnv();
+    const b = browser(env);
+    const created = await b.post("/signup", signUpForm());
+    const newKeyHtml = await created.text();
+    const key = keyOf(newKeyHtml)!;
+    expect(newKeyHtml).toContain('href="/account#api-console"');
+    assertAccountCsp(created, newKeyHtml);
+
+    const extraKeyRes = await b.post("/account/keys");
+    assertAccountCsp(extraKeyRes, await extraKeyRes.text());
+
+    const res = await b.get("/account");
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    assertAccountCsp(res, html);
+    expect(html).toContain('id="api-console"');
+    expect(html).toContain('id="preset-select"');
+    expect(html).toContain('id="auth-scheme"');
+    expect(html).toContain('id="api-key-input"');
+    expect(html).toContain('id="send-btn"');
+    expect(html).toContain('id="acct-balance"');
+    expect(html).toContain("data-key-prefix=");
+
+    // Every rendered preset must resolve against the live gateway (no 404s, no invalid region/country slugs).
+    const presets = [...html.matchAll(/<option value="([^"]+)" data-method="(GET|POST)" data-path="([^"]+)" data-body="([^"]*)"/g)];
+    expect(presets.length).toBeGreaterThanOrEqual(5);
+    const paths = presets.map((m) => unescapeHtml(m[3]!));
+    expect(paths).toContain("/v1/credits/balance");
+    expect(paths).toContain("/v1/policy/events");
+    expect(paths.some((p) => p.startsWith("/v1/maritime/"))).toBe(true);
+
+    // Execute every preset with the newly created key (at £0 balance: free endpoints 200, paid endpoints 402, never 404).
+    for (const [, , method, rawPath, rawBody] of presets) {
+      const path = unescapeHtml(rawPath!);
+      const body = rawBody ? unescapeHtml(rawBody) : undefined;
+      const r = await env.fetch(`${BASE_URL}${path}`, {
+        method,
+        headers: {
+          authorization: `Bearer ${key}`,
+          ...(method === "POST" ? { "content-type": "application/json" } : {}),
+        },
+        body: method === "POST" ? body : undefined,
+      });
+      expect(r.status, `${method} ${path} should not 404`).not.toBe(404);
+      expect([200, 402]).toContain(r.status);
+    }
+
+    // No-auth mode against a paid preset returns 402 Payment Required.
+    const maritimePath = paths.find((p) => p.includes("/vessels") && !p.includes("235000000"))!;
+    expect((await env.fetch(`${BASE_URL}${maritimePath}`)).status).toBe(402);
+
+    // Credit the account and confirm a paid catalog preset returns 200 with live balance headers.
+    const email = /Signed in as ([^<]+)</.exec(html)![1]!;
+    const cust = (await env.store.customerByEmail(email))!;
+    await env.store.applyTopUp(
+      { ref: "test_topup", accountId: cust.accountId, netMicros: 5_000_000, vatMicros: 0 },
+      {
+        id: "test_topup",
+        kind: "credits_topup",
+        ref: "test_topup",
+        occurredAt: new Date().toISOString(),
+        memo: {},
+        lines: [
+          { account: "asset:bank_transfer", debit: 5_000_000, credit: 0 },
+          { account: "liability:customer_credits", debit: 0, credit: 5_000_000 },
+        ],
+      },
+    );
+    const paidRes = await env.fetch(`${BASE_URL}${maritimePath}`, { headers: { authorization: `Bearer ${key}` } });
+    expect(paidRes.status).toBe(200);
+    expect(Number(paidRes.headers.get("x-credits-charged-gbp-micros"))).toBeGreaterThan(0);
+    expect(Number(paidRes.headers.get("x-credits-balance-gbp-micros"))).toBeLessThan(5_000_000);
+  });
+
+  it("API Explorer client script enforces same-origin paths, credential isolation, shell-safe cURL, and live balance sync", async () => {
+    type Listener = (e?: Record<string, unknown>) => unknown;
+    const makeEl = <T extends Record<string, unknown> = Record<string, unknown>>(extra: T = {} as T) => {
+      const listeners: Record<string, Listener[]> = {};
+      const attrs = (extra.attrs as Record<string, string> | undefined) ?? {};
+      return {
+        value: "",
+        textContent: "",
+        className: "",
+        type: "text",
+        disabled: false,
+        hidden: false,
+        placeholder: "",
+        attrs,
+        getAttribute: (k: string) => attrs[k] ?? null,
+        addEventListener: (ev: string, fn: Listener) => {
+          (listeners[ev] ??= []).push(fn);
+        },
+        emit: async (ev: string, arg?: Record<string, unknown>) => {
+          for (const fn of listeners[ev] ?? []) await fn(arg);
+        },
+        ...extra,
+      };
+    };
+
+    const storage = new Map<string, string>();
+    const sessionStorage = {
+      getItem: (k: string) => storage.get(k) ?? null,
+      setItem: (k: string, v: string) => void storage.set(k, v),
+      removeItem: (k: string) => void storage.delete(k),
+    };
+
+    const optBalance = makeEl({ value: "credits.balance", attrs: { "data-method": "GET", "data-path": "/v1/credits/balance", "data-body": "", "data-desc": "Balance" } });
+    const optPolicy = makeEl({ value: "policy.events", attrs: { "data-method": "POST", "data-path": "/v1/policy/events", "data-body": '{"events":[]}', "data-desc": "Policy" } });
+    const optCustom = makeEl({ value: "custom" });
+    const presetEl = makeEl({ options: [optBalance, optPolicy, optCustom], selectedIndex: 0, value: "credits.balance" });
+    const methodEl = makeEl({ value: "GET" });
+    const urlEl = makeEl({ value: "/v1/credits/balance" });
+    const schemeEl = makeEl({ value: "Bearer" });
+    const keyIn = makeEl({ type: "password", value: "" });
+    const bodyWrap = makeEl({ hidden: true });
+    const bodyIn = makeEl({ value: "" });
+    const descEl = makeEl();
+    const sendBtn = makeEl();
+    const curlEl = makeEl();
+    const statusEl = makeEl();
+    const timeEl = makeEl();
+    const infoEl = makeEl();
+    const outEl = makeEl();
+    const copyResBtn = makeEl({ disabled: true });
+    const balEl = makeEl({ textContent: "£5.00" });
+    const clearKeyBtn = makeEl();
+    const signoutForm = makeEl();
+    const revokeMatch = makeEl({ attrs: { "data-key-prefix": "mk_test_abcd" } });
+    const revokeOther = makeEl({ attrs: { "data-key-prefix": "mk_test_zzzz" } });
+
+    const byId: Record<string, ReturnType<typeof makeEl>> = {
+      "api-console": makeEl(),
+      "preset-select": presetEl,
+      "req-method": methodEl,
+      "req-url": urlEl,
+      "auth-scheme": schemeEl,
+      "api-key-input": keyIn,
+      "clear-key-btn": clearKeyBtn,
+      "body-section": bodyWrap,
+      "req-body": bodyIn,
+      "preset-desc": descEl,
+      "send-btn": sendBtn,
+      "curl-snippet": curlEl,
+      "res-status": statusEl,
+      "res-time": timeEl,
+      "res-info": infoEl,
+      "res-body": outEl,
+      "copy-res-btn": copyResBtn,
+      "acct-balance": balEl,
+    };
+
+    const fetchCalls: Array<{ url: string; init: RequestInit }> = [];
+    let nextRes = () =>
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "x-credits-charged-gbp-micros": "10000", "x-credits-balance-gbp-micros": "4990000", "x-request-id": "abcdef123456" },
+      });
+
+    const document = {
+      querySelector: (sel: string) => (sel === ".key" ? { textContent: "mk_test_abcd1234" } : null),
+      querySelectorAll: (sel: string) => (sel === 'form[action="/signout"]' ? [signoutForm] : sel === "form[data-key-prefix]" ? [revokeMatch, revokeOther] : []),
+      getElementById: (id: string) => byId[id] ?? null,
+    };
+    let pendingFetch: Promise<void> | null = null;
+    const fetchMock = async (url: string, init: RequestInit) => {
+      fetchCalls.push({ url, init });
+      if (pendingFetch) await pendingFetch;
+      return nextRes();
+    };
+
+    new Function("document", "window", "sessionStorage", "navigator", "performance", "fetch", ACCOUNT_SCRIPT)(
+      document,
+      { location: { origin: "https://www.airivets.com" } },
+      sessionStorage,
+      {},
+      { now: () => 100 },
+      fetchMock,
+    );
+
+    // 1. Key saved from .key and pre-filled; cURL uses POSIX single quotes.
+    expect(storage.get("mx_api_key")).toBe("mk_test_abcd1234");
+    expect(keyIn.value).toBe("mk_test_abcd1234");
+    expect(curlEl.textContent).toContain("'Authorization: Bearer mk_test_abcd1234'");
+
+    // 2. Auth scheme switching isolates Bearer and Session credentials.
+    schemeEl.value = "Session";
+    await schemeEl.emit("change");
+    expect(keyIn.value).toBe("");
+    keyIn.value = "Session sess_tok'1";
+    await keyIn.emit("input");
+    expect(keyIn.value).toBe("sess_tok'1");
+    expect(curlEl.textContent).toContain("'Authorization: Session sess_tok'\\''1'");
+    await clearKeyBtn.emit("click");
+    expect(storage.get("mx_api_key")).toBe("mk_test_abcd1234");
+    schemeEl.value = "Bearer";
+    await schemeEl.emit("change");
+    expect(keyIn.value).toBe("mk_test_abcd1234");
+
+    // 3. Valid request uses full same-origin URL with credentials: "omit" and updates balance live.
+    await sendBtn.emit("click");
+    expect(fetchCalls).toHaveLength(1);
+    expect(fetchCalls[0]!.url).toBe("https://www.airivets.com/v1/credits/balance");
+    expect(fetchCalls[0]!.init.credentials).toBe("omit");
+    expect(balEl.textContent).toBe("£4.99");
+    expect(infoEl.textContent).toContain("Charged £0.010");
+
+    // 3b. None auth scheme omits Authorization in both fetch and cURL without clobbering stored Bearer key.
+    schemeEl.value = "None";
+    await schemeEl.emit("change");
+    expect(keyIn.disabled).toBe(true);
+    expect(curlEl.textContent).not.toContain("Authorization:");
+    await sendBtn.emit("click");
+    expect(fetchCalls).toHaveLength(2);
+    expect((fetchCalls[1]!.init.headers as Record<string, string>).authorization).toBeUndefined();
+    schemeEl.value = "Bearer";
+    await schemeEl.emit("change");
+    expect(keyIn.value).toBe("mk_test_abcd1234");
+    expect(storage.get("mx_api_key")).toBe("mk_test_abcd1234");
+
+    // 4. Same-origin path guard blocks external, protocol-relative, backslash, and dot-segment bypass URLs and clears stale meta.
+    for (const bad of ["https://evil.com/x", "//evil.com/x", "/\\evil.com/x", "/a/..//evil.com/x", ""]) {
+      urlEl.value = bad;
+      await sendBtn.emit("click");
+      expect(statusEl.textContent).toBe("Invalid path");
+      expect(timeEl.textContent).toBe("");
+      expect(infoEl.textContent).toBe("");
+      expect(copyResBtn.disabled).toBe(true);
+    }
+    expect(fetchCalls).toHaveLength(2);
+
+    // 5. POST invalid JSON is rejected before fetch and clears stale meta.
+    presetEl.selectedIndex = 1;
+    await presetEl.emit("change");
+    bodyIn.value = "{bad json";
+    await sendBtn.emit("click");
+    expect(statusEl.textContent).toBe("Invalid JSON");
+    expect(fetchCalls).toHaveLength(2);
+
+    // 6. In-flight request lock blocks overlapping requests, and empty balance header does not overwrite balance with £0.00.
+    bodyIn.value = '{"events":[]}';
+    let release!: () => void;
+    pendingFetch = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    nextRes = () => new Response('{"accepted":1}', { status: 200, headers: { "x-credits-balance-gbp-micros": "" } });
+    const firstInFlight = sendBtn.emit("click");
+    expect(sendBtn.disabled).toBe(true);
+    await urlEl.emit("keydown", { metaKey: true, key: "Enter" });
+    expect(fetchCalls).toHaveLength(3);
+    release();
+    await firstInFlight;
+    pendingFetch = null;
+    expect(sendBtn.disabled).toBe(false);
+    expect(balEl.textContent).toBe("£4.99");
+
+    // 7. Revoking non-matching key keeps stored key; revoking matching key clears it; signout clears it.
+    await revokeOther.emit("submit");
+    expect(storage.get("mx_api_key")).toBe("mk_test_abcd1234");
+    await revokeMatch.emit("submit");
+    expect(storage.get("mx_api_key")).toBeUndefined();
+    storage.set("mx_api_key", "mk_test_abcd1234");
+    await signoutForm.emit("submit");
+    expect(storage.get("mx_api_key")).toBeUndefined();
   });
 });
